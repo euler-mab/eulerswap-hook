@@ -560,6 +560,138 @@ export function priceAtYb(y0: number, ry: number, cy: number, px: number, py: nu
   return -gYd(yb, cy, y0, px, py);
 }
 
+// --- Order book functions ---
+// The independent variable (x or y) is **price increase from equilibrium**.
+// x=0 means at equilibrium price; x=rx means at the X-side boundary.
+
+// Cumulative same-asset liquidity: how much X remains at price increase x
+// L_XX(x, cx, x0) = x0 / sqrt((1+x-cx)/(1-cx))
+export function LXX(x: number, cx: number, x0: number): number {
+  if (x < 0) return NaN;
+  return computeXb(x0, x, cx);
+}
+
+export function LYY(y: number, cy: number, y0: number): number {
+  if (y < 0) return NaN;
+  return computeYb(y0, y, cy);
+}
+
+// Liquidity density per unit price (negative derivative of cumulative)
+// l_XX(x, cx, x0) = x0 * sqrt(1-cx) / (2 * (1+x-cx)^(3/2))
+export function lXX(x: number, cx: number, x0: number): number {
+  if (x < 0 || cx >= 1) return NaN;
+  const inner = 1 + x - cx;
+  if (inner <= 0) return NaN;
+  return (x0 * Math.sqrt(1 - cx)) / (2 * Math.pow(inner, 1.5));
+}
+
+export function lYY(y: number, cy: number, y0: number): number {
+  if (y < 0 || cy >= 1) return NaN;
+  const inner = 1 + y - cy;
+  if (inner <= 0) return NaN;
+  return (y0 * Math.sqrt(1 - cy)) / (2 * Math.pow(inner, 1.5));
+}
+
+// Liquidity fingerprint: ratio of density to c=0 baseline (x0 cancels)
+// F_X(x, cx) = sqrt(1-cx) * (1+x)^(3/2) / (1+x-cx)^(3/2)
+export function FX(x: number, cx: number): number {
+  if (x < 0 || cx >= 1) return NaN;
+  const a = 1 + x;
+  const b = 1 + x - cx;
+  if (b <= 0) return NaN;
+  return Math.sqrt(1 - cx) * Math.pow(a, 1.5) / Math.pow(b, 1.5);
+}
+
+export function FY(y: number, cy: number): number {
+  if (y < 0 || cy >= 1) return NaN;
+  const a = 1 + y;
+  const b = 1 + y - cy;
+  if (b <= 0) return NaN;
+  return Math.sqrt(1 - cy) * Math.pow(a, 1.5) / Math.pow(b, 1.5);
+}
+
+// Cross-asset cumulative liquidity: Y amount at price increase x (X side)
+// L_XY(x) = fX(L_XX(x), cx, x0, y0, px, py)
+export function LXY(x: number, cx: number, x0: number, y0: number, px: number, py: number): number {
+  const xPos = LXX(x, cx, x0);
+  if (isNaN(xPos)) return NaN;
+  return fX(xPos, cx, x0, y0, px, py);
+}
+
+// X amount at price increase y (Y side)
+// L_YX(y) = gY(L_YY(y), cy, y0, x0, px, py)
+export function LYX(y: number, cy: number, y0: number, x0: number, px: number, py: number): number {
+  const yPos = LYY(y, cy, y0);
+  if (isNaN(yPos)) return NaN;
+  return gY(yPos, cy, y0, x0, px, py);
+}
+
+// Cross-asset liquidity density (chain rule)
+// l_XY(x) = pXxy(L_XX(x)) * l_XX(x)
+export function lXY(x: number, cx: number, x0: number, y0: number, px: number, py: number): number {
+  const xPos = LXX(x, cx, x0);
+  if (isNaN(xPos)) return NaN;
+  const price = pXxy(xPos, cx, x0, px, py);
+  const dens = lXX(x, cx, x0);
+  if (isNaN(price) || isNaN(dens)) return NaN;
+  return price * dens;
+}
+
+// l_YX(y) = pYyx(L_YY(y)) * l_YY(y)
+export function lYX(y: number, cy: number, y0: number, x0: number, px: number, py: number): number {
+  const yPos = LYY(y, cy, y0);
+  if (isNaN(yPos)) return NaN;
+  const price = pYyx(yPos, cy, y0, px, py);
+  const dens = lYY(y, cy, y0);
+  if (isNaN(price) || isNaN(dens)) return NaN;
+  return price * dens;
+}
+
+// --- Order book point generation ---
+
+export interface OrderBookPoint {
+  priceDelta: number;
+  cumSame: number;
+  cumCross: number;
+  densSame: number;
+  densCross: number;
+  fingerprint: number;
+}
+
+export function generateOrderBookPointsX(
+  x0: number, y0: number, cx: number, rx: number, px: number, py: number, n = 200
+): OrderBookPoint[] {
+  const points: OrderBookPoint[] = [];
+  for (let i = 0; i <= n; i++) {
+    const x = rx * (i / n);
+    const cumSame = LXX(x, cx, x0);
+    const cumCross = LXY(x, cx, x0, y0, px, py);
+    const densSame = lXX(x, cx, x0);
+    const densCross = lXY(x, cx, x0, y0, px, py);
+    const fingerprint = FX(x, cx);
+    if ([cumSame, cumCross, densSame, densCross, fingerprint].some(v => isNaN(v) || !isFinite(v))) continue;
+    points.push({ priceDelta: x, cumSame, cumCross, densSame, densCross, fingerprint });
+  }
+  return points;
+}
+
+export function generateOrderBookPointsY(
+  x0: number, y0: number, cy: number, ry: number, px: number, py: number, n = 200
+): OrderBookPoint[] {
+  const points: OrderBookPoint[] = [];
+  for (let i = 0; i <= n; i++) {
+    const y = ry * (i / n);
+    const cumSame = LYY(y, cy, y0);
+    const cumCross = LYX(y, cy, y0, x0, px, py);
+    const densSame = lYY(y, cy, y0);
+    const densCross = lYX(y, cy, y0, x0, px, py);
+    const fingerprint = FY(y, cy);
+    if ([cumSame, cumCross, densSame, densCross, fingerprint].some(v => isNaN(v) || !isFinite(v))) continue;
+    points.push({ priceDelta: y, cumSame, cumCross, densSame, densCross, fingerprint });
+  }
+  return points;
+}
+
 // --- Generate curve points for plotting ---
 
 export interface CurvePoint {
