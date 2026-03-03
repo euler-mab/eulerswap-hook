@@ -21,7 +21,7 @@ const GRID = { strokeDasharray: "3 3", stroke: "#222" };
 const TIP = {
   contentStyle: { backgroundColor: "#18181b", border: "1px solid #333", borderRadius: 6, fontSize: 12 },
   labelStyle: { color: "#999" },
-  formatter: (val: number) => val.toFixed(2),
+  formatter: (val: number | undefined) => val?.toFixed(2) ?? "",
 };
 const line = (color: string) => ({ stroke: color, strokeWidth: 1.5 });
 
@@ -39,9 +39,8 @@ function Legend({ items }: { items: { color: string; label: string }[] }) {
 }
 
 export default function CurveChart({ params }: Props) {
-  const { px, py, cx, cy, rx, ry, xr, yr } = params;
-
   const data = useMemo(() => {
+    const { px, py, cx, cy, rx, ry, xr, yr } = params;
     const x0 = computeX0(params);
     const y0 = computeY0(params);
     const xbB = computeXb(x0, rx, cx);
@@ -228,11 +227,11 @@ export default function CurveChart({ params }: Props) {
           <span />
           <span className="text-zinc-600 mt-1">Real reserves</span>
           <span />
-          <span>xr = {fmt(xr)}</span>
-          <span>yr = {fmt(yr)}</span>
+          <span>xr = {fmt(params.xr)}</span>
+          <span>yr = {fmt(params.yr)}</span>
           <span>xb(xr) = {fmt(data.xbR)}</span>
           <span>yb(yr) = {fmt(data.ybR)}</span>
-          <span>real range = ({fmt(xr - data.xbR)}, {fmt(yr - data.ybR)})</span>
+          <span>real range = ({fmt(params.xr - data.xbR)}, {fmt(params.yr - data.ybR)})</span>
           <span />
           <span className="text-zinc-600 mt-1">Boundary prices</span>
           <span />

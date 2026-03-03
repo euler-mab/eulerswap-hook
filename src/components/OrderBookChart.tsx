@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   AreaChart, Area, LineChart, Line, ScatterChart, Scatter,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
@@ -11,8 +11,15 @@ import {
   FX, FY,
 } from "@/lib/math";
 
+export type Numeraire = "raw" | "x" | "y";
+
 interface Props {
   params: Params;
+  /** Token symbol labels (e.g., "ETH", "USDC"). Default: "X", "Y" */
+  labelX?: string;
+  labelY?: string;
+  /** Default numeraire mode. "y" normalises everything to Y units, etc. */
+  defaultNumeraire?: Numeraire;
 }
 
 const AXIS = { stroke: "#444", tick: { fill: "#666", fontSize: 11 }, tickLine: false };
@@ -37,10 +44,13 @@ function Legend({ items }: { items: { color: string; label: string }[] }) {
   );
 }
 
-export default function OrderBookChart({ params }: Props) {
-  const { px, py, cx, cy, rx, ry } = params;
+export default function OrderBookChart({ params, labelX, labelY, defaultNumeraire = "raw" }: Props) {
+  const [numeraire, setNumeraire] = useState<Numeraire>(defaultNumeraire);
+  const symX = labelX ?? "X";
+  const symY = labelY ?? "Y";
 
   const data = useMemo(() => {
+    const { px, py, cx, cy, rx, ry } = params;
     const x0 = computeX0(params);
     const y0 = computeY0(params);
     if (x0 <= 0 || y0 <= 0) return null;
@@ -48,18 +58,25 @@ export default function OrderBookChart({ params }: Props) {
     const xPts = generateOrderBookPointsX(x0, y0, cx, rx, px, py);
     const yPts = generateOrderBookPointsY(x0, y0, cy, ry, px, py);
 
+    // Price ratio used for normalisation
+    const pRatio = px / py; // Y per X
+
+    // Normalisation multipliers: bidDepth is in X, askDepth is in Y
+    const bidMul = numeraire === "y" ? pRatio : 1;              // X→Y or X→X
+    const askMul = numeraire === "x" ? 1 / pRatio : 1;          // Y→X or Y→Y
+
     // Depth chart: mirrored around equilibrium
     // Left (negative price delta) = X side: cumulative X consumed
     // Right (positive price delta) = Y side: cumulative Y consumed
     const depthData = [
       ...xPts.map(p => ({
         price: -p.priceDelta,
-        bidDepth: x0 - p.cumSame,
+        bidDepth: (x0 - p.cumSame) * bidMul,
       })).reverse(),
       { price: 0, bidDepth: 0, askDepth: 0 },
       ...yPts.filter(p => p.priceDelta > 0).map(p => ({
         price: p.priceDelta,
-        askDepth: y0 - p.cumSame,
+        askDepth: (y0 - p.cumSame) * askMul,
       })),
     ];
 

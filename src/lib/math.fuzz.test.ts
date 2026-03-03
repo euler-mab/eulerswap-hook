@@ -3,16 +3,16 @@ import fc from "fast-check";
 import {
   fX, fY, gY, gX, fXd, gYd,
   computeSx, computeSy, computeBxc, computeByc,
-  computePX, computePY, computeX0, computeY0,
+  computePX, computeX0, computeY0,
   computeXb, computeYb,
   computeHX, computeHY,
   computeNAV_X,
   pXxy, pYxy, pXyx, pYyx,
-  CXX, CXY_fn, DXX, DXY,
-  xXXdebt, xXYdebt,
+  CXX,
+  xXXdebt,
   validateParams, defaultParams,
-  LXX, LYY, lXX, lYY, FX, FY,
-  LXY, LYX, lXY, lYX,
+  LXX, LYY, lXX, FX, FY,
+  LXY, LYX, lXY,
   type Params,
 } from "./math";
 
