@@ -41,12 +41,20 @@ import {
 // 19. Health invariants within range (H≥1 for Y/X debt; Z-debt dip bounds)
 // 20. Exact values at boundary (CXX, price, fX/gY curve values, health≈1)
 // 21. Exact values at equilibrium (health formulas, collateral/debt, NAV, price)
-// 22–31. Real-world scenarios (stablecoin LP, WBTC debt, ETH/USDC, JIT, leveraged,
-//        short ETH, cross-collateral stETH, one-sided, WBTC/ETH, external collateral)
-// 32. PSM / instant redemption (asymmetric cx=0.999 vs cy=0.3, peg stability)
-// 33. Two-sided JIT with leverage (cx=cy=0.95, Y debt, mutual cross-collateral)
-// 34. Half-JIT (cx=0.95 JIT on XYZ side, cy=0.3 real reserves on WETH side, X debt)
-// 35. Deferred emissions LP (xr=0 single-sided USDC, borrow EUL JIT, Y-side only)
+// 22. Stablecoin-stablecoin LP (USDC/DAI, no debt)             [Ordinary LP]
+// 23. Stablecoin LP with WBTC Z debt (pzx=50k numerical)      [Hedged LP]
+// 24. ETH/USDC LP (px=2000, no debt, wide range)              [Ordinary LP]
+// 25. JIT liquidity (cx=0.99, rx=0.0001, 200x amplification)  [Multiplied LP]
+// 26. Leveraged ETH/USDC with Y debt (borrow USDC)            [Multiplied LP]
+// 27. Short ETH (borrow ETH against USDC, Y-side health)      [Hedged LP]
+// 28. Cross-collateral stETH Z debt (vxz=0.93, vyz=0.7)       [Hedged LP]
+// 29. One-sided liquidity (yr=0, range order)                  [Ordinary LP]
+// 30. WBTC/ETH correlated pair with Z debt                    [Hedged LP]
+// 31. External collateral (rXZ, eXC/eXD augmented position)   [Ordinary LP]
+// 32. PSM / instant redemption (cx=0.999 vs cy=0.3)           [PSM]
+// 33. Two-sided JIT with leverage (cx=cy=0.95, Y debt)        [Multiplied LP]
+// 34. Half-JIT XYZ/WETH (cx=0.95 JIT, cy=0.3 real, X debt)   [Deferred Emissions]
+// 35. Deferred emissions LP (xr=0 single-sided, borrow EUL)   [Deferred Emissions]
 //
 // Not tested: point-generation functions (generateFXPoints etc.) — thin plot wrappers.
 // ---------------------------------------------------------------------------
@@ -1474,11 +1482,18 @@ describe("exact values at equilibrium", () => {
 });
 
 // ===========================================================================
-// REAL-WORLD SCENARIO TESTS
+// REAL-WORLD SCENARIO TESTS (sections 22–35)
 // ===========================================================================
 // Each scenario models a realistic DeFi use case with appropriate parameter
 // choices. These test that the full pipeline (boost → curve → health → NAV)
 // produces sensible results for production-relevant configurations.
+//
+// Position types from the EulerSwap product docs:
+//   Ordinary LP    — A supply + B supply, optional lending yield (22, 24, 29, 31)
+//   Hedged LP      — A+B collateral, C debt for delta-neutral (23, 27, 28, 30)
+//   Multiplied LP  — leverage-loop or JIT to amplify depth (25, 26, 33)
+//   PSM            — asymmetric concentration for peg stability (32)
+//   Deferred Emissions — single-sided collateral, borrow other JIT (34, 35)
 
 // ---------------------------------------------------------------------------
 // 22. Stablecoin-stablecoin LP (USDC/DAI, no debt)
