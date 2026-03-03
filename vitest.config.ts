@@ -7,4 +7,8 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
+  test: {
+    // Exclude Solidity submodule trees (OpenZeppelin etc.) which contain .test.js files
+    exclude: ["**/node_modules/**", "contracts/**"],
+  },
 });

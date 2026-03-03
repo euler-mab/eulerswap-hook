@@ -1,6 +1,19 @@
 [profile.default]
 src = "src"
+test = "test"
 out = "out"
+libs = ["eulerswap/lib"]
 solc = "0.8.27"
 optimizer = true
 optimizer_runs = 2500
+
+remappings = [
+  "forge-std/=eulerswap/lib/forge-std/src/",
+  "openzeppelin-contracts/=eulerswap/lib/openzeppelin-contracts/contracts/",
+  "evc/=eulerswap/lib/ethereum-vault-connector/src/",
+  "evk/=eulerswap/lib/euler-vault-kit/src/",
+  "ethereum-vault-connector/=eulerswap/lib/ethereum-vault-connector/src/",
+  "evk-test/=eulerswap/lib/euler-vault-kit/test/",
+  "permit2/=eulerswap/lib/euler-vault-kit/lib/permit2/",
+  "@uniswap/v4-core/=eulerswap/lib/v4-periphery/lib/v4-core/",
+]
