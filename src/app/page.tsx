@@ -5,6 +5,7 @@ import { defaultParams, Params, validateParams } from "@/lib/math";
 import ParamControls from "@/components/ParamControls";
 import CurveChart from "@/components/CurveChart";
 import HealthChart from "@/components/HealthChart";
+import OrderBookChart from "@/components/OrderBookChart";
 
 export default function Home() {
   const [params, setParams] = useState<Params>(defaultParams);
@@ -33,6 +34,10 @@ export default function Home() {
         <hr className="border-zinc-800" />
 
         <HealthChart params={params} />
+
+        <hr className="border-zinc-800" />
+
+        <OrderBookChart params={params} />
       </div>
     </div>
   );
