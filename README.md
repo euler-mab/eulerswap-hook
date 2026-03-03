@@ -1,30 +1,37 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# EulerSwap UI
+
+Interactive visualization of the EulerSwap concentrated-liquidity AMM curve math, including boost calculations, health scoring, and NAV.
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Testing
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Unit tests and property-based fuzz tests (fast-check):
+
+```bash
+npm test
+```
+
+### Differential tests
+
+The differential test suite (`src/lib/math.diff.test.ts`) compares the TypeScript curve functions against the on-chain Solidity `CurveLib` to verify they produce matching outputs.
+
+**Prerequisites:** [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge` and `anvil` must be on PATH).
+
+The tests automatically compile a thin Solidity harness (`contracts/src/CurveHarness.sol`), spin up a local anvil node, deploy the harness, and run 200 randomized input pairs per curve function.
 
 ## Contracts
 
-The [EulerSwap Solidity contracts](https://github.com/euler-xyz/euler-swap) are included as a git submodule at `contracts/eulerswap` for differential testing against the TypeScript math in `src/lib/math.ts`.
+The [EulerSwap Solidity contracts](https://github.com/euler-xyz/euler-swap) are included as a git submodule at `contracts/eulerswap`.
 
-After cloning, initialize the submodule:
+After cloning this repo, initialize the submodule:
 
 ```bash
 git submodule update --init --recursive

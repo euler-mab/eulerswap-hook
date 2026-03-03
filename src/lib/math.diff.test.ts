@@ -33,7 +33,6 @@ import { fX, gY, fY, gX } from "./math";
 // Constants
 // ============================================================================
 
-const WAD = 10n ** 18n;
 const MAX_UINT112 = (1n << 112n) - 1n;
 
 // Anvil's default pre-funded account
@@ -72,8 +71,10 @@ async function waitForAnvil(url: string, timeout = 10_000): Promise<void> {
  * Assert Solidity (bigint) and TypeScript (number) results are close.
  *
  * Tolerance: max(3, |sol| * 1e-9).
- *   - The 3 absolute accounts for Solidity's round-up (≤2 wei) plus 1 margin.
- *   - The 1e-9 relative accounts for IEEE 754 float accumulation.
+ *   - The 3 absolute covers Solidity rounding: f() rounds up by ≤1 wei,
+ *     fInverse() overestimates by ≤1 wei, so a round-trip can differ by ≤2,
+ *     plus 1 margin.
+ *   - The 1e-9 relative covers IEEE 754 float accumulation in the TS math.
  */
 function assertClose(solVal: bigint, tsVal: number, label: string): void {
   const solNum = Number(solVal);
@@ -100,7 +101,7 @@ const arbConc = fc.double({ min: 0, max: 0.99, noNaN: true });
 /** Price: [0.01, 100]. */
 const arbPrice = fc.double({ min: 0.01, max: 100, noNaN: true });
 
-/** Equilibrium reserve: integer [100, 1e9]. Keep below 1e12 for float safety. */
+/** Equilibrium reserve: integer [100, 1e9]. Kept ≤1e9 so Number() is exact. */
 const arbEq = fc.integer({ min: 100, max: 1_000_000_000 });
 
 /** Fraction of x0 for test point x: (0, 1]. */
