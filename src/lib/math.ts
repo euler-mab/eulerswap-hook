@@ -801,30 +801,6 @@ export function generateFYPoints(eqX: number, eqY: number, px: number, py: numbe
   return points;
 }
 
-// gY points (y <= equilibrium)
-export function generateGYPoints(eqX: number, eqY: number, px: number, py: number, cy: number, n = 200): CurvePoint[] {
-  const points: CurvePoint[] = [];
-  const yMin = eqY * 0.01;
-  for (let i = 0; i <= n; i++) {
-    const y = yMin + (eqY - yMin) * (i / n);
-    const x = gY(y, cy, eqY, eqX, px, py);
-    if (!isNaN(x) && isFinite(x)) points.push({ x, y });
-  }
-  return points;
-}
-
-// gX points (y >= equilibrium): inverse/quadratic side
-export function generateGXPoints(eqX: number, eqY: number, px: number, py: number, cx: number, n = 200): CurvePoint[] {
-  const points: CurvePoint[] = [];
-  const yMax = eqY * 3;
-  for (let i = 0; i <= n; i++) {
-    const y = eqY + (yMax - eqY) * (i / n);
-    const x = gX(y, cx, eqY, eqX, px, py);
-    if (!isNaN(x) && isFinite(x) && x > 0) points.push({ x, y });
-  }
-  return points;
-}
-
 // Shifted curve points (shifted so range boundary is at origin)
 export function generateShiftedFXPoints(
   eqX: number, eqY: number, px: number, py: number, cx: number, cy: number, rx: number, ry: number, n = 200

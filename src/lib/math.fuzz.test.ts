@@ -11,8 +11,8 @@ import {
   CXX,
   xXXdebt,
   validateParams, defaultParams,
-  LXX, LYY, lXX, FX, FY,
-  LXY, LYX, lXY,
+  LXX, LYY, lXX, lYY, FX, FY,
+  LXY, LYX, lXY, lYX,
   type Params,
 } from "./math";
 
@@ -1269,6 +1269,94 @@ describe("fuzz: order book — cross-asset liquidity", () => {
         const dens = lXX(x, cx, x0);
         if (isNaN(price) || isNaN(dens)) return true;
         return relErr(lxyVal, price * dens) < 1e-9;
+      }
+    ), { numRuns: NUM_RUNS });
+  });
+});
+
+// ============================================================================
+// Y-side order book density (lYY, lYX)
+// ============================================================================
+// Symmetric mirrors of the X-side tests above — exercises the Y implementations
+// directly rather than relying only on the X/Y symmetry identity.
+
+describe("fuzz: order book — Y-side density (lYY)", () => {
+  it("lYY is always positive for y >= 0", () => {
+    fc.assert(fc.property(
+      arbC, arbReserve, arbRange,
+      fc.double({ min: 0, max: 1, noNaN: true }),
+      (cy, y0, ry, frac) => {
+        const y = ry * frac;
+        const l = lYY(y, cy, y0);
+        return isNaN(l) || l > 0;
+      }
+    ), { numRuns: NUM_RUNS });
+  });
+
+  it("lYY matches negative numerical derivative of LYY", () => {
+    fc.assert(fc.property(
+      arbC, arbReserve,
+      fc.double({ min: 0.1, max: 3, noNaN: true }),
+      (cy, y0, y) => {
+        const h = y * 1e-6;
+        if (h < 1e-12) return true;
+        const analytical = lYY(y, cy, y0);
+        const numerical = -(LYY(y + h, cy, y0) - LYY(y - h, cy, y0)) / (2 * h);
+        if (isNaN(analytical) || isNaN(numerical)) return true;
+        return relErr(analytical, numerical) < 1e-4;
+      }
+    ), { numRuns: NUM_RUNS });
+  });
+
+  it("lYY decreases as y increases", () => {
+    fc.assert(fc.property(
+      arbC, arbReserve, arbRange,
+      fc.double({ min: 0.01, max: 0.9, noNaN: true }),
+      (cy, y0, ry, frac) => {
+        const y1 = ry * frac;
+        const y2 = ry * Math.min(frac + 0.05, 1);
+        const l1 = lYY(y1, cy, y0);
+        const l2 = lYY(y2, cy, y0);
+        if (isNaN(l1) || isNaN(l2)) return true;
+        return l1 >= l2 - 1e-9;
+      }
+    ), { numRuns: NUM_RUNS });
+  });
+});
+
+describe("fuzz: order book — Y-side cross-asset density (lYX)", () => {
+  it("lYX matches numerical derivative of LYX", () => {
+    fc.assert(fc.property(
+      arbC,
+      fc.double({ min: 1, max: 100, noNaN: true }),
+      fc.double({ min: 1, max: 100, noNaN: true }),
+      fc.double({ min: 0.5, max: 5, noNaN: true }),
+      fc.double({ min: 0.5, max: 5, noNaN: true }),
+      fc.double({ min: 0.1, max: 2, noNaN: true }),
+      (cy, y0, x0, px, py, y) => {
+        const h = y * 1e-6;
+        if (h < 1e-12) return true;
+        const analytical = lYX(y, cy, y0, x0, px, py);
+        const numerical = (LYX(y + h, cy, y0, x0, px, py) - LYX(y - h, cy, y0, x0, px, py)) / (2 * h);
+        if (isNaN(analytical) || isNaN(numerical)) return true;
+        if (Math.abs(analytical) < 1e-10 && Math.abs(numerical) < 1e-10) return true;
+        return relErr(analytical, numerical) < 1e-3;
+      }
+    ), { numRuns: NUM_RUNS });
+  });
+
+  it("lYX = pYyx(LYY(y)) * lYY(y) cross-check", () => {
+    fc.assert(fc.property(
+      arbC, arbReserve, arbReserve, arbPrice, arbPrice,
+      fc.double({ min: 0.01, max: 3, noNaN: true }),
+      (cy, y0, x0, px, py, y) => {
+        const lyxVal = lYX(y, cy, y0, x0, px, py);
+        const yPos = LYY(y, cy, y0);
+        if (isNaN(yPos) || isNaN(lyxVal)) return true;
+        const price = pYyx(yPos, cy, y0, px, py);
+        const dens = lYY(y, cy, y0);
+        if (isNaN(price) || isNaN(dens)) return true;
+        return relErr(lyxVal, price * dens) < 1e-9;
       }
     ), { numRuns: NUM_RUNS });
   });

@@ -17,7 +17,7 @@ import {
 } from "./math";
 
 // ---------------------------------------------------------------------------
-// Test coverage: 52/62 exported functions (84%)
+// Test coverage: 52/60 exported functions (87%)
 //
 // Sections:
 //  1. Concentration parameter boundary behavior (c=0 constant-product, c→1 constant-sum)
@@ -59,7 +59,7 @@ import {
 // 36. Order book functions (LXX/LYY, lXX/lYY, FX/FY, LXY/LYX, lXY/lYX)
 // 37. yYYdebt (Y-side debt boundary: y0 - yr)
 //
-// Not tested: 10 point-generation functions (generateFXPoints etc.) — thin plot wrappers.
+// Not tested: 8 point-generation functions (generateFXPoints etc.) — thin plot wrappers.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
