@@ -41,6 +41,11 @@ import {
 // 19. Health invariants within range (H≥1 for Y/X debt; Z-debt dip bounds)
 // 20. Exact values at boundary (CXX, price, fX/gY curve values, health≈1)
 // 21. Exact values at equilibrium (health formulas, collateral/debt, NAV, price)
+// 22–31. Real-world scenarios (stablecoin LP, WBTC debt, ETH/USDC, JIT, leveraged,
+//        short ETH, cross-collateral stETH, one-sided, WBTC/ETH, external collateral)
+// 32. PSM / instant redemption (asymmetric cx=0.999 vs cy=0.3, peg stability)
+// 33. Two-sided JIT with leverage (cx=cy=0.95, Y debt, mutual cross-collateral)
+// 34. Half-JIT (cx=0.95 JIT on XYZ side, cy=0.3 real reserves on WETH side, X debt)
 //
 // Not tested: point-generation functions (generateFXPoints etc.) — thin plot wrappers.
 // ---------------------------------------------------------------------------
@@ -2061,5 +2066,266 @@ describe("scenario: externally collateralized position", () => {
     const navWith = computeNAV_X(x0v * 0.999, extColl, x0v, y0v);
     const navWithout = computeNAV_X(x0v * 0.999, noE, x0v, y0v);
     approx(navWith - navWithout, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 32. PSM / instant redemption (asymmetric concentration)
+// ---------------------------------------------------------------------------
+// USDS/USDC peg stability module. X-side (USDC→USDS) is near-constant-sum
+// (cx=0.999, rx=0.001) so swaps execute at ~1:1. Y-side (USDS→USDC) has
+// lower concentration (cy=0.3, ry=0.5) allowing price discovery if the PSM
+// is depleted. Also models the "Launchpad" use case from the doc.
+
+describe("scenario: PSM / instant redemption", () => {
+  const psm: Params = {
+    ...defaultParams,
+    px: 1, py: 1, cx: 0.999, cy: 0.3, rx: 0.001, ry: 0.5,
+    xr: 100_000, yr: 10_000, // PSM has deep USDC reserves
+    xd: 0, yd: 0, zdebt: 0, zr: 0,
+    vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0, pxz: 1,
+  };
+
+  it("X-side price at boundary barely above peg", () => {
+    const x0v = computeX0(psm);
+    const xb = computeXb(x0v, psm.rx, psm.cx);
+    const pBound = pXxy(xb, psm.cx, x0v, psm.px, psm.py);
+    // pXxy(xb) = (px/py)(1+rx) = 1 * 1.001 = 1.001
+    approx(pBound, 1.001);
+  });
+
+  it("Y-side price at boundary allows wide price discovery", () => {
+    const y0v = computeY0(psm);
+    const yb = computeYb(y0v, psm.ry, psm.cy);
+    const pBound = pYxy(yb, psm.cy, y0v, psm.px, psm.py);
+    // pYxy(yb) = 1 / ((py/px)(1+ry)) = 1 / 1.5 ≈ 0.667
+    // i.e., USDS can trade down to ~$0.67 if PSM depleted
+    approx(pBound, 1 / 1.5, 1e-3);
+  });
+
+  it("X-side curve is nearly linear (constant-sum behavior)", () => {
+    const x0v = computeX0(psm);
+    const y0v = computeY0(psm);
+    const xb = computeXb(x0v, psm.rx, psm.cx);
+    // Check derivative at several points — should all be ≈ -1
+    for (const frac of [0.1, 0.5, 0.9]) {
+      const x = xb + (x0v - xb) * frac;
+      const d = fXd(x, psm.cx, x0v, psm.px, psm.py);
+      approx(d, -1, 0.01);
+    }
+  });
+
+  it("Y-side curve has significant curvature (price discovery)", () => {
+    const y0v = computeY0(psm);
+    const yb = computeYb(y0v, psm.ry, psm.cy);
+    // Derivative at equilibrium vs boundary should differ substantially
+    const dEquil = gYd(y0v * 0.999, psm.cy, y0v, psm.px, psm.py);
+    const dBound = gYd(yb + (y0v - yb) * 0.01, psm.cy, y0v, psm.px, psm.py);
+    // Near equilibrium: -1. Near boundary: steeper.
+    // cy=0.3 gives meaningful curvature (ratio > 1.3)
+    expect(Math.abs(dBound / dEquil)).toBeGreaterThan(1.3);
+  });
+
+  it("price ranges are highly asymmetric", () => {
+    // X-side: price range from 1.0 to 1.001 (0.1% band — peg stability)
+    // Y-side: price range from 1.0 down to ~0.667 (33% band — price discovery)
+    const xRange = psm.rx; // 0.001
+    const yRange = psm.ry; // 0.5
+    expect(yRange / xRange).toBeGreaterThan(100);
+  });
+
+  it("health is Infinity everywhere (no debt)", () => {
+    const x0v = computeX0(psm);
+    const y0v = computeY0(psm);
+    const xb = computeXb(x0v, psm.rx, psm.cx);
+    for (const frac of [0.1, 0.5, 0.9]) {
+      const x = xb + (x0v - xb) * frac;
+      expect(computeHX(x, psm, x0v, y0v)).toBe(Infinity);
+    }
+  });
+
+  it("validates cleanly", () => {
+    expect(validateParams(psm)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 33. Two-sided JIT with leverage (USDtb/USDC, borrow USDC)
+// ---------------------------------------------------------------------------
+// Both sides highly concentrated (cx=cy=0.95, rx=ry=0.001). Y debt (borrow
+// USDC) with mutual cross-collateral (vxy=vyx=0.92). This is the "50x
+// deeper liquidity" scenario from the use-case doc.
+
+describe("scenario: two-sided JIT with leverage", () => {
+  const jitLev: Params = {
+    ...defaultParams,
+    px: 1, py: 1, cx: 0.95, cy: 0.95, rx: 0.001, ry: 0.001,
+    xr: 10_000, yr: 10_000,
+    xd: 0, yd: 5000, zdebt: 0, zr: 0, // borrow 5000 USDC
+    vxy: 0.92, vyx: 0.92,
+    vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0, pxz: 1,
+  };
+
+  const jitNoLev: Params = {
+    ...jitLev, yd: 0, vxy: 0, vyx: 0,
+  };
+
+  it("concentration + leverage gives massive amplification", () => {
+    const x0v = computeX0(jitLev);
+    // Concentration-only boost already large (cx=0.95, rx=0.001)
+    // sx = sqrt((1+0.001-0.95)/0.05) = sqrt(1.02) ≈ 1.01 → bXC ≈ 101
+    // Leverage on top should push x0 even higher
+    expect(x0v / jitLev.xr).toBeGreaterThan(100);
+  });
+
+  it("leverage boost exceeds concentration-only", () => {
+    const x0Lev = computeX0(jitLev);
+    const x0NoLev = computeX0(jitNoLev);
+    expect(x0Lev).toBeGreaterThan(x0NoLev);
+    // Leverage adds meaningful depth beyond concentration alone
+    expect(x0Lev / x0NoLev).toBeGreaterThan(1.1);
+  });
+
+  it("health ≥ 1 throughout X-side range (Y debt)", () => {
+    const x0v = computeX0(jitLev);
+    const y0v = computeY0(jitLev);
+    const xb = computeXb(x0v, jitLev.rx, jitLev.cx);
+    const eps = (x0v - xb) * 0.01;
+    for (let i = 0; i <= 30; i++) {
+      const x = xb + eps + (x0v - xb - 2 * eps) * (i / 30);
+      const h = computeHX(x, jitLev, x0v, y0v);
+      if (!isNaN(h) && isFinite(h)) {
+        expect(h).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it("health at boundary ≈ 1", () => {
+    const x0v = computeX0(jitLev);
+    const y0v = computeY0(jitLev);
+    const xb = computeXb(x0v, jitLev.rx, jitLev.cx);
+    const h = computeHX(xb + 1e-6, jitLev, x0v, y0v);
+    approx(h, 1, 0.02);
+  });
+
+  it("curve is near-linear on X-side (high concentration)", () => {
+    const x0v = computeX0(jitLev);
+    const xb = computeXb(x0v, jitLev.rx, jitLev.cx);
+    const xMid = (xb + x0v) / 2;
+    const d = fXd(xMid, jitLev.cx, x0v, jitLev.px, jitLev.py);
+    approx(d, -(jitLev.px / jitLev.py), 0.01);
+  });
+
+  it("NAV accounts for Y debt", () => {
+    const x0v = computeX0(jitLev);
+    const y0v = computeY0(jitLev);
+    const nav = computeNAV_X(x0v * 0.999, jitLev, x0v, y0v);
+    // NAV ≈ xr + yr - yd = 10000 + 10000 - 5000 = 15000
+    approx(nav, 15_000, 5e-3);
+  });
+
+  it("validates cleanly", () => {
+    expect(validateParams(jitLev)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 34. Half-JIT: XYZ/WETH (WETH real reserves, XYZ JIT-boosted)
+// ---------------------------------------------------------------------------
+// XYZ token ($10) paired with WETH ($2000). WETH side has low concentration
+// (cy=0.3, real reserves earning yield). XYZ side has high concentration
+// (cx=0.95, JIT-boosted). X debt (borrow XYZ against WETH collateral) allows
+// the DAO to sell XYZ at depth while recycling WETH proceeds.
+
+describe("scenario: half-JIT (XYZ/WETH)", () => {
+  const halfJit: Params = {
+    ...defaultParams,
+    px: 10, py: 2000, cx: 0.95, cy: 0.3, rx: 0.01, ry: 1,
+    xr: 1000, yr: 5, // ~$10k each side
+    xd: 500, yd: 0, zdebt: 0, zr: 0, // borrow 500 XYZ
+    vyx: 0.85, vxy: 0.85,
+    vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0, pxz: 1,
+  };
+
+  const halfJitNoLev: Params = {
+    ...halfJit, xd: 0, vyx: 0, vxy: 0,
+  };
+
+  it("X-side (JIT) boost >> Y-side boost from concentration alone", () => {
+    const sxBXC = computeBxc(computeSx(halfJit.rx, halfJit.cx));
+    const syBYC = computeByc(computeSy(halfJit.ry, halfJit.cy));
+    // cx=0.95, rx=0.01 → sx=sqrt(1.2)≈1.095 → bXC≈11.5
+    // cy=0.3, ry=1 → sy=sqrt(2.43)≈1.56 → bYC≈2.78
+    expect(sxBXC).toBeGreaterThan(syBYC * 3);
+  });
+
+  it("Y-side leverage-boosted by X debt", () => {
+    const y0Lev = computeY0(halfJit);
+    const y0NoLev = computeY0(halfJitNoLev);
+    // xd>0 triggers bYL computation in computeBoostY
+    expect(y0Lev).toBeGreaterThan(y0NoLev);
+  });
+
+  it("Y-side health ≥ 1 throughout range (X debt)", () => {
+    const x0v = computeX0(halfJit);
+    const y0v = computeY0(halfJit);
+    const yb = computeYb(y0v, halfJit.ry, halfJit.cy);
+    const eps = (y0v - yb) * 0.01;
+    for (let i = 0; i <= 30; i++) {
+      const y = yb + eps + (y0v - yb - 2 * eps) * (i / 30);
+      const h = computeHY(y, halfJit, x0v, y0v);
+      if (!isNaN(h) && isFinite(h)) {
+        expect(h).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it("X-side health ≥ 1 within range (xd creates H_XX/H_XY phases)", () => {
+    const x0v = computeX0(halfJit);
+    const y0v = computeY0(halfJit);
+    const xb = computeXb(x0v, halfJit.rx, halfJit.cx);
+    const eps = (x0v - xb) * 0.01;
+    for (let i = 0; i <= 30; i++) {
+      const x = xb + eps + (x0v - xb - 2 * eps) * (i / 30);
+      const h = computeHX(x, halfJit, x0v, y0v);
+      if (!isNaN(h) && isFinite(h)) {
+        expect(h).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it("price ranges are highly asymmetric", () => {
+    const x0v = computeX0(halfJit);
+    const y0v = computeY0(halfJit);
+    const xb = computeXb(x0v, halfJit.rx, halfJit.cx);
+    const yb = computeYb(y0v, halfJit.ry, halfJit.cy);
+    // X boundary price = (px/py)(1+rx) = (10/2000)*1.01 = 0.00505
+    const pXBound = pXxy(xb, halfJit.cx, x0v, halfJit.px, halfJit.py);
+    approx(pXBound, (halfJit.px / halfJit.py) * (1 + halfJit.rx));
+    // Y boundary price = 1/((py/px)(1+ry)) = 1/((2000/10)*2) = 1/400 = 0.0025
+    const pYBound = pYxy(yb, halfJit.cy, y0v, halfJit.px, halfJit.py);
+    approx(pYBound, 1 / ((halfJit.py / halfJit.px) * (1 + halfJit.ry)), 1e-3);
+  });
+
+  it("NAV is finite and positive", () => {
+    const x0v = computeX0(halfJit);
+    const y0v = computeY0(halfJit);
+    // With high leverage, x0 >> xr so evaluation point must be deep enough
+    // to engage real reserves. Use x = x0 - xr (all X reserves deployed).
+    const x = x0v - halfJit.xr;
+    const nav = computeNAV_X(x, halfJit, x0v, y0v);
+    expect(nav).not.toBeNaN();
+    expect(isFinite(nav)).toBe(true);
+    expect(nav).toBeGreaterThan(0);
+  });
+
+  it("validates cleanly", () => {
+    expect(validateParams(halfJit)).toEqual([]);
   });
 });
