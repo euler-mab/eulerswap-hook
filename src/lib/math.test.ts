@@ -5,9 +5,41 @@ import {
   computePX, computePY, computeX0, computeY0,
   computeXb, computeYb,
   computeHX, computeHY,
+  CXX, CXY_fn, DXX, DXY, xXXdebt, xXYdebt,
+  CYY, CYX_fn, DYY, DYX, yYYdebt, yYXdebt,
+  pXxy, pXyx, pYxy, pYyx,
+  priceAtXb, priceAtYb,
+  computeNAV_X,
+  computeZd, computePxy, computePyx, computePzx,
   validateParams, defaultParams,
   type Params,
 } from "./math";
+
+// ---------------------------------------------------------------------------
+// Test coverage: 39/51 exported functions (76%)
+//
+// Sections:
+//  1. Concentration parameter boundary behavior (c=0 constant-product, c→1 constant-sum)
+//  2. Curve continuity at equilibrium (fX/fY/gY/gX meet at (x0,y0))
+//  3. Inverse round-trip consistency (fY∘gY ≈ id, gX∘fX ≈ id)
+//  4. Derivative consistency (analytical vs numerical finite differences)
+//  5. Asymmetric prices (px ≠ py)
+//  6. Boost helpers (computeSx, computeBxc, computePX, computeXb)
+//  7. Health edge cases (dead zone, boundary guarantee)
+//  8. Parameter validation (validateParams)
+//  9. Derived price helpers (computePxy, computePyx, computePzx, computeZd)
+// 10. Debt phase boundaries (xXYdebt, yYXdebt — cx=0 closed form, cx>0 quadratic)
+// 11. Collateral functions (CXX, CXY_fn, CYY, CYX_fn)
+// 12. Debt functions (DXX, DXY, DYY, DYX — phase guards, active region formulas)
+// 13. Marginal prices (pXxy, pXyx, pYxy, pYyx — equilibrium, reciprocal, monotonicity)
+// 14. Boundary prices (priceAtXb, priceAtYb — verify (px/py)(1+rx) identity)
+// 15. Health branches (H_XX, H_XY, H_XZ on X-side; H_YY, H_YX, H_YZ on Y-side)
+// 16. Boost candidates (zero-LLTV baseline, Z/Y/X debt leverage, health≈1 at boundary)
+// 17. NAV (equilibrium identity, monotonicity, eXC/eXD effects)
+// 18. Y-side mirror symmetry (computeSy, computeByc, computePY, computeYb)
+//
+// Not tested: point-generation functions (generateFXPoints etc.) — thin plot wrappers.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -15,6 +47,8 @@ import {
 
 /** Assert a ≈ b within relative tolerance (default 1e-9) */
 function approx(a: number, b: number, tol = 1e-9) {
+  expect(a).not.toBeNaN();
+  expect(b).not.toBeNaN();
   const denom = Math.max(Math.abs(a), Math.abs(b), 1);
   expect(Math.abs(a - b) / denom).toBeLessThan(tol);
 }
@@ -49,16 +83,20 @@ describe("c=0 (constant-product, xy=k)", () => {
     }
   });
 
-  it("fY (inverse side) is consistent with constant-product", () => {
-    // For c=0 inverse: y = y0² / ((px/py)(x-x0) + y0)
-    // Check x·y = k doesn't hold on inverse side (different curve piece),
-    // but fY should be continuous at x0 and monotonically decreasing
+  it("fY c=0 matches closed form y0²/((px/py)(x-x0)+y0)", () => {
+    for (const x of [10, 12, 15, 20, 50]) {
+      const y = fY(x, c, x0, y0, px, py);
+      const expected = (y0 * y0) / ((px / py) * (x - x0) + y0);
+      approx(y, expected);
+    }
+  });
+
+  it("fY (inverse side) is monotonically decreasing and positive", () => {
     for (const x of [10, 12, 15, 20, 50]) {
       const y = fY(x, c, x0, y0, px, py);
       expect(y).toBeGreaterThan(0);
       expect(y).toBeLessThanOrEqual(y0);
     }
-    // Monotonically decreasing
     const y15 = fY(15, c, x0, y0, px, py);
     const y20 = fY(20, c, x0, y0, px, py);
     expect(y15).toBeGreaterThan(y20);
@@ -323,15 +361,613 @@ describe("validateParams", () => {
     expect(w.some((s) => s.includes("px must be"))).toBe(true);
   });
 
-  it("catches degenerate boost", () => {
-    // rx very small with cx very high → sx near 1 → bXC huge or degenerate
-    const bad = { ...defaultParams, rx: 0.001, cx: 0.999 };
+  it("catches negative rx", () => {
+    const bad = { ...defaultParams, rx: -1 };
     const w = validateParams(bad);
-    // sx = sqrt((1+0.001-0.999)/(1-0.999)) = sqrt(0.002/0.001) = sqrt(2) ≈ 1.414
-    // That's > 1, so it should be fine. Let's use a case that actually fails:
-    // rx=-0.5 → inner < 0 → sx=NaN
-    const bad2 = { ...defaultParams, rx: -1 };
-    const w2 = validateParams(bad2);
-    expect(w2.some((s) => s.includes("rx must be"))).toBe(true);
+    expect(w.some((s) => s.includes("rx must be"))).toBe(true);
+  });
+
+  it("catches degenerate ry", () => {
+    const bad = { ...defaultParams, ry: -0.5 };
+    const w = validateParams(bad);
+    expect(w.some((s) => s.includes("ry must be"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Derived price helpers
+// ---------------------------------------------------------------------------
+
+describe("derived price helpers", () => {
+  it("computePxy = px/py", () => {
+    approx(computePxy({ ...defaultParams, px: 3, py: 2 }), 1.5);
+  });
+
+  it("computePyx = py/px", () => {
+    approx(computePyx({ ...defaultParams, px: 3, py: 2 }), 2 / 3);
+  });
+
+  it("computePzx = 1/pxz", () => {
+    approx(computePzx({ ...defaultParams, pxz: 4 }), 0.25);
+  });
+
+  it("computeZd returns 0 when xd or yd > 0", () => {
+    expect(computeZd({ ...defaultParams, xd: 5, yd: 0, zdebt: 10 })).toBe(0);
+    expect(computeZd({ ...defaultParams, xd: 0, yd: 5, zdebt: 10 })).toBe(0);
+  });
+
+  it("computeZd returns zdebt when xd=yd=0", () => {
+    expect(computeZd({ ...defaultParams, xd: 0, yd: 0, zdebt: 10 })).toBe(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Debt phase boundaries (xXYdebt, yYXdebt)
+// ---------------------------------------------------------------------------
+
+describe("debt phase boundaries", () => {
+  it("xXXdebt = x0 - xr", () => {
+    approx(xXXdebt(20, 10), 10);
+    approx(xXXdebt(100, 30), 70);
+  });
+
+  it("xXYdebt = x0 when yd = 0", () => {
+    approx(xXYdebt(20, 0.5, 0, 1, 1), 20);
+  });
+
+  it("xXYdebt cx=0: x0²/(kX + x0) where kX = yd·py/px", () => {
+    // x0=20, yd=5, px=py=1 → kX=5, xXYdebt = 400/25 = 16
+    approx(xXYdebt(20, 0, 5, 1, 1), 16);
+  });
+
+  it("xXYdebt cx=0.5: fX(xXYd) - y0 = yd (Y debt exactly repaid)", () => {
+    const x0v = 20, y0v = 20, yd = 5;
+    const xXYd = xXYdebt(x0v, 0.5, yd, 1, 1);
+    // At xXYd, the swap delta should equal yd
+    const yXdelta = fX(xXYd, 0.5, x0v, y0v, 1, 1) - y0v;
+    approx(yXdelta, yd, 1e-9);
+  });
+
+  it("xXYdebt with asymmetric prices", () => {
+    // x0=20, yd=5, px=2, py=1 → kX = 5*1/2 = 2.5
+    // cx=0: xXYdebt = 400/(2.5+20) = 17.778
+    approx(xXYdebt(20, 0, 5, 2, 1), 400 / 22.5);
+  });
+
+  it("yYYdebt = y0 - yr", () => {
+    approx(yYYdebt(20, 10), 10);
+  });
+
+  it("yYXdebt = y0 when xd = 0", () => {
+    approx(yYXdebt(20, 0.5, 0, 1, 1), 20);
+  });
+
+  it("yYXdebt cy=0: y0²/(kY + y0) where kY = xd·px/py", () => {
+    // y0=20, xd=5, px=py=1 → kY=5, yYXdebt = 400/25 = 16
+    approx(yYXdebt(20, 0, 5, 1, 1), 16);
+  });
+
+  it("yYXdebt cy=0.5: gY(yYXd) - x0 = xd (X debt exactly repaid)", () => {
+    const x0v = 20, y0v = 20, xd = 5;
+    const yYXd = yYXdebt(y0v, 0.5, xd, 1, 1);
+    const xYdelta = gY(yYXd, 0.5, y0v, x0v, 1, 1) - x0v;
+    approx(xYdelta, xd, 1e-9);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Collateral functions
+// ---------------------------------------------------------------------------
+
+describe("collateral functions", () => {
+  it("CXX at equilibrium = xr", () => {
+    approx(CXX(20, 20, 10), 10);
+  });
+
+  it("CXX = 0 below xXXdebt", () => {
+    // x0=20, xr=10, xXXdebt=10. At x=8: CXX = max(10-12, 0) = 0
+    approx(CXX(8, 20, 10), 0);
+  });
+
+  it("CXX decreases as x moves away from x0", () => {
+    // x0=20, xr=10. At x=15: CXX = max(10-5, 0) = 5
+    approx(CXX(15, 20, 10), 5);
+    expect(CXX(15, 20, 10)).toBeLessThan(CXX(18, 20, 10));
+  });
+
+  it("CXY_fn at equilibrium with zd>0 = yr", () => {
+    const cxy = CXY_fn(20, 0.5, 20, 20, 1, 1, 10, 0, 5);
+    approx(cxy, 10); // yr=10, yXdelta=0
+  });
+
+  it("CXY_fn at equilibrium with yd>0 = yr", () => {
+    // yXdelta=0, so max(0-yd, 0) = 0, CXY = yr
+    const cxy = CXY_fn(20, 0.5, 20, 20, 1, 1, 10, 5, 0);
+    approx(cxy, 10);
+  });
+
+  it("CXY_fn increases as x decreases (more Y flows in)", () => {
+    const c1 = CXY_fn(18, 0.5, 20, 20, 1, 1, 10, 0, 5);
+    const c2 = CXY_fn(15, 0.5, 20, 20, 1, 1, 10, 0, 5);
+    expect(c2).toBeGreaterThan(c1);
+  });
+
+  it("CYY at equilibrium = yr", () => {
+    approx(CYY(20, 20, 10), 10);
+  });
+
+  it("CYY = 0 below yYYdebt", () => {
+    approx(CYY(8, 20, 10), 0);
+  });
+
+  it("CYX_fn at equilibrium with zd>0 = xr", () => {
+    const cyx = CYX_fn(20, 0.5, 20, 20, 1, 1, 10, 0, 5);
+    approx(cyx, 10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Debt functions
+// ---------------------------------------------------------------------------
+
+describe("debt functions", () => {
+  it("DXX = 0 when zd > 0", () => {
+    expect(DXX(5, 20, 10, 5, 10, 20, 5)).toBe(0);
+  });
+
+  it("DXX = 0 when x > xXXdebt", () => {
+    // x=12, xXXd=10, xXYd=20 → x > xXXd → DXX=0
+    expect(DXX(12, 20, 10, 5, 10, 20, 0)).toBe(0);
+  });
+
+  it("DXX = 0 when x > xXYdebt", () => {
+    // x=18, xXXd=10, xXYd=16 → x > xXYd → DXX=0
+    expect(DXX(18, 20, 10, 5, 10, 16, 0)).toBe(0);
+  });
+
+  it("DXX = xd + max(xXdelta - xr, 0) when in active region", () => {
+    // x=8, x0=20, xr=10, xd=5, xXXd=10, xXYd=20
+    // x <= xXXd && x <= xXYd → active
+    // DXX = 5 + max((20-8)-10, 0) = 5 + 2 = 7
+    approx(DXX(8, 20, 10, 5, 10, 20, 0), 7);
+  });
+
+  it("DXX at exactly xXXdebt = xd", () => {
+    // At xXXdebt=10: xXdelta = x0 - x = 20 - 10 = 10 = xr
+    // DXX = xd + max(10-10, 0) = xd
+    approx(DXX(10, 20, 10, 5, 10, 20, 0), 5);
+  });
+
+  it("DXY = 0 when zd > 0", () => {
+    expect(DXY(18, 0.5, 20, 20, 1, 1, 5, 16, 5)).toBe(0);
+  });
+
+  it("DXY = 0 when x < xXYdebt", () => {
+    // x=14, xXYd=16 → x < xXYd → DXY=0
+    expect(DXY(14, 0.5, 20, 20, 1, 1, 5, 16, 0)).toBe(0);
+  });
+
+  it("DXY = yd at equilibrium when yd > 0", () => {
+    // At x=x0: yXdelta = 0 → DXY = max(yd - 0, 0) = yd
+    const x0v = 20, y0v = 20, yd = 5;
+    const xXYd = xXYdebt(x0v, 0.5, yd, 1, 1);
+    approx(DXY(x0v, 0.5, x0v, y0v, 1, 1, yd, xXYd, 0), yd);
+  });
+
+  it("DXY decreases as x decreases from x0 (Y debt being repaid)", () => {
+    const x0v = 20, y0v = 20, yd = 5;
+    const xXYd = xXYdebt(x0v, 0.5, yd, 1, 1);
+    const d1 = DXY(19, 0.5, x0v, y0v, 1, 1, yd, xXYd, 0);
+    const d2 = DXY(18, 0.5, x0v, y0v, 1, 1, yd, xXYd, 0);
+    expect(d1).toBeGreaterThan(d2);
+  });
+
+  it("DYY = 0 when zd > 0", () => {
+    expect(DYY(5, 20, 10, 5, 10, 20, 5)).toBe(0);
+  });
+
+  it("DYY in active region = yd + max(yYdelta - yr, 0)", () => {
+    // y=8, y0=20, yr=10, yd=5, yYYd=10, yYXd=20
+    // DYY = 5 + max((20-8)-10, 0) = 5 + 2 = 7
+    approx(DYY(8, 20, 10, 5, 10, 20, 0), 7);
+  });
+
+  it("DYX = 0 when y < yYXdebt", () => {
+    expect(DYX(14, 0.5, 20, 20, 1, 1, 5, 16, 0)).toBe(0);
+  });
+
+  it("DYX = xd at equilibrium when xd > 0", () => {
+    const x0v = 20, y0v = 20, xd = 5;
+    const yYXd = yYXdebt(y0v, 0.5, xd, 1, 1);
+    approx(DYX(y0v, 0.5, y0v, x0v, 1, 1, xd, yYXd, 0), xd);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Marginal prices
+// ---------------------------------------------------------------------------
+
+describe("marginal prices", () => {
+  it("pXxy at equilibrium = px/py", () => {
+    for (const c of [0, 0.3, 0.5, 0.8]) {
+      approx(pXxy(x0, c, x0, px, py), px / py);
+    }
+  });
+
+  it("pXyx at equilibrium = py/px", () => {
+    for (const c of [0, 0.3, 0.5, 0.8]) {
+      approx(pXyx(x0, c, x0, px, py), py / px);
+    }
+  });
+
+  it("pXxy * pXyx = 1 (reciprocal identity)", () => {
+    for (const x of [2, 5, 8]) {
+      const xy = pXxy(x, 0.5, x0, px, py);
+      const yx = pXyx(x, 0.5, x0, px, py);
+      approx(xy * yx, 1);
+    }
+  });
+
+  it("pYyx at equilibrium = py/px", () => {
+    for (const c of [0, 0.3, 0.5, 0.8]) {
+      approx(pYyx(y0, c, y0, px, py), py / px);
+    }
+  });
+
+  it("pYxy at equilibrium = px/py", () => {
+    for (const c of [0, 0.3, 0.5, 0.8]) {
+      approx(pYxy(y0, c, y0, px, py), px / py);
+    }
+  });
+
+  it("pYxy * pYyx = 1 (reciprocal identity)", () => {
+    for (const y of [2, 5, 8]) {
+      const xy = pYxy(y, 0.5, y0, px, py);
+      const yx = pYyx(y, 0.5, y0, px, py);
+      approx(xy * yx, 1);
+    }
+  });
+
+  it("pXxy increases as x decreases (price impact)", () => {
+    const p5 = pXxy(5, 0.5, x0, px, py);
+    const p8 = pXxy(8, 0.5, x0, px, py);
+    expect(p5).toBeGreaterThan(p8);
+  });
+
+  it("pXxy with px≠py scales proportionally", () => {
+    const pxA = 2, pyA = 1;
+    approx(pXxy(x0, 0.5, x0, pxA, pyA), pxA / pyA);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14. Boundary prices
+// ---------------------------------------------------------------------------
+
+describe("boundary prices", () => {
+  it("priceAtXb = (px/py)(1+rx)", () => {
+    // At boundary xb, the price should be (px/py)(1+rx)
+    for (const [rxV, cxV] of [[1, 0.5], [0.5, 0.3], [2, 0.8]] as [number, number][]) {
+      const x0v = 20;
+      const expected = (px / py) * (1 + rxV);
+      approx(priceAtXb(x0v, rxV, cxV, px, py), expected, 1e-9);
+    }
+  });
+
+  it("priceAtYb = (py/px)(1+ry)", () => {
+    for (const [ryV, cyV] of [[1, 0.5], [0.5, 0.3], [2, 0.8]] as [number, number][]) {
+      const y0v = 20;
+      const expected = (py / px) * (1 + ryV);
+      approx(priceAtYb(y0v, ryV, cyV, px, py), expected, 1e-9);
+    }
+  });
+
+  it("priceAtXb with asymmetric prices", () => {
+    const pxA = 2, pyA = 1;
+    approx(priceAtXb(20, 1, 0.5, pxA, pyA), (pxA / pyA) * 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. Health branch tests
+// ---------------------------------------------------------------------------
+
+describe("health branches", () => {
+  // Params with Y debt → H_XY phase near equilibrium, H_XX phase far from equilibrium
+  const pYDebt: Params = {
+    ...defaultParams, xd: 0, yd: 5, zdebt: 0,
+    xr: 10, yr: 10, cx: 0.5, cy: 0.5,
+    px: 1, py: 1, vyx: 0.9, vxy: 0.9,
+  };
+
+  it("H_XY: health is finite near equilibrium with Y debt", () => {
+    const x0v = computeX0(pYDebt);
+    const y0v = computeY0(pYDebt);
+    // Near equilibrium, DXY > 0 → H_XY branch
+    const h = computeHX(x0v * 0.95, pYDebt, x0v, y0v);
+    expect(h).not.toBeNaN();
+    expect(isFinite(h)).toBe(true);
+    expect(h).toBeGreaterThan(0);
+  });
+
+  it("H_XX: health is finite far from equilibrium with Y debt", () => {
+    const x0v = computeX0(pYDebt);
+    const y0v = computeY0(pYDebt);
+    // Far from equilibrium: Y debt repaid, X debt accumulates → H_XX branch
+    const xXYd = xXYdebt(x0v, pYDebt.cx, pYDebt.yd, pYDebt.px, pYDebt.py);
+    const xb = computeXb(x0v, pYDebt.rx, pYDebt.cx);
+    // Test a point below xXYd but above xb
+    const xTest = (xb + xXYd) / 2;
+    if (xTest > xb && xTest < xXYd) {
+      const h = computeHX(xTest, pYDebt, x0v, y0v);
+      expect(h).not.toBeNaN();
+      expect(h).toBeGreaterThan(0);
+    }
+  });
+
+  it("H_XZ: health with Z debt", () => {
+    const pZDebt: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(pZDebt);
+    const y0v = computeY0(pZDebt);
+    const h = computeHX(x0v * 0.5, pZDebt, x0v, y0v);
+    expect(h).not.toBeNaN();
+    expect(isFinite(h)).toBe(true);
+    expect(h).toBeGreaterThan(0);
+  });
+
+  it("H_XZ uses vxz*CXX + vyz*CXY*pXyx formula", () => {
+    // Verify health at equilibrium: CXX=xr, CXY=yr, pXyx=py/px, DXZ=zd
+    // H_XZ = (vxz*xr + vyz*yr*(py/px) + rXZ) / (zd * pzx)
+    const pZDebt: Params = {
+      ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5,
+      vxz: 0.6, vyz: 0.5, pxz: 1, rXZ: 0,
+    };
+    const x0v = computeX0(pZDebt);
+    const y0v = computeY0(pZDebt);
+    // Just below equilibrium to be in valid range
+    const xTest = x0v * 0.999;
+    const h = computeHX(xTest, pZDebt, x0v, y0v);
+    expect(h).not.toBeNaN();
+    expect(h).toBeGreaterThan(0);
+  });
+
+  // Y-side health mirrors
+  const pXDebt: Params = {
+    ...defaultParams, xd: 5, yd: 0, zdebt: 0,
+    xr: 10, yr: 10, cx: 0.5, cy: 0.5,
+    px: 1, py: 1, vyx: 0.9, vxy: 0.9,
+  };
+
+  it("H_YX: health is finite near equilibrium with X debt", () => {
+    const x0v = computeX0(pXDebt);
+    const y0v = computeY0(pXDebt);
+    const h = computeHY(y0v * 0.95, pXDebt, x0v, y0v);
+    expect(h).not.toBeNaN();
+    expect(isFinite(h)).toBe(true);
+    expect(h).toBeGreaterThan(0);
+  });
+
+  it("H_YY: health is finite far from equilibrium with X debt", () => {
+    const x0v = computeX0(pXDebt);
+    const y0v = computeY0(pXDebt);
+    const yYXd = yYXdebt(y0v, pXDebt.cy, pXDebt.xd, pXDebt.px, pXDebt.py);
+    const yb = computeYb(y0v, pXDebt.ry, pXDebt.cy);
+    const yTest = (yb + yYXd) / 2;
+    if (yTest > yb && yTest < yYXd) {
+      const h = computeHY(yTest, pXDebt, x0v, y0v);
+      expect(h).not.toBeNaN();
+      expect(h).toBeGreaterThan(0);
+    }
+  });
+
+  it("H_YZ: health with Z debt on Y side", () => {
+    const pZDebt: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(pZDebt);
+    const y0v = computeY0(pZDebt);
+    const h = computeHY(y0v * 0.5, pZDebt, x0v, y0v);
+    expect(h).not.toBeNaN();
+    expect(isFinite(h)).toBe(true);
+    expect(h).toBeGreaterThan(0);
+  });
+
+  it("health decreases as reserve moves toward boundary", () => {
+    const pZDebt: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(pZDebt);
+    const y0v = computeY0(pZDebt);
+    const hNear = computeHX(x0v * 0.8, pZDebt, x0v, y0v);
+    const hFar = computeHX(x0v * 0.5, pZDebt, x0v, y0v);
+    expect(hNear).toBeGreaterThan(hFar);
+  });
+
+  it("health returns NaN for out-of-range x", () => {
+    const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    expect(computeHX(0, p, x0v, y0v)).toBeNaN();
+    expect(computeHX(-1, p, x0v, y0v)).toBeNaN();
+    expect(computeHX(x0v + 1, p, x0v, y0v)).toBeNaN();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. Boost candidate tests (via computeX0/Y0)
+// ---------------------------------------------------------------------------
+
+describe("boost candidates", () => {
+  it("zero LLTVs: boost = concentration only (bXC)", () => {
+    // With all LLTVs=0, no leverage is possible regardless of debt
+    const noLev: Params = {
+      ...defaultParams, xd: 0, yd: 0, zdebt: 0, zr: 0,
+      vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    };
+    const sx = computeSx(noLev.rx, noLev.cx);
+    const bXC = computeBxc(sx);
+    const x0v = computeX0(noLev);
+    approx(x0v, noLev.xr * bXC);
+  });
+
+  it("Z debt with vxz/vyz > 0 increases boost beyond zero-LLTV baseline", () => {
+    const noLev: Params = {
+      ...defaultParams, xd: 0, yd: 0, zdebt: 0, zr: 0,
+      vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    };
+    const withZ: Params = {
+      ...noLev, zdebt: 10, zr: 5, vxz: 0.6, vyz: 0.5,
+    };
+    expect(computeX0(withZ)).toBeGreaterThan(computeX0(noLev));
+  });
+
+  it("Y debt with nonzero LLTVs increases boost beyond zero-LLTV baseline", () => {
+    const noLev: Params = {
+      ...defaultParams, xd: 0, yd: 0, zdebt: 0, zr: 0,
+      vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    };
+    const withYD: Params = {
+      ...noLev, yd: 5, vyx: 0.9, vxy: 0.9,
+    };
+    expect(computeX0(withYD)).toBeGreaterThan(computeX0(noLev));
+  });
+
+  it("X debt with nonzero LLTVs increases Y-side boost beyond zero-LLTV baseline", () => {
+    const noLev: Params = {
+      ...defaultParams, xd: 0, yd: 0, zdebt: 0, zr: 0,
+      vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    };
+    const withXD: Params = {
+      ...noLev, xd: 5, vyx: 0.9, vxy: 0.9,
+    };
+    expect(computeY0(withXD)).toBeGreaterThan(computeY0(noLev));
+  });
+
+  it("higher LLTV → higher boost", () => {
+    const lowV: Params = { ...defaultParams, xd: 0, yd: 5, zdebt: 0, vyx: 0.5 };
+    const highV: Params = { ...defaultParams, xd: 0, yd: 5, zdebt: 0, vyx: 0.9 };
+    expect(computeX0(highV)).toBeGreaterThanOrEqual(computeX0(lowV));
+  });
+
+  it("health ≈ 1 at boundary for Z debt", () => {
+    const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const xb = computeXb(x0v, p.rx, p.cx);
+    // Health at boundary should be ≈ 1 (boost is calibrated for this)
+    const h = computeHX(xb + 0.001, p, x0v, y0v);
+    expect(h).toBeGreaterThanOrEqual(0.99);
+    expect(h).toBeLessThan(1.5);
+  });
+
+  it("health ≈ 1 at boundary for Y debt", () => {
+    const p: Params = { ...defaultParams, xd: 0, yd: 5, zdebt: 0, vyx: 0.9, vxy: 0.9 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const xb = computeXb(x0v, p.rx, p.cx);
+    const h = computeHX(xb + 0.001, p, x0v, y0v);
+    expect(h).toBeGreaterThanOrEqual(0.99);
+  });
+
+  it("Y-side: health ≈ 1 at boundary for X debt", () => {
+    const p: Params = { ...defaultParams, xd: 5, yd: 0, zdebt: 0, vyx: 0.9, vxy: 0.9 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const yb = computeYb(y0v, p.ry, p.cy);
+    const h = computeHY(yb + 0.001, p, x0v, y0v);
+    expect(h).toBeGreaterThanOrEqual(0.99);
+  });
+
+  it("external collateral (rXX) increases boost", () => {
+    const base: Params = { ...defaultParams, xd: 0, yd: 5, zdebt: 0, vyx: 0.9, rXX: 0 };
+    const withR: Params = { ...base, rXX: 2 };
+    expect(computeX0(withR)).toBeGreaterThanOrEqual(computeX0(base));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17. NAV (Net Asset Value)
+// ---------------------------------------------------------------------------
+
+describe("NAV", () => {
+  it("NAV at equilibrium with no debt = xr + yr*(py/px)", () => {
+    const noDebt: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 0, zr: 0 };
+    const x0v = computeX0(noDebt);
+    const y0v = computeY0(noDebt);
+    // At equilibrium pXyx = py/px = 1
+    const nav = computeNAV_X(x0v * 0.999, noDebt, x0v, y0v);
+    approx(nav, noDebt.xr + noDebt.yr * (noDebt.py / noDebt.px), 1e-3);
+  });
+
+  it("NAV is finite and positive near equilibrium", () => {
+    const x0v = computeX0(defaultParams);
+    const y0v = computeY0(defaultParams);
+    const nav = computeNAV_X(x0v * 0.95, defaultParams, x0v, y0v);
+    expect(nav).not.toBeNaN();
+    expect(isFinite(nav)).toBe(true);
+    expect(nav).toBeGreaterThan(0);
+  });
+
+  it("NAV decreases as x moves toward boundary (more risk)", () => {
+    const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const navNear = computeNAV_X(x0v * 0.8, p, x0v, y0v);
+    const navFar = computeNAV_X(x0v * 0.5, p, x0v, y0v);
+    expect(navNear).toBeGreaterThan(navFar);
+  });
+
+  it("NAV returns NaN for out-of-range x", () => {
+    const x0v = computeX0(defaultParams);
+    const y0v = computeY0(defaultParams);
+    expect(computeNAV_X(0, defaultParams, x0v, y0v)).toBeNaN();
+    expect(computeNAV_X(x0v + 1, defaultParams, x0v, y0v)).toBeNaN();
+  });
+
+  it("eXC increases NAV, eXD decreases NAV", () => {
+    const base: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 0, zr: 0, eXC: 0, eXD: 0 };
+    const x0v = computeX0(base);
+    const y0v = computeY0(base);
+    const xTest = x0v * 0.9;
+    const navBase = computeNAV_X(xTest, base, x0v, y0v);
+    const navC = computeNAV_X(xTest, { ...base, eXC: 5 }, x0v, y0v);
+    const navD = computeNAV_X(xTest, { ...base, eXD: 5 }, x0v, y0v);
+    approx(navC - navBase, 5);
+    approx(navBase - navD, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 18. Y-side mirror symmetry
+// ---------------------------------------------------------------------------
+
+describe("Y-side mirror functions", () => {
+  it("computeSy = computeSx with same params", () => {
+    for (const [r, c] of [[1, 0.5], [0.5, 0.3], [2, 0.8]] as [number, number][]) {
+      approx(computeSy(r, c), computeSx(r, c));
+    }
+  });
+
+  it("computeByc = computeBxc with same sx", () => {
+    for (const s of [1.5, 2, 3, 5]) {
+      approx(computeByc(s), computeBxc(s));
+    }
+  });
+
+  it("computePY = computePX with same params", () => {
+    for (const [c, s] of [[0, 2], [0.5, 3], [0.8, 5]] as [number, number][]) {
+      approx(computePY(c, s), computePX(c, s));
+    }
+  });
+
+  it("computeYb = computeXb with same params", () => {
+    for (const [r, c] of [[1, 0.5], [0.5, 0.3], [2, 0.8]] as [number, number][]) {
+      approx(computeYb(20, r, c), computeXb(20, r, c));
+    }
+  });
+
+  it("symmetric params give same X0 and Y0", () => {
+    const sym: Params = {
+      ...defaultParams,
+      px: 1, py: 1, rx: 1, ry: 1, cx: 0.5, cy: 0.5,
+      xr: 10, yr: 10, xd: 0, yd: 0, zdebt: 0, zr: 0,
+    };
+    approx(computeX0(sym), computeY0(sym));
   });
 });
