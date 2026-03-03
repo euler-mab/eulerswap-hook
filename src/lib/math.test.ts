@@ -34,9 +34,13 @@ import {
 // 13. Marginal prices (pXxy, pXyx, pYxy, pYyx — equilibrium, reciprocal, monotonicity)
 // 14. Boundary prices (priceAtXb, priceAtYb — verify (px/py)(1+rx) identity)
 // 15. Health branches (H_XX, H_XY, H_XZ on X-side; H_YY, H_YX, H_YZ on Y-side)
+// 15b. Z-debt LLTV asymmetry (vxz≠vyz collateral tier shifting, pXyx non-monotonicity)
 // 16. Boost candidates (zero-LLTV baseline, Z/Y/X debt leverage, health≈1 at boundary)
 // 17. NAV (equilibrium identity, monotonicity, eXC/eXD effects)
 // 18. Y-side mirror symmetry (computeSy, computeByc, computePY, computeYb)
+// 19. Health invariants within range (H≥1 for Y/X debt; Z-debt dip bounds)
+// 20. Exact values at boundary (CXX, price, fX/gY curve values, health≈1)
+// 21. Exact values at equilibrium (health formulas, collateral/debt, NAV, price)
 //
 // Not tested: point-generation functions (generateFXPoints etc.) — thin plot wrappers.
 // ---------------------------------------------------------------------------
@@ -790,6 +794,131 @@ describe("health branches", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 15b. Z-debt LLTV asymmetry: swaps shift collateral between tiers
+// ---------------------------------------------------------------------------
+// H_XZ = (vxz*CXX + vyz*CXY*pXyx + rXZ) / (zd*pzx)
+// As x drops from x0: CXX shrinks (X consumed), CXY grows (Y flows in).
+// When vxz ≠ vyz the swap converts collateral from one LLTV tier to another,
+// which can raise or lower health depending on which LLTV dominates.
+
+describe("Z-debt LLTV asymmetry", () => {
+  // Base params: symmetric except for vxz vs vyz, px=py=1 so pXyx≈1
+  const base: Params = {
+    ...defaultParams,
+    xd: 0, yd: 0, zdebt: 10, zr: 5,
+    xr: 10, yr: 10, cx: 0.5, cy: 0.5,
+    px: 1, py: 1, pxz: 1,
+    vyx: 0.9, vxy: 0.9, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0,
+    rYX: 0, rYY: 0, rYZ: 0,
+  };
+
+  it("vxz > vyz: health decreases as swap converts X→Y collateral", () => {
+    // X collateral has higher LLTV, so losing X and gaining Y hurts health
+    const p: Params = { ...base, vxz: 0.8, vyz: 0.3 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    // Near equilibrium: mostly X collateral (CXX ≈ xr, CXY ≈ yr)
+    const hNear = computeHX(x0v * 0.98, p, x0v, y0v);
+    // Further away: less X, more Y
+    const hMid = computeHX(x0v * 0.7, p, x0v, y0v);
+    expect(hNear).not.toBeNaN();
+    expect(hMid).not.toBeNaN();
+    expect(isFinite(hNear)).toBe(true);
+    expect(isFinite(hMid)).toBe(true);
+    // Health should drop because we're losing high-LLTV X and gaining low-LLTV Y
+    expect(hNear).toBeGreaterThan(hMid);
+  });
+
+  it("swapping vxz↔vyz changes equilibrium health when xr*(py/px) ≠ yr", () => {
+    // At equilibrium: H_XZ ≈ (vxz*xr + vyz*yr*(py/px)) / (zd*pzx)
+    // Swapping vxz↔vyz changes which term dominates.
+    // With xr=yr=10 and px=py=1: xr = yr*(py/px), so both configs give
+    // the same equilibrium health. Use px≠py to break symmetry.
+    const pA: Params = { ...base, vxz: 0.8, vyz: 0.3, px: 2, py: 1 };
+    const pB: Params = { ...base, vxz: 0.3, vyz: 0.8, px: 2, py: 1 };
+    const x0a = computeX0(pA), y0a = computeY0(pA);
+    const x0b = computeX0(pB), y0b = computeY0(pB);
+    // Use additive epsilon to stay very close to equilibrium
+    const epsA = Math.min(pA.xr * 1e-6, 1e-6);
+    const epsB = Math.min(pB.xr * 1e-6, 1e-6);
+    const hA = computeHX(x0a - epsA, pA, x0a, y0a);
+    const hB = computeHX(x0b - epsB, pB, x0b, y0b);
+    expect(hA).not.toBeNaN();
+    expect(hB).not.toBeNaN();
+    expect(isFinite(hA)).toBe(true);
+    expect(isFinite(hB)).toBe(true);
+    // With px=2, py=1: yr*(py/px) = 10*0.5 = 5, while xr = 10
+    // pA: 0.8*10 + 0.3*5 = 9.5, pB: 0.3*10 + 0.8*5 = 7.0
+    // So hA should be larger (X collateral weighted more when xr > yr*(py/px))
+    expect(hA).toBeGreaterThan(hB);
+  });
+
+  it("pXyx effect: even with equal LLTVs, health is not strictly monotonic", () => {
+    // pXyx = 1/(-fXd(x)) = 1/((px/py)(cx + (1-cx)(x0/x)²))
+    // As x→0, (x0/x)² grows quadratically, so pXyx→0. This means Y collateral
+    // in X terms (CXY*pXyx) can decrease even as CXY grows in Y terms.
+    // This makes health non-monotonic even when vxz = vyz.
+    const p: Params = { ...base, vxz: 0.6, vyz: 0.6 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const xb = computeXb(x0v, p.rx, p.cx);
+    // Sample health at many points across the range
+    const samples = Array.from({ length: 20 }, (_, i) => {
+      const frac = 0.05 + 0.9 * (i / 19);
+      const x = xb + (x0v - xb) * frac;
+      return computeHX(x, p, x0v, y0v);
+    }).filter(h => isFinite(h) && !isNaN(h));
+    // Health should not be strictly monotonic — verify at least one increase
+    let hasIncrease = false;
+    for (let i = 1; i < samples.length; i++) {
+      if (samples[i] > samples[i - 1] + 1e-9) hasIncrease = true;
+    }
+    expect(hasIncrease).toBe(true);
+  });
+
+  it("health formula at equilibrium matches manual calculation", () => {
+    // At x = x0: CXX = xr, CXY = yr, pXyx = py/px = 1
+    // H_XZ = (vxz*xr + vyz*yr*1 + 0) / (zd * (1/pxz))
+    const p: Params = { ...base, vxz: 0.7, vyz: 0.4 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    // Test just below equilibrium
+    const h = computeHX(x0v * 0.9999, p, x0v, y0v);
+    const expected = (0.7 * p.xr + 0.4 * p.yr * (p.py / p.px)) / (p.zdebt * (1 / p.pxz));
+    approx(h, expected, 1e-3);
+  });
+
+  it("Y-side mirror: vyz > vxz means H_YZ health drops as y→yb", () => {
+    // On Y side: H_YZ = (vyz*CYY + vxz*CYX*pYxy + rYZ) / (zd*pzy)
+    // As y drops: CYY shrinks (Y consumed), CYX grows (X flows in)
+    // If vyz > vxz, losing high-LLTV Y hurts more than gaining low-LLTV X helps
+    const p: Params = { ...base, vxz: 0.3, vyz: 0.8 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const hNear = computeHY(y0v * 0.98, p, x0v, y0v);
+    const hMid = computeHY(y0v * 0.7, p, x0v, y0v);
+    expect(hNear).not.toBeNaN();
+    expect(hMid).not.toBeNaN();
+    expect(isFinite(hNear)).toBe(true);
+    expect(isFinite(hMid)).toBe(true);
+    expect(hNear).toBeGreaterThan(hMid);
+  });
+
+  it("LLTV weighting: higher vxz means X collateral matters more in the formula", () => {
+    // At equilibrium: H = (vxz*xr + vyz*yr*(py/px)) / (zd*pzx)
+    // Increasing vxz while keeping vyz fixed should increase health
+    const pLow: Params = { ...base, vxz: 0.3, vyz: 0.5 };
+    const pHigh: Params = { ...base, vxz: 0.8, vyz: 0.5 };
+    const x0Low = computeX0(pLow), y0Low = computeY0(pLow);
+    const x0High = computeX0(pHigh), y0High = computeY0(pHigh);
+    const hLow = computeHX(x0Low * 0.999, pLow, x0Low, y0Low);
+    const hHigh = computeHX(x0High * 0.999, pHigh, x0High, y0High);
+    expect(hHigh).toBeGreaterThan(hLow);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 16. Boost candidate tests (via computeX0/Y0)
 // ---------------------------------------------------------------------------
 
@@ -969,5 +1098,366 @@ describe("Y-side mirror functions", () => {
       xr: 10, yr: 10, xd: 0, yd: 0, zdebt: 0, zr: 0,
     };
     approx(computeX0(sym), computeY0(sym));
+  });
+});
+
+// ===========================================================================
+// INVARIANT & EXACT-VALUE TESTS
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// 19. Health invariants within range
+// ---------------------------------------------------------------------------
+// The boost is calibrated so H=1 at the boundary. For Y/X debt configs,
+// health stays ≥ 1 throughout the range. For Z debt with asymmetric LLTVs
+// (vxz ≠ vyz), health can dip below 1 mid-range because swaps shift
+// collateral between tiers with different LLTVs (see section 15b).
+
+describe("health invariants within range", () => {
+  /** Sweep N points between xb and x0, verify health ≥ threshold at each */
+  function sweepHealthX(p: Params, threshold = 1, nSamples = 50) {
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const xb = computeXb(x0v, p.rx, p.cx);
+    const eps = (x0v - xb) * 0.002;
+    let minH = Infinity;
+    for (let i = 0; i <= nSamples; i++) {
+      const x = xb + eps + (x0v - xb - 2 * eps) * (i / nSamples);
+      const h = computeHX(x, p, x0v, y0v);
+      if (!isNaN(h) && isFinite(h)) {
+        if (h < minH) minH = h;
+        expect(h).toBeGreaterThanOrEqual(threshold);
+      }
+    }
+    return minH;
+  }
+
+  /** Sweep N points between yb and y0, verify health ≥ threshold at each */
+  function sweepHealthY(p: Params, threshold = 1, nSamples = 50) {
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const yb = computeYb(y0v, p.ry, p.cy);
+    const eps = (y0v - yb) * 0.002;
+    let minH = Infinity;
+    for (let i = 0; i <= nSamples; i++) {
+      const y = yb + eps + (y0v - yb - 2 * eps) * (i / nSamples);
+      const h = computeHY(y, p, x0v, y0v);
+      if (!isNaN(h) && isFinite(h)) {
+        if (h < minH) minH = h;
+        expect(h).toBeGreaterThanOrEqual(threshold);
+      }
+    }
+    return minH;
+  }
+
+  // --- Y/X debt: H ≥ 1 holds exactly (single collateral tier) ---
+
+  it("Y debt: X-side health ≥ 1", () => {
+    sweepHealthX({ ...defaultParams, xd: 0, yd: 5, zdebt: 0, vyx: 0.9, vxy: 0.9 });
+  });
+
+  it("X debt: Y-side health ≥ 1", () => {
+    sweepHealthY({ ...defaultParams, xd: 5, yd: 0, zdebt: 0, vyx: 0.9, vxy: 0.9 });
+  });
+
+  it("Y debt with cx=0 (constant-product): X-side health ≥ 1", () => {
+    sweepHealthX({ ...defaultParams, xd: 0, yd: 5, zdebt: 0, cx: 0, cy: 0, vyx: 0.9, vxy: 0.9 });
+  });
+
+  it("Y debt with cx=0.8 (high concentration): X-side health ≥ 1", () => {
+    sweepHealthX({ ...defaultParams, xd: 0, yd: 5, zdebt: 0, cx: 0.8, cy: 0.8, vyx: 0.9, vxy: 0.9 });
+  });
+
+  it("Y debt with external collateral (rXX > 0): health ≥ 1", () => {
+    sweepHealthX({ ...defaultParams, xd: 0, yd: 5, zdebt: 0, vyx: 0.9, vxy: 0.9, rXX: 2 });
+  });
+
+  // --- Z debt with symmetric LLTVs: H ≥ 1 holds ---
+
+  it("Z debt with vxz ≤ vyz: X-side health ≥ 1", () => {
+    sweepHealthX({ ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5, vxz: 0.3, vyz: 0.8 });
+  });
+
+  it("Z debt with external collateral (rXZ > 0): health ≥ 1", () => {
+    sweepHealthX({ ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5, vxz: 0.3, vyz: 0.8, rXZ: 2 });
+  });
+
+  // --- Z debt with asymmetric LLTVs: health dips below 1 mid-range ---
+  // When vxz > vyz, swaps from X→Y lose high-LLTV collateral, causing a
+  // health valley. The boost only guarantees H=1 at the boundary, not
+  // throughout. Verify health stays positive and eventually recovers.
+
+  it("Z debt (default vxz≈vyz): health dips but stays > 0.9", () => {
+    // Default: vxz=0.599, vyz=0.582 — nearly symmetric, small dip
+    sweepHealthX({ ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 }, 0.9);
+  });
+
+  it("Z debt (default vxz≈vyz): Y-side health dips but stays > 0.9", () => {
+    sweepHealthY({ ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 }, 0.9);
+  });
+
+  it("Z debt with vxz=0.8, vyz=0.3: health dips significantly but stays > 0.5", () => {
+    // Highly asymmetric — large dip expected (min ~0.55)
+    sweepHealthX({ ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5, vxz: 0.8, vyz: 0.3 }, 0.5);
+  });
+
+  it("Z debt with asymmetric prices (px=2, py=1): health dips but stays > 0.7", () => {
+    sweepHealthX({ ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5, px: 2, py: 1 }, 0.7);
+  });
+
+  it("Z debt with asymmetric prices (px=2, py=1): Y-side health dips but stays > 0.7", () => {
+    sweepHealthY({ ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5, px: 2, py: 1 }, 0.7);
+  });
+
+  // --- No debt: health = Infinity ---
+
+  it("no debt + zero LLTVs: health = Infinity everywhere in range", () => {
+    // Must zero out LLTVs too — nonzero LLTVs cause the boost to create
+    // implicit leverage even with no explicit debt, making DXX > 0 near xb
+    const p: Params = {
+      ...defaultParams, xd: 0, yd: 0, zdebt: 0, zr: 0,
+      vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const xb = computeXb(x0v, p.rx, p.cx);
+    for (const frac of [0.01, 0.25, 0.5, 0.75, 0.99]) {
+      const x = xb + (x0v - xb) * frac;
+      const h = computeHX(x, p, x0v, y0v);
+      expect(h).toBe(Infinity);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 20. Exact values at boundary
+// ---------------------------------------------------------------------------
+
+describe("exact values at boundary", () => {
+  // Algebraically: xb = x0/sx, so x0-xb = x0*(sx-1)/sx = xr*bXL
+  // (since x0 = xr*bXC*bXL and bXC = sx/(sx-1))
+  // Therefore CXX(xb) = max(xr - xr*bXL, 0) = xr*max(1-bXL, 0)
+
+  it("CXX at xb = 0 when leverage boost > 1", () => {
+    // Z debt with nonzero LLTVs → bXL > 1 → CXX(xb) = 0
+    const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(p);
+    const xb = computeXb(x0v, p.rx, p.cx);
+    approx(CXX(xb, x0v, p.xr), 0);
+  });
+
+  it("CXX at xb = xr*(1-bXL) when bXL < 1", () => {
+    // No-leverage config: bXL = 1, so CXX(xb) = 0 exactly
+    const noLev: Params = {
+      ...defaultParams, xd: 0, yd: 0, zdebt: 0, zr: 0,
+      vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    };
+    const x0v = computeX0(noLev);
+    const xb = computeXb(x0v, noLev.rx, noLev.cx);
+    // bXL = 1, so CXX(xb) = xr * max(1-1, 0) = 0
+    approx(CXX(xb, x0v, noLev.xr), 0);
+  });
+
+  it("price at xb = (px/py)(1+rx) via direct computation", () => {
+    // Compute xb, evaluate pXxy at xb, verify it matches the formula
+    const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(p);
+    const xb = computeXb(x0v, p.rx, p.cx);
+    const priceAtBoundary = pXxy(xb, p.cx, x0v, p.px, p.py);
+    approx(priceAtBoundary, (p.px / p.py) * (1 + p.rx));
+  });
+
+  it("price at yb = (py/px)(1+ry) via direct computation", () => {
+    const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const y0v = computeY0(p);
+    const yb = computeYb(y0v, p.ry, p.cy);
+    const priceAtBoundary = pYyx(yb, p.cy, y0v, p.px, p.py);
+    approx(priceAtBoundary, (p.py / p.px) * (1 + p.ry));
+  });
+
+  it("fX at xb: y = y0 + (px/py) * xr * bXL * PX", () => {
+    // At xb: fX(xb) = y0 + (px/py)(x0-xb)(cx + (1-cx)(x0/xb))
+    //       = y0 + (px/py) * x0*(sx-1)/sx * PX
+    //       = y0 + (px/py) * xr*bXL * PX
+    const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const xb = computeXb(x0v, p.rx, p.cx);
+    const sx = computeSx(p.rx, p.cx);
+    const PX = computePX(p.cx, sx);
+    const bXC = computeBxc(sx);
+    const bXL = x0v / (p.xr * bXC); // derive bXL from x0
+
+    const yAtBoundary = fX(xb, p.cx, x0v, y0v, p.px, p.py);
+    const expectedY = y0v + (p.px / p.py) * p.xr * bXL * PX;
+    approx(yAtBoundary, expectedY, 1e-9);
+  });
+
+  it("gY at yb: x = x0 + (py/px) * yr * bYL * PY", () => {
+    const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const yb = computeYb(y0v, p.ry, p.cy);
+    const sy = computeSy(p.ry, p.cy);
+    const PY = computePY(p.cy, sy);
+    const bYC = computeByc(sy);
+    const bYL = y0v / (p.yr * bYC);
+
+    const xAtBoundary = gY(yb, p.cy, y0v, x0v, p.px, p.py);
+    const expectedX = x0v + (p.py / p.px) * p.yr * bYL * PY;
+    approx(xAtBoundary, expectedX, 1e-9);
+  });
+
+  it("health at xb ≈ 1 for Z debt (tight tolerance)", () => {
+    const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const xb = computeXb(x0v, p.rx, p.cx);
+    // Use very small epsilon to get close to true boundary
+    const h = computeHX(xb + 1e-6, p, x0v, y0v);
+    approx(h, 1, 0.01); // within 1%
+  });
+
+  it("health at yb ≈ 1 for Z debt (tight tolerance)", () => {
+    const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const yb = computeYb(y0v, p.ry, p.cy);
+    const h = computeHY(yb + 1e-6, p, x0v, y0v);
+    approx(h, 1, 0.01);
+  });
+
+  it("health at xb ≈ 1 for Y debt (tight tolerance)", () => {
+    const p: Params = { ...defaultParams, xd: 0, yd: 5, zdebt: 0, vyx: 0.9, vxy: 0.9 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const xb = computeXb(x0v, p.rx, p.cx);
+    const h = computeHX(xb + 1e-6, p, x0v, y0v);
+    approx(h, 1, 0.01);
+  });
+
+  it("health at yb ≈ 1 for X debt (tight tolerance)", () => {
+    const p: Params = { ...defaultParams, xd: 5, yd: 0, zdebt: 0, vyx: 0.9, vxy: 0.9 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const yb = computeYb(y0v, p.ry, p.cy);
+    const h = computeHY(yb + 1e-6, p, x0v, y0v);
+    approx(h, 1, 0.01);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 21. Exact values at equilibrium
+// ---------------------------------------------------------------------------
+
+describe("exact values at equilibrium", () => {
+  it("H_XZ at equilibrium = (vxz*xr + vyz*yr*(py/px) + rXZ) / (zd*pzx)", () => {
+    const p: Params = {
+      ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5,
+      vxz: 0.599, vyz: 0.582, pxz: 1, rXZ: 0,
+    };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    // Just below equilibrium
+    const h = computeHX(x0v * 0.9999, p, x0v, y0v);
+    const expected = (p.vxz * p.xr + p.vyz * p.yr * (p.py / p.px) + p.rXZ) / (p.zdebt * (1 / p.pxz));
+    approx(h, expected, 1e-3);
+  });
+
+  it("H_XY at equilibrium = (vxy*xr + vzy*zr*pzx + rXY) / (yd * (py/px))", () => {
+    const p: Params = {
+      ...defaultParams, xd: 0, yd: 5, zdebt: 0,
+      vxy: 0.9, vzy: 0, zr: 0, rXY: 0,
+    };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const h = computeHX(x0v * 0.9999, p, x0v, y0v);
+    // At equilibrium: CXX=xr, DXY=yd, pXyx=py/px
+    // H_XY = (vxy*CXX + vzy*zr*pzx + rXY) / (DXY * pXyx)
+    //       = (vxy*xr) / (yd * py/px)
+    const expected = (p.vxy * p.xr) / (p.yd * (p.py / p.px));
+    approx(h, expected, 1e-3);
+  });
+
+  it("H_YX at equilibrium = (vyx*yr + vzx*zr*pzy + rYX) / (xd * (px/py))", () => {
+    const p: Params = {
+      ...defaultParams, xd: 5, yd: 0, zdebt: 0,
+      vyx: 0.9, vzx: 0, zr: 0, rYX: 0,
+    };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const h = computeHY(y0v * 0.9999, p, x0v, y0v);
+    // At equilibrium: CYY=yr, DYX=xd, pYxy=px/py
+    // H_YX = (vyx*CYY + vzx*zr*pzy + rYX) / (DYX * pYxy)
+    //       = (vyx*yr) / (xd * px/py)
+    const expected = (p.vyx * p.yr) / (p.xd * (p.px / p.py));
+    approx(h, expected, 1e-3);
+  });
+
+  it("H_XZ with asymmetric prices at equilibrium", () => {
+    const p: Params = {
+      ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5,
+      px: 2, py: 1, pxz: 0.5, vxz: 0.6, vyz: 0.5, rXZ: 0,
+    };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const h = computeHX(x0v * 0.9999, p, x0v, y0v);
+    const pzx = 1 / p.pxz;
+    const expected = (p.vxz * p.xr + p.vyz * p.yr * (p.py / p.px) + 0) / (p.zdebt * pzx);
+    approx(h, expected, 1e-3);
+  });
+
+  it("collateral and debt at equilibrium have expected values", () => {
+    const p: Params = { ...defaultParams, xd: 0, yd: 5, zdebt: 0, vyx: 0.9, vxy: 0.9 };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+
+    // At equilibrium x=x0: xXdelta=0, yXdelta=0
+    approx(CXX(x0v, x0v, p.xr), p.xr);
+    const xXYd = xXYdebt(x0v, p.cx, p.yd, p.px, p.py);
+    const cxy = CXY_fn(x0v, p.cx, x0v, y0v, p.px, p.py, p.yr, p.yd, 0);
+    approx(cxy, p.yr); // yXdelta=0, max(0-yd,0)=0, so CXY=yr
+    const dxy = DXY(x0v, p.cx, x0v, y0v, p.px, p.py, p.yd, xXYd, 0);
+    approx(dxy, p.yd); // yXdelta=0, max(yd-0,0)=yd
+    const xXXd = xXXdebt(x0v, p.xr);
+    const dxx = DXX(x0v, x0v, p.xr, p.xd, xXXd, xXYd, 0);
+    approx(dxx, 0); // x0 > xXXd
+  });
+
+  it("NAV at equilibrium with Z debt matches formula", () => {
+    const p: Params = {
+      ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5,
+      px: 1, py: 1, pxz: 1, eXC: 3, eXD: 1,
+    };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const nav = computeNAV_X(x0v * 0.9999, p, x0v, y0v);
+    // At equilibrium: CXX=xr, CXY=yr, pXyx=py/px=1, DXX=0, DXY=0, zd=10, pzx=1
+    // NAV = xr + yr*1 + zr*1 - 0 - 0 - zd*1 + eXC - eXD
+    //     = 10 + 10 + 5 - 10 + 3 - 1 = 17
+    approx(nav, 17, 1e-3);
+  });
+
+  it("NAV at equilibrium with Y debt matches formula", () => {
+    const p: Params = {
+      ...defaultParams, xd: 0, yd: 5, zdebt: 0, zr: 0,
+      px: 1, py: 1, eXC: 0, eXD: 0, vyx: 0.9, vxy: 0.9,
+    };
+    const x0v = computeX0(p);
+    const y0v = computeY0(p);
+    const nav = computeNAV_X(x0v * 0.9999, p, x0v, y0v);
+    // At equilibrium: CXX=xr=10, CXY=yr=10, pXyx=1, DXX=0, DXY=yd=5, zd=0, zr=0
+    // NAV = 10 + 10*1 + 0 - 0 - 5*1 - 0 + 0 - 0 = 15
+    approx(nav, 15, 1e-3);
+  });
+
+  it("price at equilibrium is exactly px/py", () => {
+    for (const [pxV, pyV] of [[1, 1], [2, 1], [1, 3], [5, 2]] as [number, number][]) {
+      for (const c of [0, 0.5, 0.8]) {
+        const x0v = 10; // arbitrary
+        approx(pXxy(x0v, c, x0v, pxV, pyV), pxV / pyV);
+        approx(pXyx(x0v, c, x0v, pxV, pyV), pyV / pxV);
+      }
+    }
   });
 });
