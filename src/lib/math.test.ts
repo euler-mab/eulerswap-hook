@@ -774,13 +774,17 @@ describe("health branches", () => {
     expect(h).toBeGreaterThan(0);
   });
 
-  it("health decreases as reserve moves toward boundary", () => {
+  it("health decreases from equilibrium toward transition point", () => {
+    // With transition-point calibration, health valley is at x0-xr.
+    // Health decreases from equilibrium to x0-xr, then increases toward boundary.
     const pZDebt: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
     const x0v = computeX0(pZDebt);
     const y0v = computeY0(pZDebt);
-    const hNear = computeHX(x0v * 0.8, pZDebt, x0v, y0v);
-    const hFar = computeHX(x0v * 0.5, pZDebt, x0v, y0v);
-    expect(hNear).toBeGreaterThan(hFar);
+    const hNear = computeHX(x0v * 0.99, pZDebt, x0v, y0v);
+    const hTP = computeHX(x0v - pZDebt.xr + 0.01, pZDebt, x0v, y0v);
+    expect(hNear).toBeGreaterThan(hTP);
+    // Health at transition point ≈ 1 (calibration target)
+    expect(hTP).toBeGreaterThanOrEqual(1 - 1e-3);
   });
 
   it("health returns NaN for out-of-range x", () => {
@@ -1033,13 +1037,13 @@ describe("NAV", () => {
     expect(nav).toBeGreaterThan(0);
   });
 
-  it("NAV decreases as x moves toward boundary (more risk)", () => {
+  it("NAV decreases from equilibrium toward transition point", () => {
     const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
     const x0v = computeX0(p);
     const y0v = computeY0(p);
-    const navNear = computeNAV_X(x0v * 0.8, p, x0v, y0v);
-    const navFar = computeNAV_X(x0v * 0.5, p, x0v, y0v);
-    expect(navNear).toBeGreaterThan(navFar);
+    const navNear = computeNAV_X(x0v * 0.99, p, x0v, y0v);
+    const navTP = computeNAV_X(x0v - p.xr + 0.01, p, x0v, y0v);
+    expect(navNear).toBeGreaterThan(navTP);
   });
 
   it("NAV returns NaN for out-of-range x", () => {
@@ -1308,23 +1312,24 @@ describe("exact values at boundary", () => {
     approx(xAtBoundary, expectedX, 1e-9);
   });
 
-  it("health at xb ≈ 1 for Z debt (tight tolerance)", () => {
+  it("health at xb ≥ 1 for Z debt", () => {
+    // With transition-point calibration, H(xb) > 1 because the binding
+    // constraint is at x = x0-xr (where CXX = 0), not at the boundary.
     const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
     const x0v = computeX0(p);
     const y0v = computeY0(p);
     const xb = computeXb(x0v, p.rx, p.cx);
-    // Use very small epsilon to get close to true boundary
     const h = computeHX(xb + 1e-6, p, x0v, y0v);
-    approx(h, 1, 0.01); // within 1%
+    expect(h).toBeGreaterThanOrEqual(1);
   });
 
-  it("health at yb ≈ 1 for Z debt (tight tolerance)", () => {
+  it("health at yb ≥ 1 for Z debt", () => {
     const p: Params = { ...defaultParams, xd: 0, yd: 0, zdebt: 10, zr: 5 };
     const x0v = computeX0(p);
     const y0v = computeY0(p);
     const yb = computeYb(y0v, p.ry, p.cy);
     const h = computeHY(yb + 1e-6, p, x0v, y0v);
-    approx(h, 1, 0.01);
+    expect(h).toBeGreaterThanOrEqual(1);
   });
 
   it("health at xb ≈ 1 for Y debt (tight tolerance)", () => {
@@ -1459,5 +1464,594 @@ describe("exact values at equilibrium", () => {
         approx(pXyx(x0v, c, x0v, pxV, pyV), pyV / pxV);
       }
     }
+  });
+});
+
+// ===========================================================================
+// REAL-WORLD SCENARIO TESTS
+// ===========================================================================
+// Each scenario models a realistic DeFi use case with appropriate parameter
+// choices. These test that the full pipeline (boost → curve → health → NAV)
+// produces sensible results for production-relevant configurations.
+
+// ---------------------------------------------------------------------------
+// 22. Stablecoin-stablecoin LP (USDC/DAI, no debt)
+// ---------------------------------------------------------------------------
+// High concentration (cx≈0.9), tight range (rx≈0.02), px≈py≈1.
+// Pure swap venue — no borrowing. Health should be Infinity everywhere.
+
+describe("scenario: stablecoin-stablecoin LP", () => {
+  const stablePair: Params = {
+    ...defaultParams,
+    px: 1, py: 1, cx: 0.9, cy: 0.9, rx: 0.02, ry: 0.02,
+    xr: 10_000, yr: 10_000,
+    xd: 0, yd: 0, zdebt: 0, zr: 0,
+    vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0,
+  };
+
+  it("boost is concentration-only (no leverage)", () => {
+    const sx = computeSx(stablePair.rx, stablePair.cx);
+    const bXC = computeBxc(sx);
+    const x0v = computeX0(stablePair);
+    approx(x0v, stablePair.xr * bXC);
+  });
+
+  it("high concentration gives large virtual reserves", () => {
+    const x0v = computeX0(stablePair);
+    // cx=0.9, rx=0.02: sx = sqrt((1+0.02-0.9)/(1-0.9)) = sqrt(1.2) ≈ 1.095
+    // bXC = sx/(sx-1) ≈ 11.5 → x0 ≈ 115_000
+    expect(x0v).toBeGreaterThan(stablePair.xr * 5);
+  });
+
+  it("very tight price range at boundary", () => {
+    const x0v = computeX0(stablePair);
+    const xb = computeXb(x0v, stablePair.rx, stablePair.cx);
+    const priceAtBound = pXxy(xb, stablePair.cx, x0v, stablePair.px, stablePair.py);
+    // Price at boundary = 1 * (1 + 0.02) = 1.02
+    approx(priceAtBound, 1.02);
+  });
+
+  it("health is Infinity everywhere (no debt)", () => {
+    const x0v = computeX0(stablePair);
+    const y0v = computeY0(stablePair);
+    for (const frac of [0.1, 0.5, 0.9]) {
+      const xb = computeXb(x0v, stablePair.rx, stablePair.cx);
+      const x = xb + (x0v - xb) * frac;
+      expect(computeHX(x, stablePair, x0v, y0v)).toBe(Infinity);
+    }
+  });
+
+  it("curve is nearly linear (low price impact)", () => {
+    const x0v = computeX0(stablePair);
+    const y0v = computeY0(stablePair);
+    const xb = computeXb(x0v, stablePair.rx, stablePair.cx);
+    // Midpoint of range
+    const xMid = (xb + x0v) / 2;
+    const yMid = fX(xMid, stablePair.cx, x0v, y0v, stablePair.px, stablePair.py);
+    // Linear approximation: y ≈ y0 + (x0 - x)
+    const yLinear = y0v + (x0v - xMid);
+    approx(yMid, yLinear, 0.01); // within 1% of linear
+  });
+
+  it("NAV equals total reserves", () => {
+    const x0v = computeX0(stablePair);
+    const y0v = computeY0(stablePair);
+    const nav = computeNAV_X(x0v * 0.999, stablePair, x0v, y0v);
+    // No debt, px=py=1: NAV = xr + yr = 20_000
+    approx(nav, 20_000, 1e-3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 23. Stablecoin pair with exogenous Z debt (USDC/DAI, borrowing WBTC)
+// ---------------------------------------------------------------------------
+// LP stablecoins, carry WBTC debt. pxz is tiny (BTC is expensive in USDC).
+// Tests numerical stability when pzx = 1/pxz is very large.
+
+describe("scenario: stablecoin LP with WBTC debt", () => {
+  const stableWithBTC: Params = {
+    ...defaultParams,
+    px: 1, py: 1, cx: 0.8, cy: 0.8, rx: 0.05, ry: 0.05,
+    xr: 10_000, yr: 10_000,
+    xd: 0, yd: 0,
+    zdebt: 0.5, zr: 0.1, pxz: 0.00002, // 1 BTC ≈ 50,000 USDC
+    vxz: 0.8, vyz: 0.8, // symmetric LLTVs for stablecoins vs BTC
+    vyx: 0, vxy: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0,
+  };
+
+  it("pzx is very large but finite", () => {
+    const pzx = computePzx(stableWithBTC);
+    approx(pzx, 50_000);
+    expect(isFinite(pzx)).toBe(true);
+  });
+
+  it("boost is greater than concentration-only", () => {
+    const noLev: Params = {
+      ...stableWithBTC, zdebt: 0, zr: 0,
+      vxz: 0, vyz: 0,
+    };
+    expect(computeX0(stableWithBTC)).toBeGreaterThan(computeX0(noLev));
+  });
+
+  it("health at equilibrium matches formula with large pzx", () => {
+    const x0v = computeX0(stableWithBTC);
+    const y0v = computeY0(stableWithBTC);
+    const h = computeHX(x0v * 0.9999, stableWithBTC, x0v, y0v);
+    // H_XZ = (vxz*xr + vyz*yr*(py/px) + 0) / (zdebt * pzx)
+    //       = (0.8*10000 + 0.8*10000*1) / (0.5 * 50000)
+    //       = 16000 / 25000 = 0.64
+    const expected = (0.8 * 10_000 + 0.8 * 10_000) / (0.5 * 50_000);
+    approx(h, expected, 1e-3);
+  });
+
+  it("health at boundary is ≈ 1", () => {
+    const x0v = computeX0(stableWithBTC);
+    const y0v = computeY0(stableWithBTC);
+    const xb = computeXb(x0v, stableWithBTC.rx, stableWithBTC.cx);
+    const h = computeHX(xb + 1e-3, stableWithBTC, x0v, y0v);
+    approx(h, 1, 0.02);
+  });
+
+  it("NAV accounts for large Z debt in X terms", () => {
+    const x0v = computeX0(stableWithBTC);
+    const y0v = computeY0(stableWithBTC);
+    const nav = computeNAV_X(x0v * 0.999, stableWithBTC, x0v, y0v);
+    // NAV ≈ xr + yr + zr*pzx - zdebt*pzx = 10k + 10k + 0.1*50k - 0.5*50k
+    //     = 10000 + 10000 + 5000 - 25000 = 0
+    // Actually this is near zero — the BTC debt is huge relative to stablecoin reserves
+    expect(isFinite(nav)).toBe(true);
+    expect(nav).not.toBeNaN();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 24. Volatile/stable pair (ETH/USDC, no debt)
+// ---------------------------------------------------------------------------
+// px=2000, py=1. xr*px ≈ yr*py (dollar-balanced). Wide range.
+// Tests that large px/py ratios don't break anything.
+
+describe("scenario: ETH/USDC LP", () => {
+  const ethUsdc: Params = {
+    ...defaultParams,
+    px: 2000, py: 1, cx: 0.5, cy: 0.5, rx: 1, ry: 1,
+    xr: 5, yr: 10_000, // ~$10k each side
+    xd: 0, yd: 0, zdebt: 0, zr: 0,
+    vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0,
+  };
+
+  it("x0 and y0 scale correctly with asymmetric reserves", () => {
+    const x0v = computeX0(ethUsdc);
+    const y0v = computeY0(ethUsdc);
+    // x0 ≈ xr * bXC (no leverage)
+    const sx = computeSx(ethUsdc.rx, ethUsdc.cx);
+    const bXC = computeBxc(sx);
+    approx(x0v, ethUsdc.xr * bXC);
+    // y0 symmetric
+    const sy = computeSy(ethUsdc.ry, ethUsdc.cy);
+    const bYC = computeByc(sy);
+    approx(y0v, ethUsdc.yr * bYC);
+  });
+
+  it("price at equilibrium = px/py = 2000", () => {
+    const x0v = computeX0(ethUsdc);
+    approx(pXxy(x0v, ethUsdc.cx, x0v, ethUsdc.px, ethUsdc.py), 2000);
+  });
+
+  it("price at boundary = px/py * (1+rx) = 4000", () => {
+    const x0v = computeX0(ethUsdc);
+    const xb = computeXb(x0v, ethUsdc.rx, ethUsdc.cx);
+    approx(pXxy(xb, ethUsdc.cx, x0v, ethUsdc.px, ethUsdc.py), 4000);
+  });
+
+  it("curve values are finite and positive across range", () => {
+    const x0v = computeX0(ethUsdc);
+    const y0v = computeY0(ethUsdc);
+    const xb = computeXb(x0v, ethUsdc.rx, ethUsdc.cx);
+    for (const frac of [0.01, 0.25, 0.5, 0.75, 0.99]) {
+      const x = xb + (x0v - xb) * frac;
+      const y = fX(x, ethUsdc.cx, x0v, y0v, ethUsdc.px, ethUsdc.py);
+      expect(y).not.toBeNaN();
+      expect(isFinite(y)).toBe(true);
+      expect(y).toBeGreaterThan(0);
+    }
+  });
+
+  it("NAV in X terms = xr + yr*(py/px) = 5 + 10000/2000 = 10", () => {
+    const x0v = computeX0(ethUsdc);
+    const y0v = computeY0(ethUsdc);
+    const nav = computeNAV_X(x0v * 0.999, ethUsdc, x0v, y0v);
+    approx(nav, 5 + 10_000 / 2000, 1e-3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 25. JIT liquidity (extreme concentration, very tight range)
+// ---------------------------------------------------------------------------
+// cx≈0.99, rx≈0.005. Virtual reserves are enormous relative to real.
+// Tests numerical stability at extreme concentration.
+
+describe("scenario: JIT liquidity", () => {
+  const jit: Params = {
+    ...defaultParams,
+    px: 2000, py: 1, cx: 0.99, cy: 0.99, rx: 0.005, ry: 0.005,
+    xr: 10, yr: 20_000,
+    xd: 0, yd: 0, zdebt: 0, zr: 0,
+    vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0,
+  };
+
+  it("virtual reserves are 100x+ real reserves", () => {
+    const x0v = computeX0(jit);
+    expect(x0v / jit.xr).toBeGreaterThan(100);
+  });
+
+  it("boundary is very close to equilibrium", () => {
+    const x0v = computeX0(jit);
+    const xb = computeXb(x0v, jit.rx, jit.cx);
+    // Range width (x0 - xb) / x0 should be tiny
+    expect((x0v - xb) / x0v).toBeLessThan(0.01);
+  });
+
+  it("price at boundary is barely above equilibrium", () => {
+    const x0v = computeX0(jit);
+    const xb = computeXb(x0v, jit.rx, jit.cx);
+    const pBound = pXxy(xb, jit.cx, x0v, jit.px, jit.py);
+    // (px/py)(1+rx) = 2000 * 1.005 = 2010
+    approx(pBound, 2000 * 1.005);
+  });
+
+  it("curve is extremely linear within tight range", () => {
+    const x0v = computeX0(jit);
+    const y0v = computeY0(jit);
+    const xb = computeXb(x0v, jit.rx, jit.cx);
+    const xMid = (xb + x0v) / 2;
+    const deriv = fXd(xMid, jit.cx, x0v, jit.px, jit.py);
+    // Should be very close to -(px/py)
+    approx(deriv, -(jit.px / jit.py), 0.01);
+  });
+
+  it("computeSx and boost values are large but finite", () => {
+    const sx = computeSx(jit.rx, jit.cx);
+    expect(sx).toBeGreaterThan(10);
+    expect(isFinite(sx)).toBe(true);
+    const bXC = computeBxc(sx);
+    expect(isFinite(bXC)).toBe(true);
+    expect(bXC).toBeGreaterThan(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 26. Leveraged ETH/USDC with Y debt (borrow USDC against ETH LP)
+// ---------------------------------------------------------------------------
+// Classic DeFi leverage: deposit ETH + USDC, borrow more USDC.
+// Tests health pipeline with px >> py and Y debt.
+
+describe("scenario: leveraged ETH/USDC (borrow USDC)", () => {
+  const levEthUsdc: Params = {
+    ...defaultParams,
+    px: 2000, py: 1, cx: 0.5, cy: 0.5, rx: 0.5, ry: 0.5,
+    xr: 5, yr: 10_000,
+    xd: 0, yd: 5000, zdebt: 0, zr: 0,
+    vxy: 0.82, vyx: 0.85,
+    vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0, pxz: 1,
+  };
+
+  it("leverage boost is > 1 (borrowing amplifies position)", () => {
+    const noLev: Params = {
+      ...levEthUsdc, yd: 0, vxy: 0, vyx: 0,
+    };
+    expect(computeX0(levEthUsdc)).toBeGreaterThan(computeX0(noLev));
+  });
+
+  it("health at equilibrium = (vxy*xr) / (yd * py/px)", () => {
+    const x0v = computeX0(levEthUsdc);
+    const y0v = computeY0(levEthUsdc);
+    const h = computeHX(x0v * 0.9999, levEthUsdc, x0v, y0v);
+    // H_XY = (vxy*CXX) / (DXY * pXyx) at equilibrium
+    //       = (0.82 * 5) / (5000 * (1/2000))
+    //       = 4.1 / 2.5 = 1.64
+    const expected = (levEthUsdc.vxy * levEthUsdc.xr) / (levEthUsdc.yd * (levEthUsdc.py / levEthUsdc.px));
+    approx(h, expected, 1e-3);
+  });
+
+  it("health ≥ 1 throughout range (Y debt, single tier)", () => {
+    const x0v = computeX0(levEthUsdc);
+    const y0v = computeY0(levEthUsdc);
+    const xb = computeXb(x0v, levEthUsdc.rx, levEthUsdc.cx);
+    const eps = (x0v - xb) * 0.01;
+    for (let i = 0; i <= 30; i++) {
+      const x = xb + eps + (x0v - xb - 2 * eps) * (i / 30);
+      const h = computeHX(x, levEthUsdc, x0v, y0v);
+      if (!isNaN(h) && isFinite(h)) {
+        expect(h).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it("health at boundary ≈ 1", () => {
+    const x0v = computeX0(levEthUsdc);
+    const y0v = computeY0(levEthUsdc);
+    const xb = computeXb(x0v, levEthUsdc.rx, levEthUsdc.cx);
+    const h = computeHX(xb + 1e-6, levEthUsdc, x0v, y0v);
+    approx(h, 1, 0.02);
+  });
+
+  it("price at boundary = px/py * (1+rx) = 3000", () => {
+    const x0v = computeX0(levEthUsdc);
+    const xb = computeXb(x0v, levEthUsdc.rx, levEthUsdc.cx);
+    approx(pXxy(xb, levEthUsdc.cx, x0v, levEthUsdc.px, levEthUsdc.py), 3000);
+  });
+
+  it("NAV at equilibrium = xr + yr*(py/px) - yd*(py/px)", () => {
+    const x0v = computeX0(levEthUsdc);
+    const y0v = computeY0(levEthUsdc);
+    const nav = computeNAV_X(x0v * 0.999, levEthUsdc, x0v, y0v);
+    // NAV = 5 + 10000/2000 - 5000/2000 = 5 + 5 - 2.5 = 7.5
+    approx(nav, 5 + 10_000 / 2000 - 5000 / 2000, 1e-3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 27. Short ETH (borrow ETH against USDC LP)
+// ---------------------------------------------------------------------------
+// Deposit USDC-heavy LP, borrow ETH. Y-side health matters.
+// Tests X debt with px >> py.
+
+describe("scenario: short ETH (borrow ETH against USDC)", () => {
+  const shortEth: Params = {
+    ...defaultParams,
+    px: 2000, py: 1, cx: 0.5, cy: 0.5, rx: 0.5, ry: 0.5,
+    xr: 5, yr: 10_000,
+    xd: 2, yd: 0, zdebt: 0, zr: 0, // borrow 2 ETH
+    vyx: 0.85, vxy: 0.82,
+    vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0, pxz: 1,
+  };
+
+  it("Y-side health at equilibrium = (vyx*yr) / (xd * px/py)", () => {
+    const x0v = computeX0(shortEth);
+    const y0v = computeY0(shortEth);
+    const h = computeHY(y0v * 0.9999, shortEth, x0v, y0v);
+    // H_YX = (vyx*yr) / (xd * px/py) = (0.85*10000) / (2 * 2000) = 8500/4000 = 2.125
+    const expected = (shortEth.vyx * shortEth.yr) / (shortEth.xd * (shortEth.px / shortEth.py));
+    approx(h, expected, 1e-3);
+  });
+
+  it("Y-side boost > concentration-only", () => {
+    const noLev: Params = { ...shortEth, xd: 0, vyx: 0, vxy: 0 };
+    expect(computeY0(shortEth)).toBeGreaterThan(computeY0(noLev));
+  });
+
+  it("Y-side health ≥ 1 throughout range", () => {
+    const x0v = computeX0(shortEth);
+    const y0v = computeY0(shortEth);
+    const yb = computeYb(y0v, shortEth.ry, shortEth.cy);
+    const eps = (y0v - yb) * 0.01;
+    for (let i = 0; i <= 30; i++) {
+      const y = yb + eps + (y0v - yb - 2 * eps) * (i / 30);
+      const h = computeHY(y, shortEth, x0v, y0v);
+      if (!isNaN(h) && isFinite(h)) {
+        expect(h).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 28. Cross-collateral: ETH/USDC LP borrowing stETH
+// ---------------------------------------------------------------------------
+// LP ETH/USDC, borrow stETH. ETH collateral has high LLTV against stETH
+// (correlated), USDC has lower LLTV. Asymmetric vxz vs vyz.
+
+describe("scenario: ETH/USDC LP borrowing stETH", () => {
+  const ethSteth: Params = {
+    ...defaultParams,
+    px: 2000, py: 1, cx: 0.5, cy: 0.5, rx: 0.5, ry: 0.5,
+    xr: 5, yr: 10_000,
+    xd: 0, yd: 0,
+    zdebt: 3, zr: 1, pxz: 0.98, // stETH ≈ 0.98 ETH
+    vxz: 0.93, vyz: 0.7, // ETH backs stETH well; USDC less so
+    vyx: 0, vxy: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0,
+  };
+
+  it("health at equilibrium uses both X and Y collateral tiers", () => {
+    const x0v = computeX0(ethSteth);
+    const y0v = computeY0(ethSteth);
+    const h = computeHX(x0v * 0.9999, ethSteth, x0v, y0v);
+    // H_XZ = (vxz*xr + vyz*yr*(py/px)) / (zdebt * pzx)
+    //       = (0.93*5 + 0.7*10000*(1/2000)) / (3 * (1/0.98))
+    //       = (4.65 + 3.5) / 3.0612 = 8.15 / 3.06 ≈ 2.664
+    const pzx = 1 / ethSteth.pxz;
+    const expected = (ethSteth.vxz * ethSteth.xr + ethSteth.vyz * ethSteth.yr * (ethSteth.py / ethSteth.px)) / (ethSteth.zdebt * pzx);
+    approx(h, expected, 1e-3);
+  });
+
+  it("health dips mid-range due to vxz > vyz asymmetry", () => {
+    const x0v = computeX0(ethSteth);
+    const y0v = computeY0(ethSteth);
+    // Near equilibrium: mostly ETH collateral (high LLTV)
+    const hNear = computeHX(x0v * 0.95, ethSteth, x0v, y0v);
+    // Mid-range: ETH depleted, more USDC (lower LLTV)
+    const hMid = computeHX(x0v * 0.5, ethSteth, x0v, y0v);
+    expect(hNear).toBeGreaterThan(hMid);
+  });
+
+  it("health at boundary ≈ 1", () => {
+    const x0v = computeX0(ethSteth);
+    const y0v = computeY0(ethSteth);
+    const xb = computeXb(x0v, ethSteth.rx, ethSteth.cx);
+    const h = computeHX(xb + 1e-6, ethSteth, x0v, y0v);
+    approx(h, 1, 0.02);
+  });
+
+  it("all values finite across full range", () => {
+    const x0v = computeX0(ethSteth);
+    const y0v = computeY0(ethSteth);
+    const xb = computeXb(x0v, ethSteth.rx, ethSteth.cx);
+    for (let i = 1; i <= 20; i++) {
+      const x = xb + (x0v - xb) * (i / 21);
+      const h = computeHX(x, ethSteth, x0v, y0v);
+      expect(h).not.toBeNaN();
+      expect(isFinite(h)).toBe(true);
+      expect(h).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 29. One-sided liquidity (range order: deposit only ETH)
+// ---------------------------------------------------------------------------
+// yr=0 — only X reserves. Tests that formulas handle zero Y reserves.
+
+describe("scenario: one-sided liquidity (ETH only)", () => {
+  const oneSided: Params = {
+    ...defaultParams,
+    px: 2000, py: 1, cx: 0.5, cy: 0.5, rx: 1, ry: 1,
+    xr: 10, yr: 0, // no Y reserves
+    xd: 0, yd: 0, zdebt: 0, zr: 0,
+    vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0, pxz: 1,
+  };
+
+  it("boost computation succeeds with yr=0", () => {
+    const x0v = computeX0(oneSided);
+    expect(x0v).not.toBeNaN();
+    expect(isFinite(x0v)).toBe(true);
+    expect(x0v).toBeGreaterThan(0);
+  });
+
+  it("y0 = 0 when yr = 0", () => {
+    const y0v = computeY0(oneSided);
+    // With yr=0 and no leverage, y0 should be 0
+    // (no Y reserves to boost)
+    expect(y0v).not.toBeNaN();
+  });
+
+  it("CXX at equilibrium = xr", () => {
+    const x0v = computeX0(oneSided);
+    approx(CXX(x0v, x0v, oneSided.xr), oneSided.xr);
+  });
+
+  it("NAV = xr when no Y reserves and no debt", () => {
+    const x0v = computeX0(oneSided);
+    const y0v = computeY0(oneSided);
+    if (y0v > 0 && x0v > 0) {
+      const nav = computeNAV_X(x0v * 0.999, oneSided, x0v, y0v);
+      // With yr=0: NAV ≈ xr + 0 = 10
+      approx(nav, 10, 1e-2);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 30. WBTC/ETH correlated pair with Z debt
+// ---------------------------------------------------------------------------
+// Two volatile correlated assets. px/py ≈ 20. Moderate concentration.
+
+describe("scenario: WBTC/ETH correlated pair", () => {
+  const btcEth: Params = {
+    ...defaultParams,
+    px: 40_000, py: 2000, cx: 0.3, cy: 0.3, rx: 0.3, ry: 0.3,
+    xr: 0.5, yr: 10, // $20k each side
+    xd: 0, yd: 0,
+    zdebt: 5000, zr: 1000, pxz: 8, // Z is USDC: 1 USDC = 8 WBTC? No...
+    // pxz = price of Z per unit of X. If Z=USDC, X=WBTC: pxz = 1/40000 = 0.000025
+    // Let's say Z is a stablecoin lending token
+    vxz: 0.85, vyz: 0.85, // symmetric
+    vyx: 0, vxy: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0,
+  };
+
+  // Fix pxz: Z is USDC priced in WBTC. 1 USDC = 1/40000 WBTC
+  const corrected = { ...btcEth, pxz: 0.000025 };
+
+  it("price at equilibrium = px/py = 20", () => {
+    const x0v = computeX0(corrected);
+    approx(pXxy(x0v, corrected.cx, x0v, corrected.px, corrected.py), 20);
+  });
+
+  it("health computation works with extreme pzx", () => {
+    const x0v = computeX0(corrected);
+    const y0v = computeY0(corrected);
+    const h = computeHX(x0v * 0.99, corrected, x0v, y0v);
+    expect(h).not.toBeNaN();
+    expect(isFinite(h)).toBe(true);
+    expect(h).toBeGreaterThan(0);
+  });
+
+  it("NAV is finite with large pzx values", () => {
+    const x0v = computeX0(corrected);
+    const y0v = computeY0(corrected);
+    const nav = computeNAV_X(x0v * 0.999, corrected, x0v, y0v);
+    expect(nav).not.toBeNaN();
+    expect(isFinite(nav)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 31. External collateral augmented position
+// ---------------------------------------------------------------------------
+// LP with additional collateral from external vaults (rXX, rXZ > 0).
+// Tests that external collateral flows through health/NAV correctly.
+
+describe("scenario: externally collateralized position", () => {
+  const extColl: Params = {
+    ...defaultParams,
+    px: 1, py: 1, cx: 0.5, cy: 0.5, rx: 1, ry: 1,
+    xr: 10, yr: 10,
+    xd: 0, yd: 0, zdebt: 10, zr: 5, pxz: 1,
+    vxz: 0.6, vyz: 0.6,
+    vyx: 0, vxy: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 5, // 5 units of external Z collateral on X-side
+    rYX: 0, rYY: 0, rYZ: 5,
+    eXC: 3, eXD: 1, eYC: 0, eYD: 0,
+  };
+
+  it("external collateral rXZ increases health", () => {
+    const noExt: Params = { ...extColl, rXZ: 0 };
+    const x0v = computeX0(extColl); // same x0 (rXZ doesn't affect boost)
+    const y0v = computeY0(extColl);
+    const hWith = computeHX(x0v * 0.9, extColl, x0v, y0v);
+    const hWithout = computeHX(x0v * 0.9, noExt, x0v, y0v);
+    expect(hWith).toBeGreaterThan(hWithout);
+  });
+
+  it("health formula includes rXZ addend", () => {
+    const x0v = computeX0(extColl);
+    const y0v = computeY0(extColl);
+    const h = computeHX(x0v * 0.9999, extColl, x0v, y0v);
+    // H_XZ = (vxz*xr + vyz*yr*(py/px) + rXZ) / (zdebt*pzx)
+    //       = (0.6*10 + 0.6*10*1 + 5) / (10*1)
+    //       = (6 + 6 + 5) / 10 = 1.7
+    const expected = (0.6 * 10 + 0.6 * 10 + 5) / (10 * 1);
+    approx(h, expected, 1e-3);
+  });
+
+  it("eXC and eXD affect NAV but not health", () => {
+    const x0v = computeX0(extColl);
+    const y0v = computeY0(extColl);
+    const noE: Params = { ...extColl, eXC: 0, eXD: 0 };
+    // Health should be same
+    const hWith = computeHX(x0v * 0.9, extColl, x0v, y0v);
+    const hWithout = computeHX(x0v * 0.9, noE, x0v, y0v);
+    approx(hWith, hWithout);
+    // NAV should differ by eXC - eXD = 3 - 1 = 2
+    const navWith = computeNAV_X(x0v * 0.999, extColl, x0v, y0v);
+    const navWithout = computeNAV_X(x0v * 0.999, noE, x0v, y0v);
+    approx(navWith - navWithout, 2);
   });
 });

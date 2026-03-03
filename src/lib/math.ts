@@ -116,8 +116,13 @@
 //
 //   b_XL                       — leverage boost (from the lending market)
 //     The lending market's collateral/debt structure allows virtual reserves to
-//     exceed real deposits while maintaining health ≥ 1 at the boundary.
-//     Computed by solving H = 1 at x = xb (worst case within range).
+//     exceed real deposits while maintaining health ≥ 1 within the range.
+//     For X/Y debt: calibrated at x = xb (boundary).
+//     For Z debt (bZL01): calibrated at x = x0-xr (CXX transition point),
+//       which is the tighter constraint — CXY*pXyx has a valley there because
+//       CXY shrinks faster than pXyx grows, and CXX is still zero. The
+//       boundary H ends up > 1. When vyz*(yr+pxy*xr) < ZXD*pxy, no boost
+//       can achieve H=1 at the transition point (fundamental limitation).
 //
 //     The health equation at xb has max() terms for collateral and debt that
 //     can be zero or positive depending on the boost level. This creates 4
@@ -134,7 +139,11 @@
 //       b_XL00 = 1 (fallback, concentration boost only, no leverage)
 //
 //     Z debt candidates (b_ZL):
-//       b_ZL01 (bZL ≥ 1): X coll inactive, Y coll active → solve H_XZ = 1
+//       b_ZL01 (bZL ≥ 1): X coll inactive, Y coll active.
+//         Two calibrations: boundary (H=1 at xb) and transition-point
+//         (H=1 at x0-xr). The stricter (higher bZL) wins. The transition-
+//         point calibration solves a quadratic A·t²+B·t+C = 0 where
+//         t = bXC·bXL - 1, using citardauq form for numerical stability.
 //       b_ZL11 (0 < bZL < 1): both active → solve H_XZ = 1
 //       b_ZL10: DEAD BRANCH — validity requires (px/py)*xr*bZL*PX ≤ 0,
 //         always false with positive parameters. Omitted from code.
@@ -315,9 +324,46 @@ function computeBoostX(p: Params): number {
     // b_ZL10 omitted: dead branch — validity requires (px/py)*xr*bZL10*PX ≤ 0,
     // which is always false with positive parameters.
 
+    // Transition-point calibration: H=1 at x=x0-xr where CXX first becomes 0.
+    // CXY*pXyx has a valley there, so this is the tighter constraint.
+    // Quadratic: AQ·t² + BQ·t + CQ = 0 where t = bXC·bXL - 1, giving
+    // bXL = (t+1)/bXC. Uses citardauq form for numerical stability.
+    const pxy = px / py;
+    const m = 1 - cx;
+    const aTP = yr + pxy * xr;
+    const AQ = vyz * aTP - ZXD * pxy;
+    const BQ = pxy * m * (vyz * xr - 2 * ZXD);
+    const CQ = -ZXD * pxy * m;
+    const disc = BQ * BQ - 4 * AQ * CQ;
+    let bZL01_tp = NaN;
+    if (disc >= 0) {
+      const sqrtDisc = Math.sqrt(disc);
+      let t: number;
+      if (Math.abs(AQ) < 1e-15) {
+        // Linear: BQ·t + CQ = 0
+        t = BQ !== 0 ? -CQ / BQ : NaN;
+      } else if (BQ <= 0) {
+        // Standard form: sums two positives in numerator
+        t = (-BQ + sqrtDisc) / (2 * AQ);
+      } else {
+        // Citardauq form: avoids cancellation when BQ > 0
+        t = (2 * CQ) / (-BQ - sqrtDisc);
+      }
+      if (isFinite(t) && t > 0) {
+        bZL01_tp = (t + 1) / bXC;
+      }
+    }
+
+    // Boundary calibration (original): H=1 at x=xb
     // b_ZL01: X coll inactive, Y coll active
     const denom01 = xr * vyz * pXyxb * (px / py) * PX;
-    const bZL01 = denom01 > 0 ? (ZXD - vyz * yr * pXyxb) / denom01 : NaN;
+    const bZL01_b = denom01 > 0 ? (ZXD - vyz * yr * pXyxb) / denom01 : NaN;
+
+    // Take the stricter constraint (higher boost)
+    const bZL01 = Math.max(
+      isFinite(bZL01_b) ? bZL01_b : -Infinity,
+      isFinite(bZL01_tp) ? bZL01_tp : -Infinity
+    );
     const vZL01 = (bZL01 >= 1 && (px / py) * xr * bZL01 * PX > 0) ? 1 : 0;
 
     // b_ZL11: both active
@@ -375,8 +421,40 @@ function computeBoostY(p: Params): number {
     const ZYD = zd * pzy - rYZ;
     if (ZYD <= 0) return bYC;
 
+    // Transition-point calibration: H=1 at y=y0-yr where CYY first becomes 0.
+    // Symmetric to X-side: quadratic AQ·t² + BQ·t + CQ = 0, t = bYC·bYL - 1.
+    const pyx = py / px;
+    const mY = 1 - cy;
+    const aTP_Y = xr + pyx * yr;
+    const AQ_Y = vxz * aTP_Y - ZYD * pyx;
+    const BQ_Y = pyx * mY * (vxz * yr - 2 * ZYD);
+    const CQ_Y = -ZYD * pyx * mY;
+    const disc_Y = BQ_Y * BQ_Y - 4 * AQ_Y * CQ_Y;
+    let bZL01_tp = NaN;
+    if (disc_Y >= 0) {
+      const sqrtDisc = Math.sqrt(disc_Y);
+      let t: number;
+      if (Math.abs(AQ_Y) < 1e-15) {
+        t = BQ_Y !== 0 ? -CQ_Y / BQ_Y : NaN;
+      } else if (BQ_Y <= 0) {
+        t = (-BQ_Y + sqrtDisc) / (2 * AQ_Y);
+      } else {
+        t = (2 * CQ_Y) / (-BQ_Y - sqrtDisc);
+      }
+      if (isFinite(t) && t > 0) {
+        bZL01_tp = (t + 1) / bYC;
+      }
+    }
+
+    // Boundary calibration (original): H=1 at y=yb
     const denom01 = yr * vxz * pYxyb * (py / px) * PY;
-    const bZL01 = denom01 > 0 ? (ZYD - vxz * xr * pYxyb) / denom01 : NaN;
+    const bZL01_b = denom01 > 0 ? (ZYD - vxz * xr * pYxyb) / denom01 : NaN;
+
+    // Take the stricter constraint (higher boost)
+    const bZL01 = Math.max(
+      isFinite(bZL01_b) ? bZL01_b : -Infinity,
+      isFinite(bZL01_tp) ? bZL01_tp : -Infinity
+    );
     const vZL01 = (bZL01 >= 1 && (py / px) * yr * bZL01 * PY > 0) ? 1 : 0;
 
     const denom11 = yr * (vxz * pYxyb * (py / px) * PY - vyz);
