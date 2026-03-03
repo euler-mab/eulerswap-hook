@@ -28,12 +28,34 @@
 // AMM CURVES
 // ----------
 // For x ∈ (0, x0]:  y = fX(x)  = y0 + (px/py)(x0-x)(cx + (1-cx)(x0/x))
-// For x ≥ x0:       y = fY(x)  — inverse via citardauq quadratic (numerically stable)
+// For x ≥ x0:       y = fY(x)  — inverse of gY, solved via quadratic on cy
 // For y ∈ (0, y0]:  x = gY(y)  = x0 + (py/px)(y0-y)(cy + (1-cy)(y0/y))
-// For y ≥ y0:       x = gX(y)  — inverse via citardauq quadratic
+// For y ≥ y0:       x = gX(y)  — inverse of fX, solved via quadratic on cx
 //
-// cx, cy ∈ [0, 1) control concentration. cx=0 is constant-product (xy=k).
-// cx→1 approaches constant-sum. Higher cx = tighter liquidity around equilibrium.
+// The inverse functions (fY, gX) solve cy·y² + By·y − Cy = 0 (or cx variant).
+// Two forms are used depending on the sign of B for numerical stability:
+//   B ≤ 0:  standard   (-B + √disc) / (2A)    — sums two positives
+//   B > 0:  citardauq  2C / (B + √disc)        — avoids catastrophic cancellation
+//
+// cx, cy ∈ [0, 1) control concentration. The parameter interpolates between
+// two classic AMM curve shapes:
+//
+//   c=0  (constant-product, xy=k):
+//     fX(x) = y0 + (px/py)·x0²/x − (px/py)·x0
+//     With px=py and x0=y0 this gives y = x0²/x, i.e. x·y = x0² = k.
+//     Marginal price varies as (x0/x)² — wide price impact per unit traded.
+//     The inverse functions (fY, gX) use a simplified y0²/denom form (special-
+//     cased in code since the quadratic term Ay or Ax is zero).
+//
+//   c→1  (constant-sum, x+y=k):
+//     fX(x) = y0 + (px/py)(x0−x) — linear, constant marginal price = px/py.
+//     All liquidity is concentrated at equilibrium; zero price impact until
+//     one asset is depleted. On the inverse side fY returns 0 immediately
+//     (Cy=0 → no Y remaining once price moves past equilibrium).
+//     c=1 is excluded from the domain because it makes the range degenerate:
+//     sx = sqrt((1+rx)/(1−1)) → ∞, and the boundary xb collapses to x0.
+//
+// Higher cx = tighter liquidity around equilibrium (less price impact, narrower range).
 //
 // PRICE CONVENTIONS
 // -----------------
@@ -450,8 +472,8 @@ export function fY(x: number, cy: number, x0: number, y0: number, px: number, py
   const sqrtDisc = Math.sqrt(disc);
 
   if (By <= 0) {
-    // Standard quadratic form
-    return (By + sqrtDisc) / (2 * Ay);
+    // Standard quadratic form: (-By + √disc) / (2·Ay)
+    return (-By + sqrtDisc) / (2 * Ay);
   } else {
     // Citardauq form: 2C / (B + sqrt(B^2 + 4AC)) — numerically stable when B > 0
     return (2 * Cy) / (By + sqrtDisc);
@@ -476,7 +498,8 @@ export function gX(y: number, cx: number, y0: number, x0: number, px: number, py
   const sqrtDisc = Math.sqrt(disc);
 
   if (Bx <= 0) {
-    return (Bx + sqrtDisc) / (2 * Ax);
+    // Standard quadratic form: (-Bx + √disc) / (2·Ax)
+    return (-Bx + sqrtDisc) / (2 * Ax);
   } else {
     return (2 * Cx) / (Bx + sqrtDisc);
   }
