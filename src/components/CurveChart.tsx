@@ -6,6 +6,7 @@ import {
 } from "recharts";
 import {
   Params, computeX0, computeY0, computeXb, computeYb,
+  computeSx, computeSy, computeBxc, computeByc,
   generateFXPoints, generateFYPoints,
   generateShiftedFXPoints, generateShiftedGYPoints,
   fX, gY, priceAtXb, priceAtYb,
@@ -76,13 +77,21 @@ export default function CurveChart({ params }: Props) {
     const pXb = priceAtXb(x0, rx, cx, px, py);
     const pYb = priceAtYb(y0, ry, cy, px, py);
 
+    // Boost breakdown
+    const sx = computeSx(rx, cx);
+    const sy = computeSy(ry, cy);
+    const bXC = computeBxc(sx);
+    const bYC = computeByc(sy);
+    const bXL = xr > 0 ? x0 / (xr * bXC) : 0;
+    const bYL = yr > 0 ? y0 / (yr * bYC) : 0;
+
     return {
       x0, y0, xbB, ybB, xbR, ybR,
       fxBoosted, fyBoosted, fxReal, fyReal,
       sfxBoosted, sgyBoosted, sfxReal, sgyReal,
       boostedEq, realEq, xbBoostedPt, ybBoostedPt,
       shiftedBoostedEq, shiftedRealEq,
-      pXb, pYb,
+      pXb, pYb, bXC, bYC, bXL, bYL,
     };
   }, [params]);
 
@@ -203,7 +212,13 @@ export default function CurveChart({ params }: Props) {
       <section>
         <h2 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Computed values</h2>
         <div className="grid grid-cols-2 gap-x-10 gap-y-1 font-mono text-xs text-zinc-400">
-          <span className="text-zinc-600">Boosted reserves</span>
+          <span className="text-zinc-600">Boost</span>
+          <span />
+          <span>b_XC = {fmt(data.bXC)}</span>
+          <span>b_YC = {fmt(data.bYC)}</span>
+          <span>b_XL = {fmt(data.bXL)}</span>
+          <span>b_YL = {fmt(data.bYL)}</span>
+          <span className="text-zinc-600 mt-1">Boosted reserves</span>
           <span />
           <span>x0 = {fmt(data.x0)}</span>
           <span>y0 = {fmt(data.y0)}</span>

@@ -1,13 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { defaultParams, Params } from "@/lib/math";
+import { useState, useMemo } from "react";
+import { defaultParams, Params, validateParams } from "@/lib/math";
 import ParamControls from "@/components/ParamControls";
 import CurveChart from "@/components/CurveChart";
 import HealthChart from "@/components/HealthChart";
 
 export default function Home() {
   const [params, setParams] = useState<Params>(defaultParams);
+  const warnings = useMemo(() => validateParams(params), [params]);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -18,6 +19,14 @@ export default function Home() {
         </header>
 
         <ParamControls params={params} onChange={setParams} />
+
+        {warnings.length > 0 && (
+          <div className="rounded-lg border border-amber-800/60 bg-amber-950/30 px-4 py-3 text-xs text-amber-300 space-y-1">
+            {warnings.map((w) => (
+              <p key={w}>{w}</p>
+            ))}
+          </div>
+        )}
 
         <CurveChart params={params} />
 

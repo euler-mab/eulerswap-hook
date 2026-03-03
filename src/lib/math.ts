@@ -1,5 +1,128 @@
+// ============================================================================
 // EulerSwap AMM curve math
 // All functions derived from the Desmos specification
+// ============================================================================
+//
+// OVERVIEW
+// --------
+// EulerSwap is a concentrated-liquidity AMM integrated with a lending market.
+// The pool holds two primary assets X and Y, with an optional third exogenous
+// asset Z used only for lending (not traded on the AMM curve).
+//
+// The AMM has two "sides":
+//   X side: price of X drops → X flows into the pool, Y flows out (x decreases from x0)
+//   Y side: price of X rises → Y flows into the pool, X flows out (y decreases from y0)
+//
+// Each side has its own curve, concentration parameter, and price range.
+// The curves meet at the equilibrium point (x0, y0).
+//
+// COORDINATE SYSTEM
+// -----------------
+// Virtual (boosted) reserves:  x0, y0  — what the AMM "sees" (amplified liquidity)
+// Real reserves:               xr, yr  — actual deposited tokens
+// Range boundaries:            xb, yb  — lower limits of each reserve within the range
+//
+// The relationship:  x0 = xr * b_XC * b_XL  (similarly for y0)
+// where b_XC is concentration boost and b_XL is leverage boost.
+//
+// AMM CURVES
+// ----------
+// For x ∈ (0, x0]:  y = fX(x)  = y0 + (px/py)(x0-x)(cx + (1-cx)(x0/x))
+// For x ≥ x0:       y = fY(x)  — inverse via citardauq quadratic (numerically stable)
+// For y ∈ (0, y0]:  x = gY(y)  = x0 + (py/px)(y0-y)(cy + (1-cy)(y0/y))
+// For y ≥ y0:       x = gX(y)  — inverse via citardauq quadratic
+//
+// cx, cy ∈ [0, 1) control concentration. cx=0 is constant-product (xy=k).
+// cx→1 approaches constant-sum. Higher cx = tighter liquidity around equilibrium.
+//
+// PRICE CONVENTIONS
+// -----------------
+// px, py          — external oracle prices (in common numeraire, e.g. USD)
+// px/py           — Y per X exchange rate (how many Y is one X worth)
+// py/px           — X per Y exchange rate
+// pXxy(x)         — marginal price at x: Y per X = -fXd(x)
+// pXyx(x)         — marginal price at x: X per Y = 1/(-fXd(x))
+// pYxy(y)         — marginal price at y: Y per X = 1/(-gYd(y))
+// pYyx(y)         — marginal price at y: X per Y = -gYd(y)
+// pzx             — value of Z in X units = 1/pxz
+// pzy             — value of Z in Y units = pzx * (px/py)
+// pXyxb           — X per Y at the X-side boundary (x = xb)
+// pYxyb           — Y per X at the Y-side boundary (y = yb)
+//
+// LLTV (Liquidation Loan-to-Value) NAMING
+// ----------------------------------------
+// v_{collateral}{debt} — the LLTV when `collateral` is pledged against `debt`.
+//   vyx  — Y collateral on X debt       vxy  — X collateral on Y debt
+//   vxz  — X collateral on Z debt       vyz  — Y collateral on Z debt
+//   vzx  — Z collateral on X debt       vzy  — Z collateral on Y debt
+//
+// PHASES (X side, as x decreases from x0 toward xb)
+// --------------------------------------------------
+// The AMM curve determines how much X flows in and Y flows out as x drops.
+// As x decreases:
+//   1. Near equilibrium (x > xXYdebt): Y debt (DXY) is still partially outstanding.
+//      Collateral = remaining X (CXX) + Y reserves + Y surplus from swap (CXY).
+//      Health is H_XY = (vxy*CXX + vzy*zr*pzx + R_XY) / (DXY * pXyx).
+//
+//   2. Past xXYdebt (x ≤ xXYdebt): Y debt fully repaid by swap delta.
+//      Now X debt (DXX) accumulates as swap delta exceeds real X reserves.
+//      Health is H_XX = (vyx*CXY*pXyx + vzx*zr*pzx + R_XX) / DXX.
+//
+//   3. Dead zone: between phase boundaries, both debts can be zero.
+//      Health = Infinity (position is safe, no debt outstanding).
+//
+// When Z is the debt asset (zd > 0), DXX=DXY=0 and a single formula H_XZ applies.
+// The Y side is symmetric with gY replacing fX.
+//
+// DEBT CONSTRAINT
+// ---------------
+// The lending market allows exactly ONE debt asset at a time:
+//   - xd > 0: X is the debt asset (yd=0, zd=0)
+//   - yd > 0: Y is the debt asset (xd=0, zd=0)
+//   - zd > 0: Z is the debt asset (xd=0, yd=0)
+// This is enforced by the UI (radio buttons) and validated by validateParams().
+// Note: even with a single initial debt asset, the AMM alternates between
+// debt phases (e.g. X debt ↔ Y debt) as the price moves through boundaries.
+//
+// BOOST
+// -----
+// Virtual reserves are amplified beyond real deposits via two multipliers:
+//
+//   b_XC = s_X / (s_X - 1)    — concentration boost (from price range narrowing)
+//     where s_X = sqrt((1 + rx - cx) / (1 - cx))
+//     Higher cx or lower rx → higher b_XC. Always ≥ 1.
+//
+//   b_XL                       — leverage boost (from the lending market)
+//     The lending market's collateral/debt structure allows virtual reserves to
+//     exceed real deposits while maintaining health ≥ 1 at the boundary.
+//     Computed by solving H = 1 at x = xb (worst case within range).
+//
+//     The health equation at xb has max() terms for collateral and debt that
+//     can be zero or positive depending on the boost level. This creates 4
+//     candidate solutions corresponding to which max() branches are active.
+//     Each candidate is computed algebraically, then checked for validity
+//     (the assumed-active terms are actually positive, assumed-zero terms
+//     are actually ≤ 0). The candidates are mutually exclusive.
+//
+//     X/Y debt candidates (b_XL):
+//       b_XL10 (bXL ≤ 1, yXdelta > yd): CXX active, in H_XX phase → solve H_XX = 1
+//       b_XL11 (bXL > 1, yXdelta > yd): CXX = 0,    in H_XX phase → solve H_XX = 1
+//       b_XL01 (bXL > 1, yXdelta ≤ yd): CXX = 0,    in H_XY phase → solve H_XY = 1
+//         Uses vzy/rXY (not vyx/vzx/rXX) because xb falls where Y debt governs.
+//       b_XL00 = 1 (fallback, concentration boost only, no leverage)
+//
+//     Z debt candidates (b_ZL):
+//       b_ZL01 (bZL ≥ 1): X coll inactive, Y coll active → solve H_XZ = 1
+//       b_ZL11 (0 < bZL < 1): both active → solve H_XZ = 1
+//       b_ZL10: DEAD BRANCH — validity requires (px/py)*xr*bZL*PX ≤ 0,
+//         always false with positive parameters. Omitted from code.
+//       b_ZL00 = 1 (fallback)
+//
+// NAV (Net Asset Value)
+// ---------------------
+// n_XX = CXX + CXY*pXyx + CXZ*pzx - DXX - DXY*pXyx - DXZ*pzx + E_XC - E_XD
+// All values converted to X units. E_XC/E_XD are exogenous collateral/debt.
+// ============================================================================
 
 export interface Params {
   // LLTV for X collateral on Y debt and vice versa
@@ -29,6 +152,40 @@ export interface Params {
   xd: number;
   yd: number;
   zdebt: number; // raw z debt input
+  // Risk-adjusted external collateral (X-side health)
+  rXX: number;
+  rXY: number;
+  rXZ: number;
+  // Risk-adjusted external collateral (Y-side health)
+  rYX: number;
+  rYY: number;
+  rYZ: number;
+  // Exogenous collateral/debt for NAV
+  eXC: number;
+  eXD: number;
+  eYC: number;
+  eYD: number;
+}
+
+// --- Parameter validation ---
+// Returns list of problems. Empty = valid.
+export function validateParams(p: Params): string[] {
+  const w: string[] = [];
+  if (p.xd > 0 && p.yd > 0) w.push("xd and yd are both nonzero — only one debt asset allowed");
+  if (p.xd > 0 && p.zdebt > 0) w.push("xd and zdebt are both nonzero — only one debt asset allowed");
+  if (p.yd > 0 && p.zdebt > 0) w.push("yd and zdebt are both nonzero — only one debt asset allowed");
+  if (p.px <= 0) w.push("px must be positive");
+  if (p.py <= 0) w.push("py must be positive");
+  if (p.pxz <= 0) w.push("pxz must be positive");
+  if (p.cx >= 1) w.push("cx must be < 1");
+  if (p.cy >= 1) w.push("cy must be < 1");
+  if (p.rx <= 0) w.push("rx must be positive");
+  if (p.ry <= 0) w.push("ry must be positive");
+  const sx = computeSx(p.rx, p.cx);
+  const sy = computeSy(p.ry, p.cy);
+  if (!isFinite(sx) || sx <= 1) w.push(`Degenerate X boost: sx=${sx?.toFixed(4)} — check rx and cx`);
+  if (!isFinite(sy) || sy <= 1) w.push(`Degenerate Y boost: sy=${sy?.toFixed(4)} — check ry and cy`);
+  return w;
 }
 
 // Derived: zd is only active when xd=0 and yd=0
@@ -38,9 +195,9 @@ export function computeZd(p: Params): number {
 }
 
 // Derived prices
-export function computePxy(p: Params): number { return p.px / p.py; }
-export function computePyx(p: Params): number { return p.py / p.px; }
-export function computePzx(p: Params): number { return 1 / p.pxz; }
+export function computePxy(p: Params): number { if (p.py === 0) return NaN; return p.px / p.py; }
+export function computePyx(p: Params): number { if (p.px === 0) return NaN; return p.py / p.px; }
+export function computePzx(p: Params): number { if (p.pxz === 0) return NaN; return 1 / p.pxz; }
 
 export const defaultParams: Params = {
   vyx: 0.9,
@@ -62,28 +219,187 @@ export const defaultParams: Params = {
   xd: 0,
   yd: 0,
   zdebt: 10,
+  rXX: 0,
+  rXY: 0,
+  rXZ: 0,
+  rYX: 0,
+  rYY: 0,
+  rYZ: 0,
+  eXC: 0,
+  eXD: 0,
+  eYC: 0,
+  eYD: 0,
 };
 
-// --- Boosted (virtual) reserves ---
-// x0 = xr * bx, y0 = yr * by
-// The boost formula depends on the full EulerSwap lending integration.
-// TODO: Replace with the actual boost formula when available.
-// Current approximation: leverage = 1/(1 - lYX*lXY) applied to total collateral.
+// --- Boost helpers ---
+// s_X = sqrt((1 + rx - cx) / (1 - cx))
+export function computeSx(rx: number, cx: number): number {
+  if (cx >= 1) return NaN;
+  const inner = (1 + rx - cx) / (1 - cx);
+  if (inner < 0) return NaN;
+  return Math.sqrt(inner);
+}
+export function computeSy(ry: number, cy: number): number {
+  if (cy >= 1) return NaN;
+  const inner = (1 + ry - cy) / (1 - cy);
+  if (inner < 0) return NaN;
+  return Math.sqrt(inner);
+}
+
+// b_XC = s_X / (s_X - 1) — concentration boost
+export function computeBxc(sx: number): number {
+  if (!isFinite(sx) || sx <= 1) {
+    console.warn(`computeBxc: sx=${sx} yields infinite or degenerate boost — check cx and rx`);
+    return NaN;
+  }
+  return sx / (sx - 1);
+}
+export function computeByc(sy: number): number {
+  if (!isFinite(sy) || sy <= 1) {
+    console.warn(`computeByc: sy=${sy} yields infinite or degenerate boost — check cy and ry`);
+    return NaN;
+  }
+  return sy / (sy - 1);
+}
+
+// P_X = cx + (1 - cx) * s_X — price factor at boundary
+export function computePX(cx: number, sx: number): number {
+  return cx + (1 - cx) * sx;
+}
+export function computePY(cy: number, sy: number): number {
+  return cy + (1 - cy) * sy;
+}
+
+// --- Boosted (virtual) reserves via leverage boost ---
+// x_0 = x_r * b_XC * b_XL
+// Solve health = 1 at x = x_b to find b_XL.
+// 4 candidates for X/Y debt, 4 candidates for Z debt.
+
+function computeBoostX(p: Params): number {
+  const { px, py, xr, yr, xd, yd, vyx, vzx, vxz, vyz, vzy, zr, rx, cx, rXX, rXY, rXZ } = p;
+  const zd = computeZd(p);
+  const pzx = computePzx(p);
+  const sx = computeSx(rx, cx);
+  const bXC = computeBxc(sx);
+  const PX = computePX(cx, sx);
+  // p_Xyxb = boundary marginal price (X per Y at x_b) = 1 / ((px/py)(1+rx))
+  const pXyxb = 1 / ((px / py) * (1 + rx));
+
+  if (zd > 0) {
+    // Z debt case: solve for b_ZL
+    const ZXD = zd * pzx - rXZ;
+    if (ZXD <= 0) return bXC; // no effective Z debt
+
+    // b_ZL10 omitted: dead branch — validity requires (px/py)*xr*bZL10*PX ≤ 0,
+    // which is always false with positive parameters.
+
+    // b_ZL01: X coll inactive, Y coll active
+    const denom01 = xr * vyz * pXyxb * (px / py) * PX;
+    const bZL01 = denom01 > 0 ? (ZXD - vyz * yr * pXyxb) / denom01 : NaN;
+    const vZL01 = (bZL01 >= 1 && (px / py) * xr * bZL01 * PX > 0) ? 1 : 0;
+
+    // b_ZL11: both active
+    const denom11 = xr * (vyz * pXyxb * (px / py) * PX - vxz);
+    const bZL11 = denom11 !== 0 ? (ZXD - vxz * xr - vyz * yr * pXyxb) / denom11 : NaN;
+    const vZL11 = (bZL11 > 0 && bZL11 < 1 && (px / py) * xr * bZL11 * PX > 0) ? 1 : 0;
+
+    // Pick valid candidate (prefer highest boost)
+    if (vZL01 && isFinite(bZL01)) return bXC * bZL01;
+    if (vZL11 && isFinite(bZL11)) return bXC * bZL11;
+    // fallback: b_ZL00 (no leverage boost needed)
+    return bXC;
+  }
+
+  // X/Y debt case
+  const ZXC = vzx * zr * pzx + rXX;
+
+  // b_XL10: collateral max active, debt max inactive
+  const denom10 = xr * vyx * pXyxb * (px / py) * PX;
+  const bXL10 = denom10 > 0 ? (xd - ZXC + vyx * pXyxb * (yd - yr)) / denom10 : NaN;
+  const vXL10 = ((px / py) * xr * bXL10 * PX > yd && bXL10 <= 1) ? 1 : 0;
+
+  // b_XL01: collateral max inactive (bXL > 1), in H_XY phase (yXdelta ≤ yd)
+  // Solve H_XY = 1: (vzy*zr*pzx + rXY) / ((yd - yXdelta) * pXyxb) = 1
+  const ZXY = vzy * zr * pzx + rXY;
+  const denom01 = (px / py) * xr * PX * pXyxb;
+  const bXL01 = denom01 > 0 ? (yd * pXyxb - ZXY) / denom01 : NaN;
+  const vXL01 = ((px / py) * xr * bXL01 * PX <= yd && bXL01 > 1) ? 1 : 0;
+
+  // b_XL11: both active
+  const denom11 = xr * (vyx * pXyxb * (px / py) * PX - 1);
+  const bXL11 = denom11 !== 0 ? (xd - xr - vyx * (yr - yd) * pXyxb - ZXC) / denom11 : NaN;
+  const vXL11 = ((px / py) * xr * bXL11 * PX > yd && bXL11 > 1) ? 1 : 0;
+
+  // Pick valid candidate (prefer highest valid boost)
+  if (vXL11 && isFinite(bXL11)) return bXC * bXL11;
+  if (vXL01 && isFinite(bXL01)) return bXC * bXL01;
+  if (vXL10 && isFinite(bXL10)) return bXC * bXL10;
+  // b_XL00: no boost beyond concentration
+  return bXC;
+}
+
+function computeBoostY(p: Params): number {
+  const { px, py, xr, yr, xd, yd, vxy, vzy, vzx, vxz, vyz, zr, ry, cy, rYX, rYY, rYZ } = p;
+  const zd = computeZd(p);
+  const pzx = computePzx(p);
+  const pzy = pzx * (px / py); // p_zy = p_zx * p_xy
+  const sy = computeSy(ry, cy);
+  const bYC = computeByc(sy);
+  const PY = computePY(cy, sy);
+  // p_Yxyb = boundary marginal price (Y per X at y_b) = 1 / ((py/px)(1+ry))
+  const pYxyb = 1 / ((py / px) * (1 + ry));
+
+  if (zd > 0) {
+    const ZYD = zd * pzy - rYZ;
+    if (ZYD <= 0) return bYC;
+
+    const denom01 = yr * vxz * pYxyb * (py / px) * PY;
+    const bZL01 = denom01 > 0 ? (ZYD - vxz * xr * pYxyb) / denom01 : NaN;
+    const vZL01 = (bZL01 >= 1 && (py / px) * yr * bZL01 * PY > 0) ? 1 : 0;
+
+    const denom11 = yr * (vxz * pYxyb * (py / px) * PY - vyz);
+    const bZL11 = denom11 !== 0 ? (ZYD - vyz * yr - vxz * xr * pYxyb) / denom11 : NaN;
+    const vZL11 = (bZL11 > 0 && bZL11 < 1 && (py / px) * yr * bZL11 * PY > 0) ? 1 : 0;
+
+    // b_ZL10 omitted: dead branch — validity requires (py/px)*yr*bZL10*PY ≤ 0,
+    // which is always false with positive parameters.
+
+    if (vZL01 && isFinite(bZL01)) return bYC * bZL01;
+    if (vZL11 && isFinite(bZL11)) return bYC * bZL11;
+    return bYC;
+  }
+
+  const ZYC = vzy * zr * pzy + rYY;
+
+  const denom10 = yr * vxy * pYxyb * (py / px) * PY;
+  const bYL10 = denom10 > 0 ? (yd - ZYC + vxy * pYxyb * (xd - xr)) / denom10 : NaN;
+  const vYL10 = ((py / px) * yr * bYL10 * PY > xd && bYL10 <= 1) ? 1 : 0;
+
+  // b_YL01: collateral max inactive (bYL > 1), in H_YX phase (xYdelta ≤ xd)
+  // Solve H_YX = 1: (vzx*zr*pzy + rYX) / ((xd - xYdelta) * pYxyb) = 1
+  const ZYX = vzx * zr * pzy + rYX;
+  const denom01 = (py / px) * yr * PY * pYxyb;
+  const bYL01 = denom01 > 0 ? (xd * pYxyb - ZYX) / denom01 : NaN;
+  const vYL01 = ((py / px) * yr * bYL01 * PY <= xd && bYL01 > 1) ? 1 : 0;
+
+  const denom11 = yr * (vxy * pYxyb * (py / px) * PY - 1);
+  const bYL11 = denom11 !== 0 ? (yd - yr - vxy * (xr - xd) * pYxyb - ZYC) / denom11 : NaN;
+  const vYL11 = ((py / px) * yr * bYL11 * PY > xd && bYL11 > 1) ? 1 : 0;
+
+  if (vYL11 && isFinite(bYL11)) return bYC * bYL11;
+  if (vYL01 && isFinite(bYL01)) return bYC * bYL01;
+  if (vYL10 && isFinite(bYL10)) return bYC * bYL10;
+  return bYC;
+}
 
 export function computeX0(p: Params): number {
-  const { px, py, xr, yr, vyx, vxy, xd, yd } = p;
-  const priceRatio = px / py;
-  const leverage = 1 / (1 - vyx * vxy);
-  const total = xr + xd + vyx * (yr + yd) / priceRatio;
-  return total * leverage * priceRatio;
+  if (p.xr <= 0) return 0;
+  return p.xr * computeBoostX(p);
 }
 
 export function computeY0(p: Params): number {
-  const { px, py, xr, yr, vyx, vxy, xd, yd } = p;
-  const priceRatio = py / px;
-  const leverage = 1 / (1 - vyx * vxy);
-  const total = yr + yd + vxy * (xr + xd) / priceRatio;
-  return total * leverage * priceRatio;
+  if (p.yr <= 0) return 0;
+  return p.yr * computeBoostY(p);
 }
 
 // --- Range boundaries ---
@@ -310,17 +626,21 @@ export function generateShiftedGYPoints(
 }
 
 // --- Collateral and Debt on X side ---
+// Swap deltas
+// x_Xdelta(x, x0) = x0 - x
+// y_Xdelta(x, x0, y0) = fX(x, cx, x0, y0) - y0
 
-// kX = yd * py / px
-export function computeKx(yd: number, py: number, px: number): number {
-  return yd * py / px;
+// x_XXdebt(x0) = x0 - xr (where C_XX = 0)
+export function xXXdebt(x0: number, xr: number): number {
+  return x0 - xr;
 }
 
-// xc(x0): where Y debt gets fully repaid (solve fX(xc) = y0 + yd)
-export function computeXc(x0: number, cx: number, kX: number): number {
-  if (kX <= 0) return x0;
+// x_XYdebt(x0): where D_XY = 0 (Y debt fully repaid)
+export function xXYdebt(x0: number, cx: number, yd: number, px: number, py: number): number {
+  if (yd <= 0) return x0;
+  const kX = yd * py / px;
   if (cx === 0) {
-    return (x0 * x0) / (x0 + kX);
+    return (x0 * x0) / (kX + x0);
   }
   const A = kX - x0 * (2 * cx - 1);
   const disc = A * A + 4 * cx * (1 - cx) * x0 * x0;
@@ -328,59 +648,101 @@ export function computeXc(x0: number, cx: number, kX: number): number {
   return (x0 * (2 * cx - 1) - kX + Math.sqrt(disc)) / (2 * cx);
 }
 
-// CXX(x, x0) = max(xr - (x0 - x), 0)
+// CXX(x, x0) = max(xr - xXdelta, 0) where xXdelta = x0 - x
 export function CXX(x: number, x0: number, xr: number): number {
   return Math.max(xr - (x0 - x), 0);
 }
 
-// CYX(x, x0) = yr + max(yXdelta - yd, 0), where yXdelta = fX(x) - y0
-export function CYX(x: number, cx: number, x0: number, y0: number, px: number, py: number, yr: number, yd: number): number {
-  const yXdelta = fX(x, cx, x0, y0, px, py) - y0;
+// CXY(x, x0, y0): collateral in Y on the X side
+// z_d > 0: yr + max(yXdelta, 0)
+// else: yr + max(yXdelta - yd, 0)
+export function CXY_fn(x: number, cx: number, x0: number, y0: number, px: number, py: number, yr: number, yd: number, zd: number): number {
+  const fxVal = fX(x, cx, x0, y0, px, py);
+  if (!isFinite(fxVal)) return NaN;
+  const yXdelta = fxVal - y0;
+  if (zd > 0) {
+    return yr + Math.max(yXdelta, 0);
+  }
   return yr + Math.max(yXdelta - yd, 0);
 }
 
-// DXX(x, x0) = (xd + max(xXdelta - xr, 0)) {x <= xc}
-export function DXX(x: number, x0: number, xr: number, xd: number, xc: number): number {
-  if (x > xc) return 0;
+// DXX(x, x0): debt in X on X side
+// z_d > 0: 0
+// else: (xd + max(xXdelta - xr, 0)) {x <= xXXdebt} {x <= xXYdebt}
+export function DXX(x: number, x0: number, xr: number, xd: number, xXXd: number, xXYd: number, zd: number): number {
+  if (zd > 0) return 0;
+  if (x > xXXd || x > xXYd) return 0;
   return xd + Math.max((x0 - x) - xr, 0);
 }
 
-// DYX(x, x0) = max(yd - yXdelta, 0)
-export function DYX(x: number, cx: number, x0: number, y0: number, px: number, py: number, yd: number): number {
-  const yXdelta = fX(x, cx, x0, y0, px, py) - y0;
-  return Math.max(yd - yXdelta, 0);
+// DXY(x, x0, y0): debt in Y on X side
+// z_d > 0: 0
+// else: max(yd - yXdelta, 0) {x >= xXYdebt}
+export function DXY(x: number, cx: number, x0: number, y0: number, px: number, py: number, yd: number, xXYd: number, zd: number): number {
+  if (zd > 0) return 0;
+  if (x < xXYd) return 0;
+  const fxVal = fX(x, cx, x0, y0, px, py);
+  if (!isFinite(fxVal)) return NaN;
+  return Math.max(yd - (fxVal - y0), 0);
 }
 
-// Health score on X side
-export function HX(
-  x: number, cx: number, x0: number, y0: number, px: number, py: number,
-  xr: number, yr: number, xd: number, yd: number, lYX: number, xc: number
+// CXZ = zr (constant, doesn't change with swaps)
+// DXZ = zd (constant, doesn't change with swaps)
+
+// --- Health scores on X side (three branches) ---
+
+// Combined health score on X side using full params
+export function computeHX(
+  x: number, p: Params, x0: number, y0: number
 ): number {
   if (x <= 0 || x > x0) return NaN;
-  if (x <= xc) {
-    const dxx = DXX(x, x0, xr, xd, xc);
-    if (dxx <= 0) return NaN;
-    const cyx = CYX(x, cx, x0, y0, px, py, yr, yd);
-    const price = -fXd(x, cx, x0, px, py);
-    return lYX * (cyx / price) / dxx;
+  const { cx, px, py, xr, yr, xd, yd, zr, vyx, vxy, vzx, vzy, vxz, vyz, rXX, rXY, rXZ, pxz } = p;
+  const zd = computeZd(p);
+  const pzx = 1 / pxz;
+  const xXXd = xXXdebt(x0, xr);
+  const xXYd = xXYdebt(x0, cx, yd, px, py);
+
+  // Marginal price pXyx at x (1/(-fXd))
+  const pXyxVal = pXyx(x, cx, x0, px, py);
+  if (!isFinite(pXyxVal) || pXyxVal <= 0) return NaN;
+
+  const cxx = CXX(x, x0, xr);
+  const cxy = CXY_fn(x, cx, x0, y0, px, py, yr, yd, zd);
+
+  if (zd > 0) {
+    // H_XZ: Z debt active
+    const dxz = zd;
+    if (dxz <= 0 || pxz <= 0) return NaN;
+    return (vxz * cxx + vyz * cxy * pXyxVal + rXZ) / (dxz * pzx);
+  }
+
+  // X/Y debt — pick branch based on phase
+  if (x <= xXYd) {
+    // H_XX: X debt active (Y debt fully repaid, X debt accumulating)
+    const dxx = DXX(x, x0, xr, xd, xXXd, xXYd, zd);
+    if (dxx <= 0) return Infinity; // no debt in this region — position is safe
+    return (vyx * cxy * pXyxVal + vzx * zr * pzx + rXX) / dxx;
   } else {
-    const dyx = DYX(x, cx, x0, y0, px, py, yd);
-    if (dyx <= 0) return NaN;
-    const cyx = CYX(x, cx, x0, y0, px, py, yr, yd);
-    return lYX * cyx / dyx;
+    // H_XY: Y debt active
+    const dxy = DXY(x, cx, x0, y0, px, py, yd, xXYd, zd);
+    if (dxy <= 0) return Infinity; // no debt in this region — position is safe
+    return (vxy * cxx + vzy * zr * pzx + rXY) / (dxy * pXyxVal);
   }
 }
 
 // --- Collateral and Debt on Y side (symmetric) ---
 
-export function computeKy(xd: number, px: number, py: number): number {
-  return xd * px / py;
+// y_YYdebt(y0) = y0 - yr
+export function yYYdebt(y0: number, yr: number): number {
+  return y0 - yr;
 }
 
-export function computeYc(y0: number, cy: number, kY: number): number {
-  if (kY <= 0) return y0;
+// y_YXdebt(y0): where D_YX = 0 (X debt fully repaid)
+export function yYXdebt(y0: number, cy: number, xd: number, px: number, py: number): number {
+  if (xd <= 0) return y0;
+  const kY = xd * px / py;
   if (cy === 0) {
-    return (y0 * y0) / (y0 + kY);
+    return (y0 * y0) / (kY + y0);
   }
   const A = kY - y0 * (2 * cy - 1);
   const disc = A * A + 4 * cy * (1 - cy) * y0 * y0;
@@ -392,38 +754,91 @@ export function CYY(y: number, y0: number, yr: number): number {
   return Math.max(yr - (y0 - y), 0);
 }
 
-export function CXY(y: number, cy: number, y0: number, x0: number, px: number, py: number, xr: number, xd: number): number {
-  const xYdelta = gY(y, cy, y0, x0, px, py) - x0;
+// CYX(y, y0, x0): collateral in X on Y side
+export function CYX_fn(y: number, cy: number, y0: number, x0: number, px: number, py: number, xr: number, xd: number, zd: number): number {
+  const gyVal = gY(y, cy, y0, x0, px, py);
+  if (!isFinite(gyVal)) return NaN;
+  const xYdelta = gyVal - x0;
+  if (zd > 0) {
+    return xr + Math.max(xYdelta, 0);
+  }
   return xr + Math.max(xYdelta - xd, 0);
 }
 
-export function DYY(y: number, y0: number, yr: number, yd: number, yc: number): number {
-  if (y > yc) return 0;
+// DYY(y, y0): debt in Y on Y side
+export function DYY(y: number, y0: number, yr: number, yd: number, yYYd: number, yYXd: number, zd: number): number {
+  if (zd > 0) return 0;
+  if (y > yYYd || y > yYXd) return 0;
   return yd + Math.max((y0 - y) - yr, 0);
 }
 
-export function DXY(y: number, cy: number, y0: number, x0: number, px: number, py: number, xd: number): number {
-  const xYdelta = gY(y, cy, y0, x0, px, py) - x0;
-  return Math.max(xd - xYdelta, 0);
+// DYX(y, y0, x0): debt in X on Y side
+export function DYX(y: number, cy: number, y0: number, x0: number, px: number, py: number, xd: number, yYXd: number, zd: number): number {
+  if (zd > 0) return 0;
+  if (y < yYXd) return 0;
+  const gyVal = gY(y, cy, y0, x0, px, py);
+  if (!isFinite(gyVal)) return NaN;
+  return Math.max(xd - (gyVal - x0), 0);
 }
 
-export function HY(
-  y: number, cy: number, y0: number, x0: number, px: number, py: number,
-  xr: number, yr: number, xd: number, yd: number, lXY: number, yc: number
+// Combined health score on Y side
+export function computeHY(
+  y: number, p: Params, x0: number, y0: number
 ): number {
   if (y <= 0 || y > y0) return NaN;
-  if (y <= yc) {
-    const dyy = DYY(y, y0, yr, yd, yc);
-    if (dyy <= 0) return NaN;
-    const cxy = CXY(y, cy, y0, x0, px, py, xr, xd);
-    const price = -gYd(y, cy, y0, px, py);
-    return lXY * (cxy / price) / dyy;
-  } else {
-    const dxy = DXY(y, cy, y0, x0, px, py, xd);
-    if (dxy <= 0) return NaN;
-    const cxy = CXY(y, cy, y0, x0, px, py, xr, xd);
-    return lXY * cxy / dxy;
+  const { cy, px, py, xr, yr, xd, yd, zr, vyx, vxy, vzx, vzy, vxz, vyz, rYX, rYY, rYZ, pxz } = p;
+  const zd = computeZd(p);
+  const pzx = 1 / pxz;
+  const pzy = pzx * (px / py);
+  const yYYd = yYYdebt(y0, yr);
+  const yYXd = yYXdebt(y0, cy, xd, px, py);
+
+  // Marginal price pYxy at y (1/(-gYd))
+  const pYxyVal = pYxy(y, cy, y0, px, py);
+  if (!isFinite(pYxyVal) || pYxyVal <= 0) return NaN;
+
+  const cyy = CYY(y, y0, yr);
+  const cyx = CYX_fn(y, cy, y0, x0, px, py, xr, xd, zd);
+
+  if (zd > 0) {
+    // H_YZ: Z debt active
+    const dyz = zd;
+    if (dyz <= 0 || pxz <= 0) return NaN;
+    return (vyz * cyy + vxz * cyx * pYxyVal + rYZ) / (dyz * pzy);
   }
+
+  if (y <= yYXd) {
+    // H_YY: Y debt active
+    const dyy = DYY(y, y0, yr, yd, yYYd, yYXd, zd);
+    if (dyy <= 0) return Infinity; // no debt in this region — position is safe
+    return (vxy * cyx * pYxyVal + vzy * zr * pzy + rYY) / dyy;
+  } else {
+    // H_YX: X debt active
+    const dyx = DYX(y, cy, y0, x0, px, py, xd, yYXd, zd);
+    if (dyx <= 0) return Infinity; // no debt in this region — position is safe
+    return (vyx * cyy + vzx * zr * pzy + rYX) / (dyx * pYxyVal);
+  }
+}
+
+// --- NAV (Net Asset Value) in terms of X ---
+// n_XX(x, x0, y0) = CXX + CXY*pXyx + CXZ*pzx - DXX - DXY*pXyx - DXZ*pzx + EXC - EXD
+export function computeNAV_X(x: number, p: Params, x0: number, y0: number): number {
+  if (x <= 0 || x > x0) return NaN;
+  const { cx, px, py, xr, yr, xd, yd, zr, pxz, eXC, eXD } = p;
+  const zd = computeZd(p);
+  const pzx = 1 / pxz;
+  const xXXd = xXXdebt(x0, xr);
+  const xXYd = xXYdebt(x0, cx, yd, px, py);
+
+  const pXyxVal = pXyx(x, cx, x0, px, py);
+  if (!isFinite(pXyxVal)) return NaN;
+
+  const cxx = CXX(x, x0, xr);
+  const cxy = CXY_fn(x, cx, x0, y0, px, py, yr, yd, zd);
+  const dxx = DXX(x, x0, xr, xd, xXXd, xXYd, zd);
+  const dxy = DXY(x, cx, x0, y0, px, py, yd, xXYd, zd);
+
+  return cxx + cxy * pXyxVal + zr * pzx - dxx - dxy * pXyxVal - zd * pzx + eXC - eXD;
 }
 
 // --- Generate collateral/debt/health points ---
@@ -431,24 +846,29 @@ export function HY(
 export interface MultiPoint {
   x: number;
   cxx?: number;
-  cyx?: number;
+  cxy?: number; // C_XY on X side (Y collateral)
   dxx?: number;
-  dyx?: number;
+  dxy?: number; // D_XY on X side (Y debt)
+  dxz?: number; // D_XZ (Z debt, constant)
   hx?: number;
+  navx?: number;
   cyy?: number;
-  cxy?: number;
+  cyx?: number; // C_YX on Y side (X collateral)
   dyy?: number;
-  dxy?: number;
+  dyx?: number; // D_YX on Y side (X debt)
+  dyz?: number;
   hy?: number;
+  navy?: number;
 }
 
 export function generateCollateralDebtPoints(p: Params, n = 300): MultiPoint[] {
-  const { px, py, cx, cy, rx, ry, xr, yr, xd, yd, vyx: lYX } = p;
+  const { cx, rx, xr, yd, px, py } = p;
+  const zd = computeZd(p);
   const x0 = computeX0(p);
   const y0 = computeY0(p);
   const xb = computeXb(x0, rx, cx);
-  const kX = computeKx(yd, py, px);
-  const xc = computeXc(x0, cx, kX);
+  const xXXd = xXXdebt(x0, xr);
+  const xXYd = xXYdebt(x0, cx, yd, px, py);
 
   const points: MultiPoint[] = [];
   const xMax = x0 - xb;
@@ -460,29 +880,33 @@ export function generateCollateralDebtPoints(p: Params, n = 300): MultiPoint[] {
     if (xVirtual <= 0 || xVirtual > x0) continue;
 
     const cxx = CXX(xVirtual, x0, xr);
-    const cyx = CYX(xVirtual, cx, x0, y0, px, py, yr, yd);
-    const dxx = DXX(xVirtual, x0, xr, xd, xc);
-    const dyx = DYX(xVirtual, cx, x0, y0, px, py, yd);
-    const hx = HX(xVirtual, cx, x0, y0, px, py, xr, yr, xd, yd, lYX, xc);
+    const cxy = CXY_fn(xVirtual, cx, x0, y0, px, py, p.yr, yd, zd);
+    const dxx = DXX(xVirtual, x0, xr, p.xd, xXXd, xXYd, zd);
+    const dxy = DXY(xVirtual, cx, x0, y0, px, py, yd, xXYd, zd);
+    const hx = computeHX(xVirtual, p, x0, y0);
+    const navx = computeNAV_X(xVirtual, p, x0, y0);
 
     const pt: MultiPoint = { x: xShifted };
     if (isFinite(cxx)) pt.cxx = cxx;
-    if (isFinite(cyx)) pt.cyx = cyx;
+    if (isFinite(cxy)) pt.cxy = cxy;
     if (isFinite(dxx) && dxx > 0) pt.dxx = dxx;
-    if (isFinite(dyx) && dyx > 0) pt.dyx = dyx;
-    if (isFinite(hx) && hx > 0 && hx < 100) pt.hx = hx;
+    if (isFinite(dxy) && dxy > 0) pt.dxy = dxy;
+    if (zd > 0) pt.dxz = zd;
+    if (hx > 0 && !isNaN(hx)) pt.hx = Math.min(hx, 50); // cap Infinity to visible max
+    if (isFinite(navx)) pt.navx = navx;
     points.push(pt);
   }
   return points;
 }
 
 export function generateCollateralDebtPointsY(p: Params, n = 300): MultiPoint[] {
-  const { px, py, cy, ry, xr, yr, xd, yd, vxy: lXY } = p;
+  const { cy, ry, yr, xd, px, py } = p;
+  const zd = computeZd(p);
   const x0 = computeX0(p);
   const y0 = computeY0(p);
   const yb = computeYb(y0, ry, cy);
-  const kY = computeKy(xd, px, py);
-  const yc = computeYc(y0, cy, kY);
+  const yYYd = yYYdebt(y0, yr);
+  const yYXd = yYXdebt(y0, cy, xd, px, py);
 
   const points: MultiPoint[] = [];
   const yMax = y0 - yb;
@@ -494,28 +918,20 @@ export function generateCollateralDebtPointsY(p: Params, n = 300): MultiPoint[] 
     if (yVirtual <= 0 || yVirtual > y0) continue;
 
     const cyy = CYY(yVirtual, y0, yr);
-    const cxy = CXY(yVirtual, cy, y0, x0, px, py, xr, xd);
-    const dyy = DYY(yVirtual, y0, yr, yd, yc);
-    const dxy = DXY(yVirtual, cy, y0, x0, px, py, xd);
-    const hy = HY(yVirtual, cy, y0, x0, px, py, xr, yr, xd, yd, lXY, yc);
+    const cyx = CYX_fn(yVirtual, cy, y0, x0, px, py, p.xr, xd, zd);
+    const dyy = DYY(yVirtual, y0, yr, p.yd, yYYd, yYXd, zd);
+    const dyx = DYX(yVirtual, cy, y0, x0, px, py, xd, yYXd, zd);
+    const hy = computeHY(yVirtual, p, x0, y0);
 
     const pt: MultiPoint = { x: yShifted };
     if (isFinite(cyy)) pt.cyy = cyy;
-    if (isFinite(cxy)) pt.cxy = cxy;
+    if (isFinite(cyx)) pt.cyx = cyx;
     if (isFinite(dyy) && dyy > 0) pt.dyy = dyy;
-    if (isFinite(dxy) && dxy > 0) pt.dxy = dxy;
-    if (isFinite(hy) && hy > 0 && hy < 100) pt.hy = hy;
+    if (isFinite(dyx) && dyx > 0) pt.dyx = dyx;
+    if (zd > 0) pt.dyz = zd;
+    if (hy > 0 && !isNaN(hy)) pt.hy = Math.min(hy, 50); // cap Infinity to visible max
     points.push(pt);
   }
   return points;
 }
 
-// --- Backward compat aliases for existing component imports ---
-export const f1 = (x: number, x0: number, y0: number, px: number, py: number, cx: number) =>
-  fX(x, cx, x0, y0, px, py);
-export const g1 = (y: number, x0: number, y0: number, px: number, py: number, cy: number) =>
-  gY(y, cy, y0, x0, px, py);
-export const f1d = (x: number, x0: number, px: number, py: number, cx: number) =>
-  fXd(x, cx, x0, px, py);
-export const g1d = (y: number, y0: number, px: number, py: number, cy: number) =>
-  gYd(y, cy, y0, px, py);

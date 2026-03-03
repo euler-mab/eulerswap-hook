@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import { Params, generateCollateralDebtPoints, generateCollateralDebtPointsY } from "@/lib/math";
+import { Params, generateCollateralDebtPoints, generateCollateralDebtPointsY, computeZd } from "@/lib/math";
 
 interface Props {
   params: Params;
@@ -31,14 +31,15 @@ function Legend({ items }: { items: { color: string; label: string }[] }) {
 }
 
 function NoDebtHint() {
-  return <p className="text-xs text-zinc-600 mt-2 px-2">Set x_d or y_d &gt; 0 to see debt and health curves.</p>;
+  return <p className="text-xs text-zinc-600 mt-2 px-2">Set x_d, y_d, or z_dbt &gt; 0 to see debt and health curves.</p>;
 }
 
 export default function HealthChart({ params }: Props) {
   const xPoints = useMemo(() => generateCollateralDebtPoints(params), [params]);
   const yPoints = useMemo(() => generateCollateralDebtPointsY(params), [params]);
 
-  const hasDebt = params.xd > 0 || params.yd > 0;
+  const zd = computeZd(params);
+  const hasDebt = params.xd > 0 || params.yd > 0 || zd > 0;
 
   return (
     <div className="space-y-8">
@@ -53,14 +54,14 @@ export default function HealthChart({ params }: Props) {
               <CartesianGrid {...GRID} />
               <XAxis dataKey="x" type="number" {...AXIS} />
               <YAxis {...AXIS} />
-              <Tooltip {...TIP} formatter={(val: number) => val.toFixed(4)} />
-              <Line type="monotone" dataKey="cxx" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="CXX" />
-              <Line type="monotone" dataKey="cyx" stroke="#8b5cf6" strokeWidth={1.5} dot={false} name="CYX" />
+              <Tooltip {...TIP} />
+              <Line type="monotone" dataKey="cxx" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="C_XX" />
+              <Line type="monotone" dataKey="cxy" stroke="#8b5cf6" strokeWidth={1.5} dot={false} name="C_XY" />
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#3b82f6", label: "CXX — X collateral" },
-            { color: "#8b5cf6", label: "CYX — Y collateral" },
+            { color: "#3b82f6", label: "C_XX — X collateral" },
+            { color: "#8b5cf6", label: "C_XY — Y collateral" },
           ]} />
         </div>
       </section>
@@ -73,14 +74,16 @@ export default function HealthChart({ params }: Props) {
               <CartesianGrid {...GRID} />
               <XAxis dataKey="x" type="number" {...AXIS} />
               <YAxis {...AXIS} />
-              <Tooltip {...TIP} formatter={(val: number) => val.toFixed(4)} />
-              <Line type="monotone" dataKey="dxx" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="DXX" connectNulls={false} />
-              <Line type="monotone" dataKey="dyx" stroke="#ef4444" strokeWidth={1.5} dot={false} name="DYX" connectNulls={false} />
+              <Tooltip {...TIP} />
+              <Line type="monotone" dataKey="dxx" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="D_XX" connectNulls={false} />
+              <Line type="monotone" dataKey="dxy" stroke="#ef4444" strokeWidth={1.5} dot={false} name="D_XY" connectNulls={false} />
+              {zd > 0 && <Line type="monotone" dataKey="dxz" stroke="#ec4899" strokeWidth={1.5} dot={false} name="D_XZ" />}
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#f59e0b", label: "DXX — X debt" },
-            { color: "#ef4444", label: "DYX — Y debt" },
+            { color: "#f59e0b", label: "D_XX — X debt" },
+            { color: "#ef4444", label: "D_XY — Y debt" },
+            ...(zd > 0 ? [{ color: "#ec4899", label: "D_XZ — Z debt" }] : []),
           ]} />
           {!hasDebt && <NoDebtHint />}
         </div>
@@ -94,16 +97,35 @@ export default function HealthChart({ params }: Props) {
               <CartesianGrid {...GRID} />
               <XAxis dataKey="x" type="number" {...AXIS} />
               <YAxis {...AXIS} domain={[0, "auto"]} />
-              <Tooltip {...TIP} formatter={(val: number) => val.toFixed(4)} />
+              <Tooltip {...TIP} />
               <ReferenceLine y={1} stroke="#555" strokeDasharray="6 3" label={{ value: "H=1", position: "right", fill: "#666", fontSize: 10 }} />
-              <Line type="monotone" dataKey="hx" stroke="#34d399" strokeWidth={1.5} dot={false} name="HX" connectNulls={false} />
+              <Line type="monotone" dataKey="hx" stroke="#34d399" strokeWidth={1.5} dot={false} name="H_X" connectNulls={false} />
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#34d399", label: "HX — health score" },
+            { color: "#34d399", label: "H_X — health score" },
             { color: "#555", label: "H = 1 (liquidation)" },
           ]} />
           {!hasDebt && <NoDebtHint />}
+        </div>
+      </section>
+
+      <section>
+        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">NAV (X side)</h3>
+        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={xPoints} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
+              <CartesianGrid {...GRID} />
+              <XAxis dataKey="x" type="number" {...AXIS} />
+              <YAxis {...AXIS} />
+              <Tooltip {...TIP} />
+              <ReferenceLine y={0} stroke="#555" strokeDasharray="6 3" />
+              <Line type="monotone" dataKey="navx" stroke="#06b6d4" strokeWidth={1.5} dot={false} name="NAV_X" connectNulls={false} />
+            </LineChart>
+          </ResponsiveContainer>
+          <Legend items={[
+            { color: "#06b6d4", label: "n_XX — net asset value" },
+          ]} />
         </div>
       </section>
 
@@ -119,14 +141,14 @@ export default function HealthChart({ params }: Props) {
               <CartesianGrid {...GRID} />
               <XAxis dataKey="x" type="number" {...AXIS} label={{ value: "y (shifted)", position: "bottom", fill: "#555", fontSize: 10 }} />
               <YAxis {...AXIS} />
-              <Tooltip {...TIP} formatter={(val: number) => val.toFixed(4)} />
-              <Line type="monotone" dataKey="cyy" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="CYY" />
-              <Line type="monotone" dataKey="cxy" stroke="#8b5cf6" strokeWidth={1.5} dot={false} name="CXY" />
+              <Tooltip {...TIP} />
+              <Line type="monotone" dataKey="cyy" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="C_YY" />
+              <Line type="monotone" dataKey="cyx" stroke="#8b5cf6" strokeWidth={1.5} dot={false} name="C_YX" />
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#3b82f6", label: "CYY — Y collateral" },
-            { color: "#8b5cf6", label: "CXY — X collateral" },
+            { color: "#3b82f6", label: "C_YY — Y collateral" },
+            { color: "#8b5cf6", label: "C_YX — X collateral" },
           ]} />
         </div>
       </section>
@@ -139,14 +161,16 @@ export default function HealthChart({ params }: Props) {
               <CartesianGrid {...GRID} />
               <XAxis dataKey="x" type="number" {...AXIS} label={{ value: "y (shifted)", position: "bottom", fill: "#555", fontSize: 10 }} />
               <YAxis {...AXIS} />
-              <Tooltip {...TIP} formatter={(val: number) => val.toFixed(4)} />
-              <Line type="monotone" dataKey="dyy" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="DYY" connectNulls={false} />
-              <Line type="monotone" dataKey="dxy" stroke="#ef4444" strokeWidth={1.5} dot={false} name="DXY" connectNulls={false} />
+              <Tooltip {...TIP} />
+              <Line type="monotone" dataKey="dyy" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="D_YY" connectNulls={false} />
+              <Line type="monotone" dataKey="dyx" stroke="#ef4444" strokeWidth={1.5} dot={false} name="D_YX" connectNulls={false} />
+              {zd > 0 && <Line type="monotone" dataKey="dyz" stroke="#ec4899" strokeWidth={1.5} dot={false} name="D_YZ" />}
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#f59e0b", label: "DYY — Y debt" },
-            { color: "#ef4444", label: "DXY — X debt" },
+            { color: "#f59e0b", label: "D_YY — Y debt" },
+            { color: "#ef4444", label: "D_YX — X debt" },
+            ...(zd > 0 ? [{ color: "#ec4899", label: "D_YZ — Z debt" }] : []),
           ]} />
           {!hasDebt && <NoDebtHint />}
         </div>
@@ -160,13 +184,13 @@ export default function HealthChart({ params }: Props) {
               <CartesianGrid {...GRID} />
               <XAxis dataKey="x" type="number" {...AXIS} label={{ value: "y (shifted)", position: "bottom", fill: "#555", fontSize: 10 }} />
               <YAxis {...AXIS} domain={[0, "auto"]} />
-              <Tooltip {...TIP} formatter={(val: number) => val.toFixed(4)} />
+              <Tooltip {...TIP} />
               <ReferenceLine y={1} stroke="#555" strokeDasharray="6 3" label={{ value: "H=1", position: "right", fill: "#666", fontSize: 10 }} />
-              <Line type="monotone" dataKey="hy" stroke="#34d399" strokeWidth={1.5} dot={false} name="HY" connectNulls={false} />
+              <Line type="monotone" dataKey="hy" stroke="#34d399" strokeWidth={1.5} dot={false} name="H_Y" connectNulls={false} />
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#34d399", label: "HY — health score" },
+            { color: "#34d399", label: "H_Y — health score" },
             { color: "#555", label: "H = 1 (liquidation)" },
           ]} />
           {!hasDebt && <NoDebtHint />}

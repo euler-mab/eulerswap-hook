@@ -17,8 +17,27 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+type DebtMode = "x" | "y" | "z";
+
+function debtMode(p: Params): DebtMode {
+  if (p.xd > 0) return "x";
+  if (p.yd > 0) return "y";
+  return "z";
+}
+
 export default function ParamControls({ params, onChange }: Props) {
   const set = (key: keyof Params) => (v: number) => onChange({ ...params, [key]: v });
+
+  const mode = debtMode(params);
+  const setDebtMode = (m: DebtMode) => {
+    // Clear other debt types when switching (only one debt asset allowed)
+    onChange({
+      ...params,
+      xd: m === "x" ? (params.xd || 10) : 0,
+      yd: m === "y" ? (params.yd || 10) : 0,
+      zdebt: m === "z" ? (params.zdebt || 10) : 0,
+    });
+  };
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-10 gap-y-5">
@@ -59,10 +78,44 @@ export default function ParamControls({ params, onChange }: Props) {
         <ParamSlider label="z_r" value={params.zr} min={0} max={1000} step={1} onChange={set("zr")} />
       </Section>
 
-      <Section title="Real debts">
-        <ParamSlider label="x_d" value={params.xd} min={0} max={100} step={1} onChange={set("xd")} />
-        <ParamSlider label="y_d" value={params.yd} min={0} max={100} step={1} onChange={set("yd")} />
-        <ParamSlider label="z_dbt" value={params.zdebt} min={0} max={1000} step={1} onChange={set("zdebt")} />
+      <Section title="Active debt (one asset only)">
+        <div className="flex gap-2 mb-1">
+          {(["x", "y", "z"] as DebtMode[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setDebtMode(m)}
+              className={`px-2.5 py-0.5 rounded text-[11px] font-mono transition-colors ${
+                mode === m
+                  ? "bg-zinc-700 text-zinc-100"
+                  : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              {m === "x" ? "X debt" : m === "y" ? "Y debt" : "Z debt"}
+            </button>
+          ))}
+        </div>
+        {mode === "x" && <ParamSlider label="x_d" value={params.xd} min={0} max={100} step={1} onChange={set("xd")} />}
+        {mode === "y" && <ParamSlider label="y_d" value={params.yd} min={0} max={100} step={1} onChange={set("yd")} />}
+        {mode === "z" && <ParamSlider label="z_dbt" value={params.zdebt} min={0} max={1000} step={1} onChange={set("zdebt")} />}
+      </Section>
+
+      <Section title="External collateral (X-side)">
+        <ParamSlider label="R_XX" value={params.rXX} min={0} max={1000} step={1} onChange={set("rXX")} />
+        <ParamSlider label="R_XY" value={params.rXY} min={0} max={1000} step={1} onChange={set("rXY")} />
+        <ParamSlider label="R_XZ" value={params.rXZ} min={0} max={1000} step={1} onChange={set("rXZ")} />
+      </Section>
+
+      <Section title="External collateral (Y-side)">
+        <ParamSlider label="R_YX" value={params.rYX} min={0} max={1000} step={1} onChange={set("rYX")} />
+        <ParamSlider label="R_YY" value={params.rYY} min={0} max={1000} step={1} onChange={set("rYY")} />
+        <ParamSlider label="R_YZ" value={params.rYZ} min={0} max={1000} step={1} onChange={set("rYZ")} />
+      </Section>
+
+      <Section title="Exogenous (NAV)">
+        <ParamSlider label="E_XC" value={params.eXC} min={0} max={1000} step={1} onChange={set("eXC")} />
+        <ParamSlider label="E_XD" value={params.eXD} min={0} max={1000} step={1} onChange={set("eXD")} />
+        <ParamSlider label="E_YC" value={params.eYC} min={0} max={1000} step={1} onChange={set("eYC")} />
+        <ParamSlider label="E_YD" value={params.eYD} min={0} max={1000} step={1} onChange={set("eYD")} />
       </Section>
     </div>
   );
