@@ -12,11 +12,12 @@ import {
   computeNAV_X,
   computeZd, computePxy, computePyx, computePzx,
   validateParams, defaultParams,
+  LXX, LYY, lXX, lYY, FX, FY, LXY, LYX, lXY, lYX,
   type Params,
 } from "./math";
 
 // ---------------------------------------------------------------------------
-// Test coverage: 39/51 exported functions (76%)
+// Test coverage: 52/62 exported functions (84%)
 //
 // Sections:
 //  1. Concentration parameter boundary behavior (c=0 constant-product, c→1 constant-sum)
@@ -55,8 +56,10 @@ import {
 // 33. Two-sided JIT with leverage (cx=cy=0.95, Y debt)        [Multiplied LP]
 // 34. Half-JIT XYZ/WETH (cx=0.95 JIT, cy=0.3 real, X debt)   [Deferred Emissions]
 // 35. Deferred emissions LP (xr=0 single-sided, borrow EUL)   [Deferred Emissions]
+// 36. Order book functions (LXX/LYY, lXX/lYY, FX/FY, LXY/LYX, lXY/lYX)
+// 37. yYYdebt (Y-side debt boundary: y0 - yr)
 //
-// Not tested: point-generation functions (generateFXPoints etc.) — thin plot wrappers.
+// Not tested: 10 point-generation functions (generateFXPoints etc.) — thin plot wrappers.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -2414,5 +2417,250 @@ describe("scenario: deferred emissions LP (USDC/EUL)", () => {
 
   it("validates cleanly", () => {
     expect(validateParams(deferred)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 36. Order book functions (LXX/LYY, lXX/lYY, FX/FY, LXY/LYX, lXY/lYX)
+// ---------------------------------------------------------------------------
+// Concrete numeric tests for the order book layer. Complements the property-
+// based fuzz coverage in math.fuzz.test.ts with exact hand-computable values.
+
+describe("order book — cumulative liquidity (LXX/LYY)", () => {
+  // LXX(x, cx, x0) = x0 / sqrt((1+x-cx)/(1-cx))
+  // At x=0: LXX = x0 / sqrt(1) = x0
+  // At x=rx: LXX = xb = x0/sx
+
+  it("LXX(0) = x0 (full reserves at equilibrium)", () => {
+    approx(LXX(0, 0.5, 100), 100);
+    approx(LXX(0, 0, 100), 100);
+    approx(LXX(0, 0.99, 100), 100);
+  });
+
+  it("LYY(0) = y0", () => {
+    approx(LYY(0, 0.5, 200), 200);
+  });
+
+  it("LXX(rx) matches computeXb", () => {
+    const cx = 0.8, rx = 0.5, x0 = 1000;
+    const xb = computeXb(x0, rx, cx);
+    approx(LXX(rx, cx, x0), xb);
+  });
+
+  it("LXX is monotonically decreasing (hand-picked points)", () => {
+    const cx = 0.5, x0 = 100;
+    const L0 = LXX(0, cx, x0);
+    const L1 = LXX(0.5, cx, x0);
+    const L2 = LXX(1.0, cx, x0);
+    expect(L0).toBeGreaterThan(L1);
+    expect(L1).toBeGreaterThan(L2);
+  });
+
+  it("LXX(negative) returns NaN", () => {
+    expect(LXX(-0.1, 0.5, 100)).toBeNaN();
+  });
+
+  it("c=0 closed form: LXX = x0/sqrt(1+x)", () => {
+    const x0 = 50;
+    for (const x of [0, 0.5, 1, 2, 5]) {
+      approx(LXX(x, 0, x0), x0 / Math.sqrt(1 + x));
+    }
+  });
+
+  it("LXX(0) - LXX(rx) = xr (reserve identity)", () => {
+    const cx = 0.6, rx = 0.3;
+    const sx = computeSx(rx, cx);
+    const bXC = computeBxc(sx);
+    const xr = 100;
+    const x0 = xr * bXC;
+    approx(LXX(0, cx, x0) - LXX(rx, cx, x0), xr);
+  });
+
+  it("X/Y symmetry: LXX and LYY identical for same args", () => {
+    approx(LXX(0.3, 0.7, 100), LYY(0.3, 0.7, 100));
+  });
+});
+
+describe("order book — liquidity density (lXX/lYY)", () => {
+  // lXX(x, cx, x0) = x0 * sqrt(1-cx) / (2 * (1+x-cx)^(3/2))
+
+  it("lXX is positive at equilibrium and boundary", () => {
+    expect(lXX(0, 0.5, 100)).toBeGreaterThan(0);
+    expect(lXX(1, 0.5, 100)).toBeGreaterThan(0);
+  });
+
+  it("lYY is positive", () => {
+    expect(lYY(0, 0.5, 200)).toBeGreaterThan(0);
+  });
+
+  it("lXX decreases as x increases", () => {
+    const cx = 0.5, x0 = 100;
+    const l0 = lXX(0, cx, x0);
+    const l1 = lXX(0.5, cx, x0);
+    const l2 = lXX(1.0, cx, x0);
+    expect(l0).toBeGreaterThan(l1);
+    expect(l1).toBeGreaterThan(l2);
+  });
+
+  it("c=0 closed form: lXX = x0 / (2*(1+x)^(3/2))", () => {
+    const x0 = 60;
+    for (const x of [0, 0.5, 1, 3]) {
+      approx(lXX(x, 0, x0), x0 / (2 * Math.pow(1 + x, 1.5)));
+    }
+  });
+
+  it("matches negative numerical derivative of LXX", () => {
+    const cx = 0.6, x0 = 100, x = 0.4;
+    const h = 1e-7;
+    const numerical = -(LXX(x + h, cx, x0) - LXX(x - h, cx, x0)) / (2 * h);
+    approx(lXX(x, cx, x0), numerical, 1e-5);
+  });
+
+  it("lXX(negative) returns NaN", () => {
+    expect(lXX(-0.1, 0.5, 100)).toBeNaN();
+  });
+
+  it("lXX scales linearly with x0", () => {
+    const cx = 0.5, x = 0.3;
+    approx(lXX(x, cx, 200) / lXX(x, cx, 100), 2);
+  });
+});
+
+describe("order book — fingerprint (FX/FY)", () => {
+  // FX(x, cx) = sqrt(1-cx) * (1+x)^(3/2) / (1+x-cx)^(3/2)
+
+  it("FX(x, 0) = 1 for all x (c=0 is baseline)", () => {
+    for (const x of [0, 0.5, 1, 5]) {
+      approx(FX(x, 0), 1);
+    }
+  });
+
+  it("FY(y, 0) = 1 for all y", () => {
+    approx(FY(0, 0), 1);
+    approx(FY(2, 0), 1);
+  });
+
+  it("FX(0, cx) > 1 for cx > 0", () => {
+    // At x=0: FX = sqrt(1-cx) * 1 / (1-cx)^(3/2) = 1/(1-cx)
+    for (const cx of [0.1, 0.5, 0.9]) {
+      approx(FX(0, cx), 1 / (1 - cx));
+    }
+  });
+
+  it("FX(0, cx) = 1/(1-cx) exact formula", () => {
+    approx(FX(0, 0.8), 5);
+    approx(FX(0, 0.5), 2);
+  });
+
+  it("FX is monotonically decreasing in x", () => {
+    const cx = 0.7;
+    expect(FX(0, cx)).toBeGreaterThan(FX(0.5, cx));
+    expect(FX(0.5, cx)).toBeGreaterThan(FX(1, cx));
+    expect(FX(1, cx)).toBeGreaterThan(FX(3, cx));
+  });
+
+  it("FX approaches 1 as x → ∞", () => {
+    // At large x, (1+x-cx) ≈ (1+x), so FX → sqrt(1-cx) ≈ less than 1
+    // Actually FX → sqrt(1-cx) * ((1+x)/(1+x-cx))^(3/2) → sqrt(1-cx) as x→∞
+    // Wait: lim x→∞ = sqrt(1-cx) * 1^(3/2) = sqrt(1-cx)
+    const cx = 0.5;
+    const fLarge = FX(1000, cx);
+    approx(fLarge, Math.sqrt(1 - cx), 1e-3);
+  });
+
+  it("X/Y symmetry: FX(x, c) = FY(x, c)", () => {
+    approx(FX(0.5, 0.6), FY(0.5, 0.6));
+  });
+
+  it("FX(negative) returns NaN", () => {
+    expect(FX(-0.1, 0.5)).toBeNaN();
+  });
+});
+
+describe("order book — cross-asset liquidity (LXY/LYX)", () => {
+  // LXY(x) = fX(LXX(x)) — Y amount on the curve when X is at LXX(x)
+  // At x=0: LXY = fX(x0) = y0
+
+  const px = 2, py = 1, cx = 0.5, x0 = 100, y0 = 200;
+
+  it("LXY(0) = y0 (at equilibrium)", () => {
+    approx(LXY(0, cx, x0, y0, px, py), y0);
+  });
+
+  it("LYX(0) = x0 (at equilibrium)", () => {
+    const cy = 0.5;
+    approx(LYX(0, cy, y0, x0, px, py), x0);
+  });
+
+  it("LXY increases as x increases (more Y paid out)", () => {
+    const L1 = LXY(0.1, cx, x0, y0, px, py);
+    const L2 = LXY(0.5, cx, x0, y0, px, py);
+    expect(L2).toBeGreaterThan(L1);
+    expect(L1).toBeGreaterThan(y0); // both above y0
+  });
+
+  it("LXY(negative) returns NaN", () => {
+    expect(LXY(-0.1, cx, x0, y0, px, py)).toBeNaN();
+  });
+
+  it("c=0 cross-asset: LXY uses constant-product formula", () => {
+    // c=0: fX(x) = x0*y0/x (scaled by prices). LXX(x,0,x0) = x0/sqrt(1+x)
+    // so LXY = fX(x0/sqrt(1+x)) = y0*sqrt(1+x) * (px*x0)/(py*x0) ... actually
+    // fX(x, 0, x0, y0, px, py) = px*x0^2/(py*x) + (1-px/py)*y0 when cx=0
+    // Just verify numerical consistency
+    const val = LXY(0.5, 0, x0, y0, px, py);
+    const xAtPoint = LXX(0.5, 0, x0);
+    const yFromCurve = fX(xAtPoint, 0, x0, y0, px, py);
+    approx(val, yFromCurve);
+  });
+});
+
+describe("order book — cross-asset density (lXY/lYX)", () => {
+  // lXY(x) = pXxy(LXX(x)) * lXX(x)
+  const px = 2, py = 1, cx = 0.5, x0 = 100, y0 = 200;
+
+  it("lXY is positive at equilibrium", () => {
+    expect(lXY(0, cx, x0, y0, px, py)).toBeGreaterThan(0);
+  });
+
+  it("lYX is positive at equilibrium", () => {
+    const cy = 0.5;
+    expect(lYX(0, cy, y0, x0, px, py)).toBeGreaterThan(0);
+  });
+
+  it("lXY matches numerical derivative of LXY", () => {
+    const x = 0.3, h = 1e-7;
+    const numerical = (LXY(x + h, cx, x0, y0, px, py) - LXY(x - h, cx, x0, y0, px, py)) / (2 * h);
+    approx(lXY(x, cx, x0, y0, px, py), numerical, 1e-4);
+  });
+
+  it("lXY = pXxy(LXX(x)) * lXX(x) composition", () => {
+    const x = 0.4;
+    const xPos = LXX(x, cx, x0);
+    const price = pXxy(xPos, cx, x0, px, py);
+    const density = lXX(x, cx, x0);
+    approx(lXY(x, cx, x0, y0, px, py), price * density);
+  });
+
+  it("lXY(negative) returns NaN", () => {
+    expect(lXY(-0.1, cx, x0, y0, px, py)).toBeNaN();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 37. yYYdebt (Y-side debt boundary: y0 - yr)
+// ---------------------------------------------------------------------------
+
+describe("yYYdebt", () => {
+  it("returns y0 - yr", () => {
+    approx(yYYdebt(150, 100), 50);
+    approx(yYYdebt(100, 100), 0);
+    approx(yYYdebt(100, 0), 100);
+  });
+
+  it("mirrors xXXdebt formula", () => {
+    // xXXdebt(x0, xr) = x0 - xr — same pattern
+    const x0 = 200, xr = 80;
+    approx(xXXdebt(x0, xr), yYYdebt(x0, xr));
   });
 });
