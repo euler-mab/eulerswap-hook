@@ -46,6 +46,7 @@ import {
 // 32. PSM / instant redemption (asymmetric cx=0.999 vs cy=0.3, peg stability)
 // 33. Two-sided JIT with leverage (cx=cy=0.95, Y debt, mutual cross-collateral)
 // 34. Half-JIT (cx=0.95 JIT on XYZ side, cy=0.3 real reserves on WETH side, X debt)
+// 35. Deferred emissions LP (xr=0 single-sided USDC, borrow EUL JIT, Y-side only)
 //
 // Not tested: point-generation functions (generateFXPoints etc.) — thin plot wrappers.
 // ---------------------------------------------------------------------------
@@ -2327,5 +2328,76 @@ describe("scenario: half-JIT (XYZ/WETH)", () => {
 
   it("validates cleanly", () => {
     expect(validateParams(halfJit)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 35. Deferred Emissions LP (USDC collateral only, borrow EUL JIT)
+// ---------------------------------------------------------------------------
+// Single-sided USDC deposits (xr=0, yr=200k). EUL ($5) borrowed JIT to
+// service buy orders (xd=10k). Y-side is JIT-concentrated (cy=0.95,
+// ry=0.001). x0=0 because there are no X reserves — the pool only
+// supports one-way swaps (buy EUL with USDC). DAO defers token emissions
+// by borrowing EUL instead of depositing it.
+
+describe("scenario: deferred emissions LP (USDC/EUL)", () => {
+  const deferred: Params = {
+    ...defaultParams,
+    px: 5, py: 1,         // EUL=$5, USDC=$1
+    cx: 0.5, cy: 0.95,    // moderate X, high Y (JIT)
+    rx: 1, ry: 0.001,     // wide X (unused), tight Y
+    xr: 0, yr: 200_000,   // USDC only — no EUL deposits
+    xd: 10_000, yd: 0, zdebt: 0, zr: 0, // borrow 10k EUL
+    vyx: 0.8, vxy: 0.8,
+    vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0, pxz: 1,
+  };
+
+  const deferredNoLev: Params = {
+    ...deferred, xd: 0, vyx: 0, vxy: 0,
+  };
+
+  it("x0 = 0 (no X reserves, pool is Y-side only)", () => {
+    expect(computeX0(deferred)).toBe(0);
+  });
+
+  it("y0 is massively amplified by JIT concentration + leverage", () => {
+    const y0v = computeY0(deferred);
+    // cy=0.95, ry=0.001: sy ≈ 1.01, bYC ≈ 101
+    // Plus leverage from xd=10k → even higher
+    expect(y0v / deferred.yr).toBeGreaterThan(100);
+  });
+
+  it("leverage boost exceeds concentration-only", () => {
+    const y0Lev = computeY0(deferred);
+    const y0NoLev = computeY0(deferredNoLev);
+    expect(y0Lev).toBeGreaterThan(y0NoLev);
+  });
+
+  it("Y-side health ≥ 1 throughout range (X debt)", () => {
+    const x0v = computeX0(deferred);
+    const y0v = computeY0(deferred);
+    const yb = computeYb(y0v, deferred.ry, deferred.cy);
+    const eps = (y0v - yb) * 0.01;
+    for (let i = 0; i <= 30; i++) {
+      const y = yb + eps + (y0v - yb - 2 * eps) * (i / 30);
+      const h = computeHY(y, deferred, x0v, y0v);
+      if (!isNaN(h) && isFinite(h)) {
+        expect(h).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it("Y-side health at boundary ≈ 1", () => {
+    const x0v = computeX0(deferred);
+    const y0v = computeY0(deferred);
+    const yb = computeYb(y0v, deferred.ry, deferred.cy);
+    const h = computeHY(yb + 1e-3, deferred, x0v, y0v);
+    approx(h, 1, 0.02);
+  });
+
+  it("validates cleanly", () => {
+    expect(validateParams(deferred)).toEqual([]);
   });
 });
