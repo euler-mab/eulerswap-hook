@@ -430,10 +430,22 @@ describe("simulation consistency", () => {
     const result = runSimulation(baseParams, defaultSimConfig);
     const step0 = result.steps[0];
     const eqPrice = baseParams.px / baseParams.py;
-    const expectedNav = baseParams.xr * eqPrice + baseParams.yr;
+    const expectedNav = baseParams.xr * eqPrice + baseParams.yr
+      - baseParams.xd * eqPrice - baseParams.yd;
     expect(Math.abs(step0.lpNav - expectedNav)).toBeLessThan(1e-9);
     expect(Math.abs(step0.hodlNav - expectedNav)).toBeLessThan(1e-9);
     expect(step0.feesCum).toBe(0);
+  });
+
+  it("initial debt reduces NAV correctly", () => {
+    const debtParams: Params = { ...baseParams, yd: 20 };
+    const result = runSimulation(debtParams, defaultSimConfig);
+    const step0 = result.steps[0];
+    const eqPrice = debtParams.px / debtParams.py;
+    const expectedNav = debtParams.xr * eqPrice + debtParams.yr
+      - debtParams.xd * eqPrice - debtParams.yd;
+    expect(Math.abs(step0.lpNav - expectedNav)).toBeLessThan(1e-9);
+    expect(step0.lpNav).toBeLessThan(baseParams.xr * eqPrice + baseParams.yr);
   });
 
   it("fees are monotonically non-decreasing", () => {

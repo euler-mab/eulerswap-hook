@@ -164,7 +164,8 @@ export function runSimulation(params: Params, config: SimConfig): SimResult {
   let maxDrawdown = 0;
   let stepsInRange = 0;
 
-  const initialNav = xr * pEquil + yr;
+  const { xd, yd } = params;
+  const initialNav = xr * pEquil + yr - xd * pEquil - yd;
   peakNav = initialNav;
 
   const steps: SimStep[] = [];
@@ -234,8 +235,8 @@ export function runSimulation(params: Params, config: SimConfig): SimResult {
       debtY = Math.max(consumed - yr, 0);
     }
 
-    const lpNav = realX * extPrice + realY - debtX * extPrice - debtY;
-    const hodlNav = xr * extPrice + yr;
+    const lpNav = realX * extPrice + realY - (debtX + xd) * extPrice - (debtY + yd);
+    const hodlNav = xr * extPrice + yr - xd * extPrice - yd;
     const netPnl = lpNav + cumFees - hodlNav;
 
     // Health
