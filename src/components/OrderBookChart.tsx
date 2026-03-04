@@ -16,6 +16,19 @@ import {
 } from "@/lib/math";
 import Tex from "./Tex";
 
+/**
+ * Numeraire modes for order book charts.
+ * - "raw": native units (X for ask side, Y for bid side) — no conversion
+ * - "x": everything converted to X units using AMM marginal price
+ * - "y": everything converted to Y units using AMM marginal price
+ * - "ext": everything converted to external numeraire (e.g. USD) using oracle prices px, py, pz
+ *
+ * Conversion uses `toNum(xAmt, yAmt, zAmt)` which applies the appropriate
+ * price depending on mode. For "raw"/"y" modes, X↔Y conversion uses the
+ * *AMM marginal price at that point* (not oracle), giving an accurate
+ * picture of what the position is worth at each price level.
+ * For "ext" mode, oracle prices (px, py, pz) are used directly.
+ */
 export type Numeraire = "raw" | "x" | "y" | "ext";
 
 interface Props {
@@ -100,6 +113,9 @@ export default function OrderBookChart({ params, labelX, labelY, labelZ, labelNu
   const symZ = labelZ ?? "Z";
   const symNum = labelNum ?? "USD";
 
+  // Compute all chart datasets: collateral/debt, depth, density, fingerprint.
+  // X-axis uses log(marginal price) for uniform spacing across price range.
+  // Each dataset converts values to the selected numeraire via toNum().
   const data = useMemo(() => {
     const { px, py, cx, cy, rx, ry } = params;
     const x0 = computeX0(params);

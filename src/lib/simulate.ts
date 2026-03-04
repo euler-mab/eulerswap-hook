@@ -1,3 +1,12 @@
+/**
+ * LP simulation engine for EulerSwap.
+ *
+ * Generates synthetic price paths (GBM) and replays arb trades against the pool
+ * to produce time-series data for LP P&L, fees, impermanent loss, reserves, and
+ * health score. Uses a closed-form arb solver (no binary search) to find the
+ * target AMM position for any external price in O(1).
+ */
+
 import {
   Params,
   computeX0, computeY0, computeXb, computeYb,
@@ -9,6 +18,7 @@ import {
 
 // ─── Config & Result Types ──────────────────────────────────────────
 
+/** Configuration for a single simulation run. */
 export interface SimConfig {
   vol: number;           // annualized volatility (e.g. 0.80)
   drift: number;         // annualized drift (e.g. 0)
@@ -27,6 +37,7 @@ export const defaultSimConfig: SimConfig = {
   seed: 42,
 };
 
+/** State snapshot at a single simulation timestep. All monetary values in Y units. */
 export interface SimStep {
   t: number;              // time in days
   extPrice: number;       // external price (Y per X)
@@ -42,6 +53,7 @@ export interface SimStep {
   inRange: boolean;       // within price boundaries
 }
 
+/** Complete simulation output: full time series + summary statistics. */
 export interface SimResult {
   steps: SimStep[];
   summary: {
@@ -123,6 +135,14 @@ export function solveYForPrice(
 
 // ─── Simulation Loop ────────────────────────────────────────────────
 
+/**
+ * Run a full LP simulation: generate GBM price path, arb to each price,
+ * track reserves/NAV/fees/health over time.
+ *
+ * Per step: read external price → solve target position (closed-form) →
+ * compute fee on trade notional → update reserves → compute LP/HODL NAV →
+ * check health/liquidation → record step.
+ */
 export function runSimulation(params: Params, config: SimConfig): SimResult {
   const { px, py, cx, cy, rx, ry, xr, yr } = params;
   const x0 = computeX0(params);

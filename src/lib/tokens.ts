@@ -1,8 +1,9 @@
+/** Token metadata for presets. Prices are approximate USD values for default configuration. */
 export interface Token {
   symbol: string;
   name: string;
-  price: number;   // USD
-  color: string;
+  price: number;   // approximate USD price (used for preset px/py values)
+  color: string;   // brand color for UI
 }
 
 export const TOKENS: Token[] = [
@@ -13,6 +14,7 @@ export const TOKENS: Token[] = [
   { symbol: "USDT", name: "Tether",      price: 1,     color: "#26a17b" },
 ];
 
+/** Look up a token by symbol. Falls back to the first token (ETH) if not found. */
 export function getToken(symbol: string): Token {
   return TOKENS.find((t) => t.symbol === symbol) ?? TOKENS[0];
 }

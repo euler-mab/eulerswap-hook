@@ -853,16 +853,14 @@ export function generateShiftedGYPoints(
 }
 
 // --- Collateral and Debt on X side ---
-// Swap deltas
-// x_Xdelta(x, x0) = x0 - x
-// y_Xdelta(x, x0, y0) = fX(x, cx, x0, y0) - y0
+// Swap deltas: x_Xdelta = x0 - x, y_Xdelta = fX(x) - y0
 
-// x_XXdebt(x0) = x0 - xr (where C_XX = 0)
+/** Virtual x where real X reserves are fully depleted (C_XX = 0). */
 export function xXXdebt(x0: number, xr: number): number {
   return x0 - xr;
 }
 
-// x_XYdebt(x0): where D_XY = 0 (Y debt fully repaid)
+/** Virtual x where Y debt is fully repaid by swap (D_XY = 0). Solves fX(x)−y0 = yd. */
 export function xXYdebt(x0: number, cx: number, yd: number, px: number, py: number): number {
   if (yd <= 0) return x0;
   const kX = yd * py / px;
@@ -875,14 +873,12 @@ export function xXYdebt(x0: number, cx: number, yd: number, px: number, py: numb
   return (x0 * (2 * cx - 1) - kX + Math.sqrt(disc)) / (2 * cx);
 }
 
-// CXX(x, x0) = max(xr - xXdelta, 0) where xXdelta = x0 - x
+/** X collateral on X side: max(xr − (x0−x), 0). Zero when X reserves are depleted. */
 export function CXX(x: number, x0: number, xr: number): number {
   return Math.max(xr - (x0 - x), 0);
 }
 
-// CXY(x, x0, y0): collateral in Y on the X side
-// z_d > 0: yr + max(yXdelta, 0)
-// else: yr + max(yXdelta - yd, 0)
+/** Y collateral on X side. Includes yr plus Y gained from swap, minus Y debt if applicable. */
 export function CXY_fn(x: number, cx: number, x0: number, y0: number, px: number, py: number, yr: number, yd: number, zd: number): number {
   const fxVal = fX(x, cx, x0, y0, px, py);
   if (!isFinite(fxVal)) return NaN;
@@ -893,18 +889,14 @@ export function CXY_fn(x: number, cx: number, x0: number, y0: number, px: number
   return yr + Math.max(yXdelta - yd, 0);
 }
 
-// DXX(x, x0): debt in X on X side
-// z_d > 0: 0
-// else: (xd + max(xXdelta - xr, 0)) {x <= xXXdebt} {x <= xXYdebt}
+/** X debt on X side: xd plus excess swap delta beyond xr. Zero when Z debt or outside phase. */
 export function DXX(x: number, x0: number, xr: number, xd: number, xXXd: number, xXYd: number, zd: number): number {
   if (zd > 0) return 0;
   if (x > xXXd || x > xXYd) return 0;
   return xd + Math.max((x0 - x) - xr, 0);
 }
 
-// DXY(x, x0, y0): debt in Y on X side
-// z_d > 0: 0
-// else: max(yd - yXdelta, 0) {x >= xXYdebt}
+/** Y debt on X side: remaining yd not yet repaid by swap delta. Zero when Z debt or past xXYdebt. */
 export function DXY(x: number, cx: number, x0: number, y0: number, px: number, py: number, yd: number, xXYd: number, zd: number): number {
   if (zd > 0) return 0;
   if (x < xXYd) return 0;
@@ -918,7 +910,11 @@ export function DXY(x: number, cx: number, x0: number, y0: number, px: number, p
 
 // --- Health scores on X side (three branches) ---
 
-// Combined health score on X side using full params
+/**
+ * Health score on X side at virtual reserve x.
+ * Three branches: H_XZ (Z debt), H_XX (X debt phase), H_XY (Y debt phase).
+ * Returns Infinity when no debt is outstanding in the current phase.
+ */
 export function computeHX(
   x: number, p: Params, x0: number, y0: number
 ): number {
@@ -957,14 +953,14 @@ export function computeHX(
   }
 }
 
-// --- Collateral and Debt on Y side (symmetric) ---
+// --- Collateral and Debt on Y side (symmetric to X side) ---
 
-// y_YYdebt(y0) = y0 - yr
+/** Virtual y where real Y reserves are fully depleted (C_YY = 0). */
 export function yYYdebt(y0: number, yr: number): number {
   return y0 - yr;
 }
 
-// y_YXdebt(y0): where D_YX = 0 (X debt fully repaid)
+/** Virtual y where X debt is fully repaid by swap (D_YX = 0). Solves gY(y)−x0 = xd. */
 export function yYXdebt(y0: number, cy: number, xd: number, px: number, py: number): number {
   if (xd <= 0) return y0;
   const kY = xd * px / py;
@@ -977,11 +973,12 @@ export function yYXdebt(y0: number, cy: number, xd: number, px: number, py: numb
   return (y0 * (2 * cy - 1) - kY + Math.sqrt(disc)) / (2 * cy);
 }
 
+/** Y collateral on Y side: max(yr − (y0−y), 0). Zero when Y reserves are depleted. */
 export function CYY(y: number, y0: number, yr: number): number {
   return Math.max(yr - (y0 - y), 0);
 }
 
-// CYX(y, y0, x0): collateral in X on Y side
+/** X collateral on Y side. Includes xr plus X gained from swap, minus X debt if applicable. */
 export function CYX_fn(y: number, cy: number, y0: number, x0: number, px: number, py: number, xr: number, xd: number, zd: number): number {
   const gyVal = gY(y, cy, y0, x0, px, py);
   if (!isFinite(gyVal)) return NaN;
@@ -992,14 +989,14 @@ export function CYX_fn(y: number, cy: number, y0: number, x0: number, px: number
   return xr + Math.max(xYdelta - xd, 0);
 }
 
-// DYY(y, y0): debt in Y on Y side
+/** Y debt on Y side: yd plus excess swap delta beyond yr. Zero when Z debt or outside phase. */
 export function DYY(y: number, y0: number, yr: number, yd: number, yYYd: number, yYXd: number, zd: number): number {
   if (zd > 0) return 0;
   if (y > yYYd || y > yYXd) return 0;
   return yd + Math.max((y0 - y) - yr, 0);
 }
 
-// DYX(y, y0, x0): debt in X on Y side
+/** X debt on Y side: remaining xd not yet repaid by swap delta. Zero when Z debt or past yYXdebt. */
 export function DYX(y: number, cy: number, y0: number, x0: number, px: number, py: number, xd: number, yYXd: number, zd: number): number {
   if (zd > 0) return 0;
   if (y < yYXd) return 0;
@@ -1008,7 +1005,11 @@ export function DYX(y: number, cy: number, y0: number, x0: number, px: number, p
   return Math.max(xd - (gyVal - x0), 0);
 }
 
-// Combined health score on Y side
+/**
+ * Health score on Y side at virtual reserve y.
+ * Three branches: H_YZ (Z debt), H_YY (Y debt phase), H_YX (X debt phase).
+ * Returns Infinity when no debt is outstanding in the current phase.
+ */
 export function computeHY(
   y: number, p: Params, x0: number, y0: number
 ): number {
@@ -1047,8 +1048,7 @@ export function computeHY(
   }
 }
 
-// --- NAV (Net Asset Value) in terms of X ---
-// n_XX(x, x0, y0) = CXX + CXY*pXyx + CXZ*pzx - DXX - DXY*pXyx - DXZ*pzx + EXC - EXD
+/** Net Asset Value in X units on X side. Collateral minus debt, all converted to X. */
 export function computeNAV_X(x: number, p: Params, x0: number, y0: number): number {
   if (x <= 0 || x > x0) return NaN;
   const { cx, px, py, xr, yr, xd, yd, zr, pxz, eXC, eXD } = p;
@@ -1068,8 +1068,7 @@ export function computeNAV_X(x: number, p: Params, x0: number, y0: number): numb
   return cxx + cxy * pXyxVal + zr * pzx - dxx - dxy * pXyxVal - zd * pzx + eXC - eXD;
 }
 
-// --- NAV (Net Asset Value) in terms of Y ---
-// n_YY(y, y0, x0) = CYY + CYX*pYxy + CYZ*pzy - DYY - DYX*pYxy - DYZ*pzy + EYC - EYD
+/** Net Asset Value in Y units on Y side. Collateral minus debt, all converted to Y. */
 export function computeNAV_Y(y: number, p: Params, x0: number, y0: number): number {
   if (y <= 0 || y > y0) return NaN;
   const { cy, px, py, xr, yr, xd, yd, zr, pxz, eYC, eYD } = p;
@@ -1092,6 +1091,7 @@ export function computeNAV_Y(y: number, p: Params, x0: number, y0: number): numb
 
 // --- Generate collateral/debt/health points ---
 
+/** Collateral, debt, health, and NAV at a single virtual reserve position. */
 export interface MultiPoint {
   x: number;
   cxx?: number;
@@ -1110,6 +1110,7 @@ export interface MultiPoint {
   navy?: number;
 }
 
+/** Generate n collateral/debt/health/NAV points across the X-side range. ext > 1 extends past boundary. */
 export function generateCollateralDebtPoints(p: Params, n = 300, ext = 1.0): MultiPoint[] {
   const { cx, rx, xr, yd, px, py } = p;
   const zd = computeZd(p);
@@ -1150,6 +1151,7 @@ export function generateCollateralDebtPoints(p: Params, n = 300, ext = 1.0): Mul
   return points;
 }
 
+/** Generate n collateral/debt/health/NAV points across the Y-side range. ext > 1 extends past boundary. */
 export function generateCollateralDebtPointsY(p: Params, n = 300, ext = 1.0): MultiPoint[] {
   const { cy, ry, yr, xd, px, py } = p;
   const zd = computeZd(p);

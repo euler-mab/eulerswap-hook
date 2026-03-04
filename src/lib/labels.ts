@@ -1,3 +1,7 @@
+/**
+ * Display labels for the three pool assets and the external numeraire.
+ * Pure UI naming layer — does not affect any math.
+ */
 export interface AssetLabels {
   x: string;
   y: string;
