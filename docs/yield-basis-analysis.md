@@ -480,25 +480,50 @@ This is always negative (loss), scales with `cx/(1−cx)`, and is `O(ε²)` — 
 
 ### Practical Implications
 
-| Parameter | IL Behavior | Trade-off |
-|-----------|-------------|-----------|
-| `cx = 0, L = 2` | **Exact elimination** | Low capital efficiency (wide range) |
-| `cx > 0, L = 2` | **Approximate** — residual ∝ `cx·ε²/(1−cx)` | Higher capital efficiency but residual IL |
-| `cx = 0, L = 1` | Standard AMM IL (`√r − 1`) | No leverage needed |
-| `cx = 0, L = 3` | Over-leveraged — beats HODL when price rises | Magnified losses when price drops |
+#### cx=0 does not mean low capital efficiency
 
-The optimal operating point for a hook-based strategy:
-- **cx = 0** for exact IL elimination (requires the widest range, lowest capital efficiency)
-- **Small cx** for approximately-eliminated IL with improved capital efficiency
-- **L = 2** is the unique leverage that eliminates IL for `cx = 0`
+Capital efficiency in EulerSwap comes from **two independent sources**:
+
+1. **Concentration parameter `cx`**: Interpolates curve shape between constant-product (cx=0) and constant-sum (cx→1)
+2. **Price range `rx`, `ry`**: Controls how far from equilibrium the pool operates. Narrower range = higher concentration boost `bXC = sX/(sX−1)` where `sX = √(1+rx)` (at cx=0)
+
+With cx=0, the price range alone provides excellent capital efficiency:
+
+| rx | Price range (Y/X) | bXC boost | With L=2 |
+|----|-------------------|-----------|----------|
+| 0.01 | 0.99 – 1.01 | 201x | 403x |
+| 0.05 | 0.95 – 1.05 | 41x | 83x |
+| 0.10 | 0.91 – 1.10 | 21x | 43x |
+| 0.20 | 0.83 – 1.20 | 11x | 23x |
+| 0.50 | 0.67 – 1.50 | 5.4x | 11x |
+| 1.00 | 0.50 – 2.00 | 3.4x | 6.8x |
+
+A 10% range (rx=0.1) at cx=0 gives **21x** concentration boost from range alone, and **43x** with L=2 leverage. This is comparable to Uniswap v3 concentrated positions.
+
+The key advantage of the releverage hook: **the range re-centers after every swap**, so the window always tracks the current price. A narrow range doesn't mean the pool stops working outside it — the hook moves the range to wherever the price is.
+
+#### Strategy matrix
+
+| Parameter | IL Behavior | Capital Efficiency |
+|-----------|-------------|-----------|
+| `cx = 0, L = 2` | **Exact elimination** | Set by `rx/ry` — narrow range = high efficiency |
+| `cx > 0, L = 2` | Residual ∝ `cx·ε²/(1−cx)` | Higher from cx, but IL not eliminated |
+| `cx = 0, L = 1` | Standard AMM IL (`√r − 1`) | Range-only concentration |
+| `cx = 0, L = 3` | Over-leveraged | Higher virtual liquidity, but magnified downside |
+
+The optimal configuration for a hook-based IL-elimination strategy:
+- **cx = 0** for exact IL elimination (Theorem 2)
+- **rx = ry = small** (e.g. 0.05–0.2) for high capital efficiency via price range concentration
+- **L = 2** is the unique leverage that eliminates IL
+- **afterSwap hook re-centers** on every swap, so narrow range is not limiting
 
 ## Conclusion
 
 The formal proof resolves the open question from the hook analysis:
 
-1. **cx = 0 with L = 2**: EulerSwap **can** exactly replicate Yield Basis–style IL elimination. The `afterSwap` hook re-centers the curve after each swap, maintaining L=2 compounding leverage. The mathematical proof shows IL = 0 for any price path (Theorem 2).
+1. **cx = 0 with L = 2**: EulerSwap **can** exactly replicate Yield Basis–style IL elimination. The `afterSwap` hook re-centers the curve after each swap, maintaining L=2 compounding leverage. The mathematical proof shows IL = 0 for any price path (Theorem 2). Capital efficiency is not sacrificed — a narrow price range (small `rx`) provides concentration independent of `cx`.
 
-2. **cx > 0**: No constant leverage eliminates IL (Theorem 3). The residual IL is `O(cx·ε²/(1−cx))` per step (Theorem 4). A practical hook could still achieve near-zero IL by using small `cx` and accepting the minor residual.
+2. **cx > 0**: No constant leverage eliminates IL (Theorem 3). The residual IL is `O(cx·ε²/(1−cx))` per step (Theorem 4). Since cx=0 already achieves both IL elimination and high capital efficiency via range concentration, there is no reason to use cx>0 for this strategy.
 
 3. **Mechanism**: The `afterSwap` hook + `reconfigure()` provides the per-swap rebalancing infrastructure. The main engineering challenges are vault debt management (borrowing/repaying to maintain L=2) and the `CurveLib.verify` constraint (new curve must pass through current reserves).
 
