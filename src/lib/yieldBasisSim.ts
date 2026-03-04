@@ -1,10 +1,10 @@
 /**
  * Comparison simulation: Static EulerSwap vs Releverage strategies.
  *
- * Runs three strategies on the same GBM price path:
- *   1. Static EulerSwap — fixed curve, standard IL
- *   2. Discrete releverage — afterSwap hook re-centers with L=2 simple leverage
- *   3. Ideal releverage — Yield Basis compounding leverage (IL=0 theoretical limit)
+ * Runs five strategies on the same GBM price path:
+ *   1–3. Static EulerSwap at cx=0, 0.5, 0.9 — fair comparison (no LLTV boost)
+ *   4.   Discrete releverage — afterSwap hook re-centers with L=2 simple leverage
+ *   5.   Ideal releverage — Yield Basis compounding leverage (IL=0 theoretical limit)
  *
  * Key difference between discrete and ideal:
  *   - Discrete: equity per step = equity × (L√r − (L−1)) = equity × (2√r − 1)
@@ -12,9 +12,9 @@
  *   - Ideal: equity per step = equity × r = equity × (√r)²
  *     Yield Basis invariant integrates leverage INTO the swap. IL = 0 exactly.
  *
- * Both releverage strategies earn more fees than static because they always provide
- * liquidity at equilibrium (maximum depth), while the static pool's liquidity
- * diminishes as price moves away from equilibrium.
+ * All strategies use the same capital (xr, yr), range (rx, ry), and fee (feeBps).
+ * Static strategies use zero LLTVs for fair comparison — no implicit bXL boost.
+ * Releverage strategies use cx=0 (required for IL elimination) with the user's rx.
  */
 
 import {
@@ -53,45 +53,45 @@ export interface ComparisonStep {
   hodl: number;        // HODL initial portfolio (50/50)
   hodlX: number;       // HODL 100% X exposure (what releverage tracks)
 
-  // Strategy 1: Static EulerSwap
-  staticNav: number;   // LP NAV (no fees)
-  staticFees: number;  // cumulative fees
-  staticTotal: number; // nav + fees
+  // Static EulerSwap at cx=0, 0.5, 0.9 (fair: no LLTV boost)
+  s0Nav: number; s0Fees: number; s0Total: number;
+  s50Nav: number; s50Fees: number; s50Total: number;
+  s90Nav: number; s90Fees: number; s90Total: number;
 
-  // Strategy 2: Discrete releverage (afterSwap hook, cx=0, L=2)
-  discEquity: number;  // equity = pool_value − debt
-  discFees: number;    // cumulative fees
-  discDebt: number;    // cumulative borrow cost
-  discTotal: number;   // equity + fees − debtCost
+  // Discrete releverage (afterSwap hook, cx=0, L=2)
+  discEquity: number;
+  discFees: number;
+  discDebt: number;
+  discTotal: number;
 
-  // Strategy 3: Ideal releverage (Yield Basis, cx=0, L=2)
-  idealEquity: number; // equity (tracks hodlX exactly)
-  idealFees: number;   // cumulative fees
-  idealDebt: number;   // cumulative borrow cost
-  idealTotal: number;  // equity + fees − debtCost
+  // Ideal releverage (Yield Basis, cx=0, L=2)
+  idealEquity: number;
+  idealFees: number;
+  idealDebt: number;
+  idealTotal: number;
+}
+
+/** Summary for a single static strategy. */
+export interface StaticSummary {
+  cx: number;
+  return_: number;
+  fees: number;
+  il: number;
 }
 
 export interface ComparisonSummary {
-  // Net return (total_value / initial − 1)
-  staticReturn: number;
+  // Static strategies at different cx
+  statics: [StaticSummary, StaticSummary, StaticSummary]; // cx=0, 0.5, 0.9
+
+  // Releverage strategies
   discReturn: number;
-  idealReturn: number;
-
-  // Fees earned
-  staticFees: number;
   discFees: number;
-  idealFees: number;
-
-  // IL = equity − matching HODL
-  // Static: lpNav − hodl5050
-  // Discrete: discEquity − hodlX
-  // Ideal: idealEquity − hodlX (should be ~0)
-  staticIL: number;
   discIL: number;
-  idealIL: number;
-
-  // Leverage costs
   discDebtCost: number;
+
+  idealReturn: number;
+  idealFees: number;
+  idealIL: number;
   idealDebtCost: number;
 }
 
@@ -100,13 +100,27 @@ export interface ComparisonResult {
   summary: ComparisonSummary;
 }
 
+// ─── Helpers ────────────────────────────────────────────────────────
+
+/** Build fair params: zero LLTVs, zero debt, override cx. */
+function fairParams(params: Params, cx: number): Params {
+  return {
+    ...params,
+    cx, cy: cx,
+    vyx: 0, vxy: 0, vxz: 0, vyz: 0, vzx: 0, vzy: 0,
+    xd: 0, yd: 0, zdebt: 0, zr: 0,
+    rXX: 0, rXY: 0, rXZ: 0, rYX: 0, rYY: 0, rYZ: 0,
+    eXC: 0, eXD: 0, eYC: 0, eYD: 0,
+  };
+}
+
 // ─── Simulation ────────────────────────────────────────────────────
 
 /**
  * Run comparison of static vs releverage strategies on the same price path.
  *
- * Uses params.rx for concentration in the releverage sims (at cx=0).
- * Uses full params for the static sim (whatever cx, leverage the user configured).
+ * Runs three static strategies (cx=0, 0.5, 0.9) with zeroed LLTVs for fair comparison.
+ * Releverage strategies use cx=0 with the user's rx for concentration.
  */
 export function runComparison(params: Params, config: ComparisonConfig): ComparisonResult {
   const { px, py, rx, xr, yr } = params;
@@ -118,8 +132,10 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
   const sx = computeSx(rx, 0);
   const bXC = computeBxc(sx);
 
-  // Run static simulation (reuses existing engine, same seed → same price path)
-  const staticResult = runSimulation(params, config);
+  // Run three static simulations at different cx, all with fair params
+  const s0Result = runSimulation(fairParams(params, 0), config);
+  const s50Result = runSimulation(fairParams(params, 0.5), config);
+  const s90Result = runSimulation(fairParams(params, 0.9), config);
 
   // Generate same price path for releverage sims
   const pricePath = generatePricePath(p0, config);
@@ -150,7 +166,9 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
   for (let i = 0; i <= n; i++) {
     const t = i / config.stepsPerDay;
     const p = pricePath[i];
-    const staticStep = staticResult.steps[i];
+    const s0 = s0Result.steps[i];
+    const s50 = s50Result.steps[i];
+    const s90 = s90Result.steps[i];
 
     if (i > 0) {
       const pPrev = pricePath[i - 1];
@@ -159,17 +177,13 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
 
       // --- Discrete releverage (afterSwap hook) ---
       if (!discLiquidated) {
-        // Debt cost accrues on existing debt (= equity at start of step)
         const discDebtStep = discEquity * config.borrowRateAnnual * dt;
         discDebtCum += discDebtStep;
 
-        // Virtual liquidity: x₀ = equity × bXC / pPrev
         const discVirtualX0 = discEquity * bXC / pPrev;
         const discDeltaX = discVirtualX0 * Math.abs(1 - 1 / sqrtR);
         discFeesCum += discDeltaX * p * releverageFeeBps / 10000;
 
-        // Simple leverage: equity × (L√r − (L−1))
-        // At L=2: equity × (2√r − 1)
         discEquity = discEquity * (L * sqrtR - (L - 1));
         if (discEquity <= 0) {
           discEquity = 0;
@@ -179,16 +193,13 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
 
       // --- Ideal releverage (Yield Basis) ---
       {
-        // Debt cost accrues on existing debt (= equity at start of step)
         const idealDebtStep = idealEquity * config.borrowRateAnnual * dt;
         idealDebtCum += idealDebtStep;
 
-        // Virtual liquidity: x₀ = equity × bXC / pPrev
         const idealVirtualX0 = idealEquity * bXC / pPrev;
         const idealDeltaX = idealVirtualX0 * Math.abs(1 - 1 / sqrtR);
         idealFeesCum += idealDeltaX * p * releverageFeeBps / 10000;
 
-        // Compounding leverage: [V(r)/V(1)]^L = (√r)² = r
         idealEquity = idealEquity * r;
       }
     }
@@ -201,9 +212,9 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
       extPrice: p,
       hodl,
       hodlX,
-      staticNav: staticStep.lpNav,
-      staticFees: staticStep.feesCum,
-      staticTotal: staticStep.lpNav + staticStep.feesCum,
+      s0Nav: s0.lpNav, s0Fees: s0.feesCum, s0Total: s0.lpNav + s0.feesCum,
+      s50Nav: s50.lpNav, s50Fees: s50.feesCum, s50Total: s50.lpNav + s50.feesCum,
+      s90Nav: s90.lpNav, s90Fees: s90.feesCum, s90Total: s90.lpNav + s90.feesCum,
       discEquity,
       discFees: discFeesCum,
       discDebt: discDebtCum,
@@ -217,19 +228,28 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
 
   const f = steps[steps.length - 1]; // final step
 
+  const mkStatic = (nav: number, fees: number, cx: number): StaticSummary => ({
+    cx,
+    return_: E0 > 0 ? (nav + fees) / E0 - 1 : 0,
+    fees,
+    il: nav - f.hodl,
+  });
+
   return {
     steps,
     summary: {
-      staticReturn: E0 > 0 ? f.staticTotal / E0 - 1 : 0,
+      statics: [
+        mkStatic(f.s0Nav, f.s0Fees, 0),
+        mkStatic(f.s50Nav, f.s50Fees, 0.5),
+        mkStatic(f.s90Nav, f.s90Fees, 0.9),
+      ],
       discReturn: E0 > 0 ? f.discTotal / E0 - 1 : 0,
-      idealReturn: E0 > 0 ? f.idealTotal / E0 - 1 : 0,
-      staticFees: f.staticFees,
       discFees: f.discFees,
-      idealFees: f.idealFees,
-      staticIL: f.staticNav - f.hodl,
       discIL: f.discEquity - f.hodlX,
-      idealIL: f.idealEquity - f.hodlX,
       discDebtCost: f.discDebt,
+      idealReturn: E0 > 0 ? f.idealTotal / E0 - 1 : 0,
+      idealFees: f.idealFees,
+      idealIL: f.idealEquity - f.hodlX,
       idealDebtCost: f.idealDebt,
     },
   };

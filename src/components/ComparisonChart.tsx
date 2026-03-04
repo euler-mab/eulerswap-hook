@@ -132,7 +132,9 @@ function Controls({ config, onChange }: { config: ComparisonConfig; onChange: (c
 // Colors
 const C_HODL = "#71717a";       // zinc-500
 const C_HODLX = "#a1a1aa";     // zinc-400 dashed
-const C_STATIC = "#3b82f6";    // blue
+const C_S0 = "#60a5fa";        // blue-400  (cx=0)
+const C_S50 = "#3b82f6";       // blue-500  (cx=0.5)
+const C_S90 = "#1d4ed8";       // blue-700  (cx=0.9)
 const C_DISC = "#f59e0b";      // amber
 const C_IDEAL = "#10b981";     // emerald
 const C_PRICE = "#06b6d4";     // cyan
@@ -151,11 +153,11 @@ export default function ComparisonChart({ params, labels }: Props) {
 
       {/* Explanation */}
       <div className="text-[11px] text-zinc-500 leading-relaxed border-l-2 border-zinc-800 pl-3">
-        Compares three LP strategies on the same GBM price path.{" "}
-        <strong className="text-zinc-400">Static</strong>: fixed EulerSwap curve (uses your params).{" "}
+        Compares five LP strategies on the same GBM price path.{" "}
+        <strong className="text-blue-300/70">Static</strong> at <Tex>c_x</Tex>=0, 0.5, 0.9 (fair: no LLTV boost, same capital/range).{" "}
         <strong className="text-amber-400/70">Discrete</strong>: afterSwap hook re-centers with L=2 simple leverage.{" "}
-        <strong className="text-emerald-400/70">Ideal (YB)</strong>: Yield Basis compounding leverage (IL=0).{" "}
-        Releverage strategies use <Tex>c_x=0</Tex> and your <Tex>r_x</Tex> for concentration.
+        <strong className="text-emerald-400/70">Ideal (YB)</strong>: compounding leverage (IL=0).{" "}
+        Releverage uses <Tex>c_x=0</Tex> and your <Tex>r_x</Tex> for concentration.
       </div>
 
       {/* Price */}
@@ -176,7 +178,7 @@ export default function ComparisonChart({ params, labels }: Props) {
         </div>
       </section>
 
-      {/* Total Return (nav + fees - debt) */}
+      {/* Total Return */}
       <section>
         <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">
           Total Return ({symY})
@@ -190,7 +192,9 @@ export default function ComparisonChart({ params, labels }: Props) {
               <Tooltip {...TIP} />
               <Line type="monotone" dataKey="hodl" stroke={C_HODL} strokeWidth={1} strokeDasharray="6 3" dot={false} name="HODL (50/50)" />
               <Line type="monotone" dataKey="hodlX" stroke={C_HODLX} strokeWidth={1} strokeDasharray="3 3" dot={false} name="HODL (100% X)" />
-              <Line type="monotone" dataKey="staticTotal" stroke={C_STATIC} strokeWidth={1.5} dot={false} name="Static LP" />
+              <Line type="monotone" dataKey="s0Total" stroke={C_S0} strokeWidth={1} dot={false} name="Static cx=0" />
+              <Line type="monotone" dataKey="s50Total" stroke={C_S50} strokeWidth={1.5} dot={false} name="Static cx=0.5" />
+              <Line type="monotone" dataKey="s90Total" stroke={C_S90} strokeWidth={1} dot={false} name="Static cx=0.9" />
               <Line type="monotone" dataKey="discTotal" stroke={C_DISC} strokeWidth={1.5} dot={false} name="Discrete relev." />
               <Line type="monotone" dataKey="idealTotal" stroke={C_IDEAL} strokeWidth={1.5} dot={false} name="Ideal (YB)" />
             </LineChart>
@@ -198,7 +202,9 @@ export default function ComparisonChart({ params, labels }: Props) {
           <Legend items={[
             { color: C_HODL, label: "HODL (50/50)", dash: true },
             { color: C_HODLX, label: "HODL (100% X)", dash: true },
-            { color: C_STATIC, label: "Static LP + fees" },
+            { color: C_S0, label: "Static cx=0" },
+            { color: C_S50, label: "Static cx=0.5" },
+            { color: C_S90, label: "Static cx=0.9" },
             { color: C_DISC, label: "Discrete relev." },
             { color: C_IDEAL, label: "Ideal (YB)" },
           ]} />
@@ -218,14 +224,18 @@ export default function ComparisonChart({ params, labels }: Props) {
               <YAxis width={60} {...AXIS} />
               <Tooltip {...TIP} />
               <Line type="monotone" dataKey="hodlX" stroke={C_HODLX} strokeWidth={1} strokeDasharray="3 3" dot={false} name="HODL-X" />
-              <Line type="monotone" dataKey="staticNav" stroke={C_STATIC} strokeWidth={1.5} dot={false} name="Static NAV" />
+              <Line type="monotone" dataKey="s0Nav" stroke={C_S0} strokeWidth={1} dot={false} name="Static cx=0 NAV" />
+              <Line type="monotone" dataKey="s50Nav" stroke={C_S50} strokeWidth={1.5} dot={false} name="Static cx=0.5 NAV" />
+              <Line type="monotone" dataKey="s90Nav" stroke={C_S90} strokeWidth={1} dot={false} name="Static cx=0.9 NAV" />
               <Line type="monotone" dataKey="discEquity" stroke={C_DISC} strokeWidth={1.5} dot={false} name="Discrete equity" />
               <Line type="monotone" dataKey="idealEquity" stroke={C_IDEAL} strokeWidth={1.5} dot={false} name="Ideal equity" />
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
             { color: C_HODLX, label: "HODL (100% X)", dash: true },
-            { color: C_STATIC, label: "Static NAV" },
+            { color: C_S0, label: "Static cx=0" },
+            { color: C_S50, label: "Static cx=0.5" },
+            { color: C_S90, label: "Static cx=0.9" },
             { color: C_DISC, label: "Discrete equity" },
             { color: C_IDEAL, label: "Ideal equity = HODL-X" },
           ]} />
@@ -245,24 +255,24 @@ export default function ComparisonChart({ params, labels }: Props) {
               <YAxis width={60} {...AXIS} />
               <Tooltip {...TIP} />
               <ReferenceLine y={0} stroke="#555" strokeDasharray="6 3" />
-              <Line type="monotone" dataKey="staticFees" stroke={C_STATIC} strokeWidth={1.5} dot={false} name="Static fees" />
+              <Line type="monotone" dataKey="s0Fees" stroke={C_S0} strokeWidth={1} dot={false} name="Static cx=0 fees" />
               <Line type="monotone" dataKey="discFees" stroke={C_DISC} strokeWidth={1.5} dot={false} name="Discrete fees" />
               <Line type="monotone" dataKey="idealFees" stroke={C_IDEAL} strokeWidth={1.5} dot={false} name="Ideal fees" />
-              <Line type="monotone" dataKey={(d: ComparisonStep) => d.staticNav - d.hodl} stroke="#f87171" strokeWidth={1} dot={false} name="Static IL" />
+              <Line type="monotone" dataKey={(d: ComparisonStep) => d.s0Nav - d.hodl} stroke="#f87171" strokeWidth={1} dot={false} name="Static cx=0 IL" />
               <Line type="monotone" dataKey={(d: ComparisonStep) => d.discEquity - d.hodlX} stroke="#fbbf24" strokeWidth={1} strokeDasharray="4 2" dot={false} name="Disc. residual IL" />
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: C_STATIC, label: "Static fees" },
+            { color: C_S0, label: "Static cx=0 fees" },
             { color: C_DISC, label: "Discrete fees" },
             { color: C_IDEAL, label: "Ideal fees" },
-            { color: "#f87171", label: "Static IL" },
+            { color: "#f87171", label: "Static cx=0 IL" },
             { color: "#fbbf24", label: "Disc. residual IL", dash: true },
           ]} />
         </div>
       </section>
 
-      {/* Debt cost (releverage only) */}
+      {/* Debt cost */}
       <section>
         <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">
           Borrow Cost ({symY})
@@ -288,37 +298,47 @@ export default function ComparisonChart({ params, labels }: Props) {
       {/* Summary */}
       <section>
         <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Summary</h3>
-        <div className="grid grid-cols-4 gap-x-4 gap-y-1 text-xs text-zinc-400">
+        <div className="grid grid-cols-6 gap-x-3 gap-y-1 text-xs text-zinc-400">
           {/* Header */}
           <span />
-          <span className="font-medium text-blue-400">Static</span>
+          <span className="font-medium" style={{ color: C_S0 }}>cx=0</span>
+          <span className="font-medium" style={{ color: C_S50 }}>cx=0.5</span>
+          <span className="font-medium" style={{ color: C_S90 }}>cx=0.9</span>
           <span className="font-medium text-amber-400">Discrete</span>
-          <span className="font-medium text-emerald-400">Ideal (YB)</span>
+          <span className="font-medium text-emerald-400">Ideal</span>
 
           <span>Net return</span>
-          <span className={summary.staticReturn >= 0 ? "text-emerald-400" : "text-red-400"}>{fmtPct(summary.staticReturn)}</span>
+          {summary.statics.map((s, i) => (
+            <span key={i} className={s.return_ >= 0 ? "text-emerald-400" : "text-red-400"}>{fmtPct(s.return_)}</span>
+          ))}
           <span className={summary.discReturn >= 0 ? "text-emerald-400" : "text-red-400"}>{fmtPct(summary.discReturn)}</span>
           <span className={summary.idealReturn >= 0 ? "text-emerald-400" : "text-red-400"}>{fmtPct(summary.idealReturn)}</span>
 
-          <span>Fees earned</span>
-          <span>{fmtNum(summary.staticFees)} {symY}</span>
-          <span>{fmtNum(summary.discFees)} {symY}</span>
-          <span>{fmtNum(summary.idealFees)} {symY}</span>
+          <span>Fees</span>
+          {summary.statics.map((s, i) => (
+            <span key={i}>{fmtNum(s.fees)}</span>
+          ))}
+          <span>{fmtNum(summary.discFees)}</span>
+          <span>{fmtNum(summary.idealFees)}</span>
 
           <span>IL</span>
-          <span className="text-red-400">{fmtNum(summary.staticIL)} {symY}</span>
-          <span className={Math.abs(summary.discIL) < 0.01 ? "text-zinc-500" : "text-red-400"}>{fmtNum(summary.discIL)} {symY}</span>
-          <span className="text-zinc-500">{fmtNum(summary.idealIL)} {symY}</span>
+          {summary.statics.map((s, i) => (
+            <span key={i} className="text-red-400">{fmtNum(s.il)}</span>
+          ))}
+          <span className={Math.abs(summary.discIL) < 0.01 ? "text-zinc-500" : "text-red-400"}>{fmtNum(summary.discIL)}</span>
+          <span className="text-zinc-500">{fmtNum(summary.idealIL)}</span>
 
           <span>Debt cost</span>
-          <span className="text-zinc-600">n/a</span>
-          <span>{fmtNum(summary.discDebtCost)} {symY}</span>
-          <span>{fmtNum(summary.idealDebtCost)} {symY}</span>
+          <span className="text-zinc-600">—</span>
+          <span className="text-zinc-600">—</span>
+          <span className="text-zinc-600">—</span>
+          <span>{fmtNum(summary.discDebtCost)}</span>
+          <span>{fmtNum(summary.idealDebtCost)}</span>
         </div>
 
         <div className="mt-4 text-[10px] text-zinc-600 leading-relaxed">
+          All static pools use fair params (no LLTV boost, same capital/range).{" "}
           <strong>Static</strong>: IL = lpNav − HODL(50/50). <strong>Discrete/Ideal</strong>: IL = equity − HODL(100% X).
-          Releverage converts 50/50 exposure to 100% X delta.
           Residual discrete IL ≈ σ²T/4 from simple leverage gap (2√r−1 vs r per step).
           {config.dynamicFee && (() => {
             const elapsed = 86400 / config.stepsPerDay;
