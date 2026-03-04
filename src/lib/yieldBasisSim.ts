@@ -31,11 +31,17 @@ import {
 
 export interface ComparisonConfig extends SimConfig {
   borrowRateAnnual: number;  // annualized borrow cost for L=2 leverage (e.g. 0.05 = 5%)
+  dynamicFee: boolean;       // enable time-decay fee for releverage strategies
+  feeMaxBps: number;         // max fee right after re-centering (e.g. 500 = 5%)
+  feeDecaySeconds: number;   // τ decay time constant (e.g. 60)
 }
 
 export const defaultComparisonConfig: ComparisonConfig = {
   ...defaultSimConfig,
   borrowRateAnnual: 0.05,
+  dynamicFee: false,
+  feeMaxBps: 500,
+  feeDecaySeconds: 60,
 };
 
 /** Per-timestep snapshot for all strategies. All monetary values in Y units. */
@@ -120,6 +126,15 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
   const n = config.durationDays * config.stepsPerDay;
   const dt = 1 / (365 * config.stepsPerDay); // step size in years
 
+  // Dynamic fee: compute effective fee for releverage strategies
+  const elapsedSeconds = 86400 / config.stepsPerDay;
+  let releverageFeeBps = config.feeBps;
+  if (config.dynamicFee) {
+    const tFrac = Math.min(elapsedSeconds / config.feeDecaySeconds, 1);
+    const decayFactor = Math.sqrt(Math.max(0, 1 - tFrac));
+    releverageFeeBps = config.feeBps + (config.feeMaxBps - config.feeBps) * decayFactor;
+  }
+
   // Releverage state
   let discEquity = E0;
   let discFeesCum = 0;
@@ -151,7 +166,7 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
         // Virtual liquidity: x₀ = equity × bXC / pPrev
         const discVirtualX0 = discEquity * bXC / pPrev;
         const discDeltaX = discVirtualX0 * Math.abs(1 - 1 / sqrtR);
-        discFeesCum += discDeltaX * p * config.feeBps / 10000;
+        discFeesCum += discDeltaX * p * releverageFeeBps / 10000;
 
         // Simple leverage: equity × (L√r − (L−1))
         // At L=2: equity × (2√r − 1)
@@ -171,7 +186,7 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
         // Virtual liquidity: x₀ = equity × bXC / pPrev
         const idealVirtualX0 = idealEquity * bXC / pPrev;
         const idealDeltaX = idealVirtualX0 * Math.abs(1 - 1 / sqrtR);
-        idealFeesCum += idealDeltaX * p * config.feeBps / 10000;
+        idealFeesCum += idealDeltaX * p * releverageFeeBps / 10000;
 
         // Compounding leverage: [V(r)/V(1)]^L = (√r)² = r
         idealEquity = idealEquity * r;

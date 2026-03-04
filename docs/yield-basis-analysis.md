@@ -592,6 +592,139 @@ At vol ≥ 0.5 with 30bps fees, the fee boost dominates. At very low vol (< 0.2)
 
 The "Yield Basis" tab in the app (`ComparisonChart` component) shows all three strategies on the same price path with controls for volatility, drift, duration, fee, borrow rate, and seed. Five chart panels: Price, Total Return, Equity, Fees & IL, and Borrow Cost.
 
+## Limitations of the afterSwap Hook Approach
+
+The hook-based releverage strategy has several structural limitations beyond the σ²T/4 residual IL:
+
+### Oracle dependency
+
+The hook must bring its own oracle to know where to re-center. EulerSwap's `priceX`/`priceY` are static configuration parameters — there is no built-in oracle feed. Options:
+
+- **AMM's own post-swap price**: trivially manipulable (swap to move price, hook re-centers, swap back)
+- **External oracle (Chainlink, Pyth)**: oracle latency creates arb windows; oracle manipulation is harder but possible
+- **TWAP**: lags by construction — the pool chases yesterday's price
+
+Yield Basis also uses an oracle (`pₒ`), but integrates it into the swap invariant itself — the releverage happens *during* the swap, not after. Arbitrageurs who correct the price are doing the releverage, rather than the releverage creating new arbitrage opportunities.
+
+### Stale curve problem
+
+The swap flow is: swap on OLD curve → reserves update → CurveLib.verify() → lock released → afterSwap hook fires → reconfigure(). The swap always executes against the pre-reconfigure curve. This means:
+
+- First swap after re-centering trades against a stale curve (potentially profitable arb)
+- Hook re-centers, creating fresh deep liquidity at the new price
+- Next swapper benefits from the freshly centered curve
+
+This gives MEV searchers a predictable state transition to exploit.
+
+### Sandwich / MEV attacks
+
+The re-centering creates a specific attack pattern:
+
+```
+TX1: Attacker buys X → pushes price up → hook re-centers at inflated price
+TX2: Attacker sells X back → gets better execution against freshly centered curve
+```
+
+This is worse than a normal sandwich because the attacker doesn't need a victim transaction. The re-centering itself provides fresh liquidity at the manipulated price.
+
+### CurveLib.verify constraint
+
+When the hook calls `reconfigure()`, the current reserves must lie on or above the new curve: `CurveLib.verify(newDParams, currentReserve0, currentReserve1)`. After large price moves, the new curve (centered at the new price) may not pass through the current reserve point, preventing full re-centering.
+
+### Vault debt management
+
+Maintaining L=2 requires actual vault borrows/repays on every swap. If price rises, the hook must borrow more; if price falls, it must repay. Failure modes include vault capacity limits, insufficient collateral, and high gas cost (~200k+ gas per vault interaction on top of swap gas).
+
+## Dynamic Fee: Mitigating Hook Limitations
+
+### Problem
+
+The afterSwap hook creates a vulnerability window: immediately after re-centering, the pool has maximum liquidity depth at the new price. MEV searchers can exploit this by trading against the freshly centered curve before organic traders arrive.
+
+### Solution: time-decay fee via getFee hook
+
+EulerSwap's `getFee` hook fires during every swap and returns a per-swap fee:
+
+```solidity
+function getFee(bool zeroToOne, uint112 reserve0, uint112 reserve1, bool exactIn)
+    external returns (uint256 fee);
+```
+
+A time-decay fee starts high after each re-centering and decays to the base fee:
+
+```
+fee(s) = feeMin + (feeMax − feeMin) × √(max(0, 1 − s/τ))
+```
+
+where `s` = time since last re-centering, `τ` = decay time constant (e.g. 60 seconds).
+
+- `s = 0` (immediately after re-centering): `fee = feeMax` — MEV searchers pay maximum
+- `s = τ` (after full decay): `fee = feeMin` — organic traders pay base rate
+- `s >> τ`: `fee = feeMin` — pool at base rate
+
+### What it protects against
+
+**Sandwich attacks**: The attacker's initial trade pays the high fee (just after previous re-centering or within the same re-centering window). The fee eats most of the extracted value, making the attack negative-EV.
+
+**MEV extraction**: Searchers racing to hit the freshly re-centered curve pay near-`feeMax`. The LP captures the MEV instead of losing it.
+
+**Oracle latency**: Even if the oracle is stale, the high fee acts as a buffer — arb profit from trading against a stale curve is eaten by the fee.
+
+### What it doesn't fix
+
+**Residual IL (σ²T/4)**: The fee doesn't change the leverage math. The hook still rebalances after the swap. Higher fee revenue *offsets* the residual IL but doesn't eliminate it.
+
+**CurveLib.verify constraint**: Structural — unrelated to fees.
+
+**Vault debt management**: Still needs per-swap vault interactions.
+
+### Interaction with step frequency
+
+The dynamic fee's impact depends on the time between trades relative to the decay window τ:
+
+| Step frequency | Elapsed (s) | τ = 60s | Effective fee |
+|---------------|-------------|---------|---------------|
+| Per-block (12s) | 12 | 0.2τ | feeMin + 0.89 × (feeMax − feeMin) |
+| Per-minute | 60 | 1.0τ | feeMin (fully decayed) |
+| Hourly | 3600 | 60τ | feeMin (fully decayed) |
+
+The dynamic fee is most impactful at block-level resolution (stepsPerDay ≈ 7200), where arbs arrive within 1-2 blocks of re-centering. At hourly resolution, the fee has fully decayed before the next trade — providing no additional protection but also no additional revenue.
+
+This aligns with on-chain reality: MEV arbs happen within seconds, not hours. The dynamic fee targets exactly this timescale.
+
+### Comparison with Yield Basis's admin fee
+
+Yield Basis uses a similar time-decay concept but in the opposite direction:
+
+```
+fa = 1 − (1 − fmin) × √(1 − s/T)
+```
+
+- `s = 0` (just traded): `fa = fmin` — low fee, pool is fresh
+- `s = T` (stale): `fa → 1` — very high fee, next trade is likely arb
+
+The difference: Yield Basis charges more for *stale* pools (no recent trade → price may have drifted → next trade is arb). The EulerSwap hook charges more *immediately after re-centering* (fresh liquidity is most vulnerable to extraction).
+
+Both approaches target the same economic force — extracting value from information-asymmetric traders — but from different directions because of architectural differences:
+- **Yield Basis**: no re-centering, so staleness is the vulnerability
+- **EulerSwap hook**: re-centering itself is the vulnerability
+
+### Simulation model
+
+The simulation models the dynamic fee by adjusting the per-step fee based on elapsed time since the previous step:
+
+```
+elapsed_seconds = 86400 / stepsPerDay
+if elapsed < τ:
+    effectiveFee = feeMin + (feeMax − feeMin) × √(1 − elapsed/τ)
+else:
+    effectiveFee = feeMin
+```
+
+This applies only to the releverage strategies (discrete and ideal). The static strategy always uses the flat base fee, since it has no re-centering and thus no dynamic fee opportunity.
+
+To see the dynamic fee's impact, increase `stepsPerDay` to simulate per-block or per-minute trading frequency. At the default hourly resolution, the fee has fully decayed and behaves identically to the flat fee.
+
 ## Conclusion
 
 The formal proof and simulation together resolve the open questions:

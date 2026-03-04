@@ -38,6 +38,7 @@ const baseParams: Params = {
 const shortConfig: ComparisonConfig = {
   vol: 0.8, drift: 0, durationDays: 30, stepsPerDay: 24,
   feeBps: 30, seed: 42, borrowRateAnnual: 0.05,
+  dynamicFee: false, feeMaxBps: 500, feeDecaySeconds: 60,
 };
 
 // ============================================================================
@@ -311,7 +312,114 @@ describe("Economic scenarios", () => {
 });
 
 // ============================================================================
-// 6. MONTE CARLO: IDEAL vs STATIC
+// 6. DYNAMIC FEE
+// ============================================================================
+
+describe("Dynamic fee", () => {
+  it("dynamic fee increases revenue at high step frequency", () => {
+    // At stepsPerDay=7200 (per-block), elapsed=12s << τ=60s → fee near feeMax
+    const highFreqConfig: ComparisonConfig = {
+      ...shortConfig,
+      stepsPerDay: 7200,
+      durationDays: 1,
+      seed: 42,
+    };
+    const flat = runComparison(baseParams, { ...highFreqConfig, dynamicFee: false });
+    const dynamic = runComparison(baseParams, {
+      ...highFreqConfig, dynamicFee: true, feeMaxBps: 500, feeDecaySeconds: 60,
+    });
+
+    // Dynamic fee should earn significantly more
+    expect(dynamic.summary.idealFees).toBeGreaterThan(flat.summary.idealFees * 2);
+    expect(dynamic.summary.discFees).toBeGreaterThan(flat.summary.discFees * 2);
+  });
+
+  it("dynamic fee has no effect when elapsed >> τ", () => {
+    // At stepsPerDay=24 (hourly), elapsed=3600s >> τ=60s → fee decays to base
+    const flat = runComparison(baseParams, { ...shortConfig, dynamicFee: false });
+    const dynamic = runComparison(baseParams, {
+      ...shortConfig, dynamicFee: true, feeMaxBps: 500, feeDecaySeconds: 60,
+    });
+
+    // Fees should be identical (fee fully decayed)
+    expect(dynamic.summary.idealFees).toBeCloseTo(flat.summary.idealFees, 8);
+    expect(dynamic.summary.discFees).toBeCloseTo(flat.summary.discFees, 8);
+  });
+
+  it("dynamic fee does not affect static strategy", () => {
+    const flat = runComparison(baseParams, { ...shortConfig, dynamicFee: false });
+    const dynamic = runComparison(baseParams, {
+      ...shortConfig, dynamicFee: true, feeMaxBps: 500, feeDecaySeconds: 60,
+    });
+
+    // Static uses its own fee model, unaffected by dynamic fee
+    expect(dynamic.summary.staticFees).toBeCloseTo(flat.summary.staticFees, 8);
+    expect(dynamic.summary.staticIL).toBeCloseTo(flat.summary.staticIL, 8);
+  });
+
+  it("effective fee follows √(1 − elapsed/τ) decay", () => {
+    // Verify the fee formula: effectiveFee = base + (max - base) × √(1 - elapsed/τ)
+    const τ = 60;
+    const base = 30;
+    const max = 500;
+
+    // At stepsPerDay = 86400/12 = 7200 → elapsed = 12s
+    const elapsed12 = 12;
+    const expectedDecay12 = Math.sqrt(1 - elapsed12 / τ);
+    const expectedFee12 = base + (max - base) * expectedDecay12;
+
+    // At stepsPerDay = 86400/30 = 2880 → elapsed = 30s
+    const elapsed30 = 30;
+    const expectedDecay30 = Math.sqrt(1 - elapsed30 / τ);
+    const expectedFee30 = base + (max - base) * expectedDecay30;
+
+    // Run with 12s steps vs 30s steps — fee ratio should match formula
+    const cfg12: ComparisonConfig = {
+      ...shortConfig, stepsPerDay: 7200, durationDays: 1, seed: 42,
+      dynamicFee: true, feeMaxBps: max, feeDecaySeconds: τ,
+    };
+    const cfg30: ComparisonConfig = {
+      ...shortConfig, stepsPerDay: 2880, durationDays: 1, seed: 42,
+      dynamicFee: true, feeMaxBps: max, feeDecaySeconds: τ,
+    };
+
+    const res12 = runComparison(baseParams, cfg12);
+    const res30 = runComparison(baseParams, cfg30);
+
+    // Fee income ratio should approximate the fee rate ratio
+    // (not exact because different step counts produce different price paths and trade volumes)
+    const feeRatio = res12.summary.idealFees / res30.summary.idealFees;
+    const expectedRatio = expectedFee12 / expectedFee30;
+
+    // Allow wide tolerance since price paths differ
+    expect(feeRatio).toBeGreaterThan(expectedRatio * 0.5);
+    expect(feeRatio).toBeLessThan(expectedRatio * 2.0);
+  });
+
+  it("dynamic fee does not change IL (only affects fee revenue)", () => {
+    const highFreqConfig: ComparisonConfig = {
+      ...shortConfig,
+      stepsPerDay: 7200,
+      durationDays: 1,
+      seed: 42,
+    };
+    const flat = runComparison(baseParams, { ...highFreqConfig, dynamicFee: false });
+    const dynamic = runComparison(baseParams, {
+      ...highFreqConfig, dynamicFee: true, feeMaxBps: 500, feeDecaySeconds: 60,
+    });
+
+    // IL should be identical — dynamic fee doesn't affect equity dynamics
+    expect(dynamic.summary.idealIL).toBeCloseTo(flat.summary.idealIL, 10);
+    expect(dynamic.summary.discIL).toBeCloseTo(flat.summary.discIL, 10);
+
+    // Debt cost should also be identical
+    expect(dynamic.summary.idealDebtCost).toBeCloseTo(flat.summary.idealDebtCost, 10);
+    expect(dynamic.summary.discDebtCost).toBeCloseTo(flat.summary.discDebtCost, 10);
+  });
+});
+
+// ============================================================================
+// 7. MONTE CARLO: IDEAL vs STATIC
 // ============================================================================
 
 describe("Monte Carlo comparison", () => {

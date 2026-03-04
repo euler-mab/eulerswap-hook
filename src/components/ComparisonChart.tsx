@@ -75,6 +75,41 @@ function Controls({ config, onChange }: { config: ComparisonConfig; onChange: (c
         <ParamSlider label="fee" value={config.feeBps} min={1} max={200} step={1} onChange={set("feeBps")} suffix="bps" />
         <ParamSlider label="r_{borrow}" value={config.borrowRateAnnual} min={0} max={0.5} step={0.005} onChange={set("borrowRateAnnual")} suffix="ann." />
       </div>
+      <div className="flex items-center gap-3 pt-1">
+        <label className="flex items-center gap-1.5 text-[11px] text-zinc-500 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={config.dynamicFee}
+            onChange={(e) => onChange({ ...config, dynamicFee: e.target.checked })}
+            className="accent-emerald-500"
+          />
+          <span>Dynamic fee</span>
+        </label>
+        {config.dynamicFee && (
+          <>
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] text-zinc-600">max</span>
+              <input
+                type="number"
+                value={config.feeMaxBps}
+                onChange={(e) => { const v = parseInt(e.target.value); if (!isNaN(v)) set("feeMaxBps")(v); }}
+                className="w-14 bg-transparent border border-zinc-800 rounded px-1 py-0.5 text-xs font-mono text-zinc-300 text-right focus:outline-none focus:border-zinc-600"
+              />
+              <span className="text-[10px] text-zinc-600">bps</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <Tex>{`\\tau`}</Tex>
+              <input
+                type="number"
+                value={config.feeDecaySeconds}
+                onChange={(e) => { const v = parseInt(e.target.value); if (!isNaN(v) && v > 0) set("feeDecaySeconds")(v); }}
+                className="w-14 bg-transparent border border-zinc-800 rounded px-1 py-0.5 text-xs font-mono text-zinc-300 text-right focus:outline-none focus:border-zinc-600"
+              />
+              <span className="text-[10px] text-zinc-600">sec</span>
+            </div>
+          </>
+        )}
+      </div>
       <div className="flex items-center gap-2 pt-1">
         <span className="w-10 text-zinc-500 shrink-0 flex items-center text-xs"><Tex>seed</Tex></span>
         <input
@@ -285,6 +320,13 @@ export default function ComparisonChart({ params, labels }: Props) {
           <strong>Static</strong>: IL = lpNav − HODL(50/50). <strong>Discrete/Ideal</strong>: IL = equity − HODL(100% X).
           Releverage converts 50/50 exposure to 100% X delta.
           Residual discrete IL ≈ σ²T/4 from simple leverage gap (2√r−1 vs r per step).
+          {config.dynamicFee && (() => {
+            const elapsed = 86400 / config.stepsPerDay;
+            const tFrac = Math.min(elapsed / config.feeDecaySeconds, 1);
+            const decay = Math.sqrt(Math.max(0, 1 - tFrac));
+            const effFee = config.feeBps + (config.feeMaxBps - config.feeBps) * decay;
+            return <> Dynamic fee: effective {effFee.toFixed(0)} bps (base {config.feeBps}, max {config.feeMaxBps}, {elapsed.toFixed(0)}s elapsed, τ={config.feeDecaySeconds}s).</>;
+          })()}
         </div>
       </section>
     </div>
