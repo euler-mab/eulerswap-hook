@@ -333,12 +333,6 @@ export default function OrderBookChart({ params, labelX, labelY, labelZ, labelNu
 
   if (!data) return null;
 
-  const depthUnit =
-    numeraire === "y" ? symY
-    : numeraire === "x" ? symX
-    : numeraire === "ext" ? symNum
-    : "native";
-
   const numLabel =
     numeraire === "y" ? symY
     : numeraire === "x" ? symX

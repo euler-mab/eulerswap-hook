@@ -198,8 +198,7 @@ export interface Params {
   eYD: number;
 }
 
-// --- Parameter validation ---
-// Returns list of problems. Empty = valid.
+/** Validate parameter constraints. Returns list of problems (empty = valid). */
 export function validateParams(p: Params): string[] {
   const w: string[] = [];
   if (p.xd > 0 && p.yd > 0) w.push("xd and yd are both nonzero — only one debt asset allowed");
@@ -219,15 +218,17 @@ export function validateParams(p: Params): string[] {
   return w;
 }
 
-// Derived: zd is only active when xd=0 and yd=0
+/** Effective Z debt — only active when xd=0 and yd=0 (mutual exclusion). */
 export function computeZd(p: Params): number {
   if (p.xd > 0 || p.yd > 0) return 0;
   return p.zdebt;
 }
 
-// Derived prices
+/** Price of X in Y units: px/py. */
 export function computePxy(p: Params): number { if (p.py === 0) return NaN; return p.px / p.py; }
+/** Price of Y in X units: py/px. */
 export function computePyx(p: Params): number { if (p.px === 0) return NaN; return p.py / p.px; }
+/** Price of Z in X units: 1/pxz. */
 export function computePzx(p: Params): number { if (p.pxz === 0) return NaN; return 1 / p.pxz; }
 
 export const defaultParams: Params = {
@@ -263,13 +264,15 @@ export const defaultParams: Params = {
 };
 
 // --- Boost helpers ---
-// s_X = sqrt((1 + rx - cx) / (1 - cx))
+
+/** Range scale factor: s_X = sqrt((1 + rx - cx) / (1 - cx)). Must be > 1. */
 export function computeSx(rx: number, cx: number): number {
   if (cx >= 1) return NaN;
   const inner = (1 + rx - cx) / (1 - cx);
   if (inner < 0) return NaN;
   return Math.sqrt(inner);
 }
+/** Range scale factor: s_Y = sqrt((1 + ry - cy) / (1 - cy)). Must be > 1. */
 export function computeSy(ry: number, cy: number): number {
   if (cy >= 1) return NaN;
   const inner = (1 + ry - cy) / (1 - cy);
@@ -277,13 +280,14 @@ export function computeSy(ry: number, cy: number): number {
   return Math.sqrt(inner);
 }
 
-// b_XC = s_X / (s_X - 1) — concentration boost
+/** Concentration boost: b_XC = s_X / (s_X - 1). Always >= 1 when sx > 1. */
 export function computeBxc(sx: number): number {
   if (!isFinite(sx) || sx <= 1) {
     return NaN;
   }
   return sx / (sx - 1);
 }
+/** Concentration boost: b_YC = s_Y / (s_Y - 1). Always >= 1 when sy > 1. */
 export function computeByc(sy: number): number {
   if (!isFinite(sy) || sy <= 1) {
     return NaN;
@@ -291,10 +295,11 @@ export function computeByc(sy: number): number {
   return sy / (sy - 1);
 }
 
-// P_X = cx + (1 - cx) * s_X — price factor at boundary
+/** Price factor at X boundary: P_X = cx + (1 - cx) * s_X. */
 export function computePX(cx: number, sx: number): number {
   return cx + (1 - cx) * sx;
 }
+/** Price factor at Y boundary: P_Y = cy + (1 - cy) * s_Y. */
 export function computePY(cy: number, sy: number): number {
   return cy + (1 - cy) * sy;
 }
@@ -490,23 +495,26 @@ function computeBoostY(p: Params): number {
   return bYC;
 }
 
+/** Virtual (boosted) X reserve at equilibrium: x0 = xr * b_XC * b_XL. */
 export function computeX0(p: Params): number {
   if (p.xr <= 0) return 0;
   return p.xr * computeBoostX(p);
 }
 
+/** Virtual (boosted) Y reserve at equilibrium: y0 = yr * b_YC * b_YL. */
 export function computeY0(p: Params): number {
   if (p.yr <= 0) return 0;
   return p.yr * computeBoostY(p);
 }
 
 // --- Range boundaries ---
-// xb(v) = v / sqrt((1 + rx - cx) / (1 - cx))  — works for both x0 and xr
+
+/** Lower boundary of virtual X reserve: xb = v / s_X. Works for both x0 and xr. */
 export function computeXb(v: number, rx: number, cx: number): number {
   return v / Math.sqrt((1 + rx - cx) / (1 - cx));
 }
 
-// yb(v) = v / sqrt((1 + ry - cy) / (1 - cy))  — works for both y0 and yr
+/** Lower boundary of virtual Y reserve: yb = v / s_Y. Works for both y0 and yr. */
 export function computeYb(v: number, ry: number, cy: number): number {
   return v / Math.sqrt((1 + ry - cy) / (1 - cy));
 }
@@ -514,14 +522,14 @@ export function computeYb(v: number, ry: number, cy: number): number {
 // --- AMM Curves ---
 // These are generic: pass (x0,y0) for boosted or (xr,yr) for real reserves.
 
-// fX(x, cx, x0, y0) = y0 + (px/py)(x0 - x)(cx + (1-cx)(x0/x))  {0 < x <= x0}
+/** X-side curve: y = y0 + (px/py)(x0−x)(cx + (1−cx)(x0/x)) for x ∈ (0, x0]. */
 export function fX(x: number, cx: number, x0: number, y0: number, px: number, py: number): number {
   if (x <= 0 || x > x0) return NaN;
   const ratio = px / py;
   return y0 + ratio * (x0 - x) * (cx + (1 - cx) * (x0 / x));
 }
 
-// gY(y, cy, y0, x0) = x0 + (py/px)(y0 - y)(cy + (1-cy)(y0/y))  {0 < y <= y0}
+/** Y-side curve: x = x0 + (py/px)(y0−y)(cy + (1−cy)(y0/y)) for y ∈ (0, y0]. */
 export function gY(y: number, cy: number, y0: number, x0: number, px: number, py: number): number {
   if (y <= 0 || y > y0) return NaN;
   const ratio = py / px;
@@ -529,8 +537,11 @@ export function gY(y: number, cy: number, y0: number, x0: number, px: number, py
 }
 
 // --- Inverse AMM curves (citardauq form for numerical stability) ---
-// fY(x, cy, x0, y0) for x >= x0
-// Uses A_y = cy, B_y = (px/py)(x-x0) - (2cy-1)*y0, C_y = (1-cy)*y0^2
+
+/**
+ * Inverse Y-side curve for x >= x0. Solves cy·y² + By·y − Cy = 0.
+ * Uses citardauq form when B > 0 to avoid catastrophic cancellation.
+ */
 export function fY(x: number, cy: number, x0: number, y0: number, px: number, py: number): number {
   if (x < x0) return NaN;
   const Ay = cy;
@@ -556,8 +567,10 @@ export function fY(x: number, cy: number, x0: number, y0: number, px: number, py
   }
 }
 
-// gX(y, cx, y0, x0) for y >= y0
-// Uses A_x = cx, B_x = (py/px)(y-y0) - (2cx-1)*x0, C_x = (1-cx)*x0^2
+/**
+ * Inverse X-side curve for y >= y0. Solves cx·x² + Bx·x − Cx = 0.
+ * Uses citardauq form when B > 0 to avoid catastrophic cancellation.
+ */
 export function gX(y: number, cx: number, y0: number, x0: number, px: number, py: number): number {
   if (y < y0) return NaN;
   const Ax = cx;
@@ -582,7 +595,8 @@ export function gX(y: number, cx: number, y0: number, x0: number, px: number, py
 }
 
 // --- Derivatives ---
-// fXd(x, cx, x0) = -(px/py)(cx + (1-cx)(x0/x)^2)  {0 < x <= x0}
+
+/** X-side derivative: fX'(x) = −(px/py)(cx + (1−cx)(x0/x)²). Always negative. */
 export function fXd(x: number, cx: number, x0: number, px: number, py: number): number {
   if (x <= 0 || x > x0) return NaN;
   const ratio = px / py;
@@ -590,7 +604,7 @@ export function fXd(x: number, cx: number, x0: number, px: number, py: number): 
   return -ratio * (cx + (1 - cx) * r * r);
 }
 
-// gYd(y, cy, y0) = -(py/px)(cy + (1-cy)(y0/y)^2)  {0 < y <= y0}
+/** Y-side derivative: gY'(y) = −(py/px)(cy + (1−cy)(y0/y)²). Always negative. */
 export function gYd(y: number, cy: number, y0: number, px: number, py: number): number {
   if (y <= 0 || y > y0) return NaN;
   const ratio = py / px;
@@ -599,26 +613,25 @@ export function gYd(y: number, cy: number, y0: number, px: number, py: number): 
 }
 
 // --- Marginal prices ---
-// Amount of Y per X (price for converting between X, Y)
-// pXxy(x) = -fXd(x)  [on X side of curve]
-// pYxy(y) = 1 / (-gYd(y))  [on Y side of curve]
+
+/** Marginal price on X side: Y per X = −fX'(x). */
 export function pXxy(x: number, cx: number, x0: number, px: number, py: number): number {
   return -fXd(x, cx, x0, px, py);
 }
 
+/** Marginal price on Y side: Y per X = 1/(−gY'(y)). */
 export function pYxy(y: number, cy: number, y0: number, px: number, py: number): number {
   const d = -gYd(y, cy, y0, px, py);
   if (d <= 0) return NaN;
   return 1 / d;
 }
 
-// Amount of X per Y (price for converting between X, Y)
-// pYyx(y) = -gYd(y)  [on Y side of curve]
-// pXyx(x) = 1 / (-fXd(x))  [on X side of curve]
+/** Marginal price on Y side: X per Y = −gY'(y). */
 export function pYyx(y: number, cy: number, y0: number, px: number, py: number): number {
   return -gYd(y, cy, y0, px, py);
 }
 
+/** Marginal price on X side: X per Y = 1/(−fX'(x)). */
 export function pXyx(x: number, cx: number, x0: number, px: number, py: number): number {
   const d = -fXd(x, cx, x0, px, py);
   if (d <= 0) return NaN;
@@ -626,11 +639,14 @@ export function pXyx(x: number, cx: number, x0: number, px: number, py: number):
 }
 
 // --- Boundary prices ---
+
+/** Marginal price (Y per X) at the X-side boundary x=xb. Upper price bound. */
 export function priceAtXb(x0: number, rx: number, cx: number, px: number, py: number): number {
   const xb = computeXb(x0, rx, cx);
   return -fXd(xb, cx, x0, px, py);
 }
 
+/** Marginal price (Y per X) at the Y-side boundary y=yb. Lower price bound. */
 export function priceAtYb(y0: number, ry: number, cy: number, px: number, py: number): number {
   const yb = computeYb(y0, ry, cy);
   const d = -gYd(yb, cy, y0, px, py); // X per Y
@@ -642,20 +658,19 @@ export function priceAtYb(y0: number, ry: number, cy: number, px: number, py: nu
 // The independent variable (x or y) is **price increase from equilibrium**.
 // x=0 means at equilibrium price; x=rx means at the X-side boundary.
 
-// Cumulative same-asset liquidity: how much X remains at price increase x
-// L_XX(x, cx, x0) = x0 / sqrt((1+x-cx)/(1-cx))
+/** Cumulative same-asset liquidity: X remaining at price delta x from equilibrium. */
 export function LXX(x: number, cx: number, x0: number): number {
   if (x < 0) return NaN;
   return computeXb(x0, x, cx);
 }
 
+/** Cumulative same-asset liquidity: Y remaining at price delta y from equilibrium. */
 export function LYY(y: number, cy: number, y0: number): number {
   if (y < 0) return NaN;
   return computeYb(y0, y, cy);
 }
 
-// Liquidity density per unit price (negative derivative of cumulative)
-// l_XX(x, cx, x0) = x0 * sqrt(1-cx) / (2 * (1+x-cx)^(3/2))
+/** Liquidity density of X per unit price delta: −dL_XX/dx. */
 export function lXX(x: number, cx: number, x0: number): number {
   if (x < 0 || cx >= 1) return NaN;
   const inner = 1 + x - cx;
@@ -663,6 +678,7 @@ export function lXX(x: number, cx: number, x0: number): number {
   return (x0 * Math.sqrt(1 - cx)) / (2 * Math.pow(inner, 1.5));
 }
 
+/** Liquidity density of Y per unit price delta: −dL_YY/dy. */
 export function lYY(y: number, cy: number, y0: number): number {
   if (y < 0 || cy >= 1) return NaN;
   const inner = 1 + y - cy;
@@ -670,8 +686,7 @@ export function lYY(y: number, cy: number, y0: number): number {
   return (y0 * Math.sqrt(1 - cy)) / (2 * Math.pow(inner, 1.5));
 }
 
-// Liquidity fingerprint: ratio of density to c=0 baseline (x0 cancels)
-// F_X(x, cx) = sqrt(1-cx) * (1+x)^(3/2) / (1+x-cx)^(3/2)
+/** Liquidity fingerprint: density ratio vs c=0 baseline. F_X = l_XX(cx) / l_XX(0). */
 export function FX(x: number, cx: number): number {
   if (x < 0 || cx >= 1) return NaN;
   const a = 1 + x;
@@ -680,6 +695,7 @@ export function FX(x: number, cx: number): number {
   return Math.sqrt(1 - cx) * Math.pow(a, 1.5) / Math.pow(b, 1.5);
 }
 
+/** Liquidity fingerprint: density ratio vs c=0 baseline. F_Y = l_YY(cy) / l_YY(0). */
 export function FY(y: number, cy: number): number {
   if (y < 0 || cy >= 1) return NaN;
   const a = 1 + y;
@@ -688,24 +704,21 @@ export function FY(y: number, cy: number): number {
   return Math.sqrt(1 - cy) * Math.pow(a, 1.5) / Math.pow(b, 1.5);
 }
 
-// Cross-asset cumulative liquidity: Y amount at price increase x (X side)
-// L_XY(x) = fX(L_XX(x), cx, x0, y0, px, py)
+/** Cross-asset cumulative: Y amount available at price delta x (X side). */
 export function LXY(x: number, cx: number, x0: number, y0: number, px: number, py: number): number {
   const xPos = LXX(x, cx, x0);
   if (!isFinite(xPos)) return NaN;
   return fX(xPos, cx, x0, y0, px, py);
 }
 
-// X amount at price increase y (Y side)
-// L_YX(y) = gY(L_YY(y), cy, y0, x0, px, py)
+/** Cross-asset cumulative: X amount available at price delta y (Y side). */
 export function LYX(y: number, cy: number, y0: number, x0: number, px: number, py: number): number {
   const yPos = LYY(y, cy, y0);
   if (!isFinite(yPos)) return NaN;
   return gY(yPos, cy, y0, x0, px, py);
 }
 
-// Cross-asset liquidity density (chain rule)
-// l_XY(x) = pXxy(L_XX(x)) * l_XX(x)
+/** Cross-asset density: Y per unit price delta on X side. l_XY = pXxy · l_XX. */
 export function lXY(x: number, cx: number, x0: number, y0: number, px: number, py: number): number {
   const xPos = LXX(x, cx, x0);
   if (!isFinite(xPos)) return NaN;
@@ -715,7 +728,7 @@ export function lXY(x: number, cx: number, x0: number, y0: number, px: number, p
   return price * dens;
 }
 
-// l_YX(y) = pYyx(L_YY(y)) * l_YY(y)
+/** Cross-asset density: X per unit price delta on Y side. l_YX = pYyx · l_YY. */
 export function lYX(y: number, cy: number, y0: number, x0: number, px: number, py: number): number {
   const yPos = LYY(y, cy, y0);
   if (!isFinite(yPos)) return NaN;
@@ -727,6 +740,7 @@ export function lYX(y: number, cy: number, y0: number, x0: number, px: number, p
 
 // --- Order book point generation ---
 
+/** A single point on the order book: cumulative/density liquidity at a given price delta. */
 export interface OrderBookPoint {
   priceDelta: number;
   cumSame: number;
@@ -736,6 +750,7 @@ export interface OrderBookPoint {
   fingerprint: number;
 }
 
+/** Generate n order book points on the X side (price rising from equilibrium to boundary). */
 export function generateOrderBookPointsX(
   x0: number, y0: number, cx: number, rx: number, px: number, py: number, n = 200
 ): OrderBookPoint[] {
@@ -753,6 +768,7 @@ export function generateOrderBookPointsX(
   return points;
 }
 
+/** Generate n order book points on the Y side (price dropping from equilibrium to boundary). */
 export function generateOrderBookPointsY(
   x0: number, y0: number, cy: number, ry: number, px: number, py: number, n = 200
 ): OrderBookPoint[] {
@@ -772,12 +788,13 @@ export function generateOrderBookPointsY(
 
 // --- Generate curve points for plotting ---
 
+/** A point on the AMM curve (x, y). */
 export interface CurvePoint {
   x: number;
   y: number;
 }
 
-// fX points (x <= equilibrium): pass x0,y0 for boosted or xr,yr for real
+/** Generate n points on the fX curve (x ≤ equilibrium). Pass x0/y0 for boosted or xr/yr for real. */
 export function generateFXPoints(eqX: number, eqY: number, px: number, py: number, cx: number, n = 200): CurvePoint[] {
   const points: CurvePoint[] = [];
   const xMin = eqX * 0.01;
@@ -789,7 +806,7 @@ export function generateFXPoints(eqX: number, eqY: number, px: number, py: numbe
   return points;
 }
 
-// fY points (x >= equilibrium): inverse/quadratic side
+/** Generate n points on the fY curve (x ≥ equilibrium, inverse/quadratic side). */
 export function generateFYPoints(eqX: number, eqY: number, px: number, py: number, cy: number, n = 200): CurvePoint[] {
   const points: CurvePoint[] = [];
   const xMax = eqX * 3;
@@ -801,7 +818,7 @@ export function generateFYPoints(eqX: number, eqY: number, px: number, py: numbe
   return points;
 }
 
-// Shifted curve points (shifted so range boundary is at origin)
+/** Generate fX curve points shifted so range boundary is at origin. */
 export function generateShiftedFXPoints(
   eqX: number, eqY: number, px: number, py: number, cx: number, cy: number, rx: number, ry: number, n = 200
 ): CurvePoint[] {
@@ -818,6 +835,7 @@ export function generateShiftedFXPoints(
   return points;
 }
 
+/** Generate gY curve points shifted so range boundary is at origin. */
 export function generateShiftedGYPoints(
   eqX: number, eqY: number, px: number, py: number, cx: number, cy: number, rx: number, ry: number, n = 200
 ): CurvePoint[] {

@@ -195,20 +195,26 @@ export function runSimulation(params: Params, config: SimConfig): SimResult {
 
     if (inRange) stepsInRange++;
 
-    // Real reserves
+    // Real reserves & vault debt
     let realX: number;
     let realY: number;
+    let debtX = 0;
+    let debtY = 0;
     if (curX <= x0) {
       // X side or equilibrium
-      realX = Math.max(xr - (x0 - curX), 0);
+      const consumed = x0 - curX;
+      realX = Math.max(xr - consumed, 0);
       realY = yr + (curY - y0);
+      debtX = Math.max(consumed - xr, 0);
     } else {
       // Y side
-      realY = Math.max(yr - (y0 - curY), 0);
+      const consumed = y0 - curY;
+      realY = Math.max(yr - consumed, 0);
       realX = xr + (curX - x0);
+      debtY = Math.max(consumed - yr, 0);
     }
 
-    const lpNav = realX * extPrice + realY;
+    const lpNav = realX * extPrice + realY - debtX * extPrice - debtY;
     const hodlNav = xr * extPrice + yr;
     const netPnl = lpNav + cumFees - hodlNav;
 

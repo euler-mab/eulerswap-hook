@@ -33,7 +33,7 @@ import {
 // 11. Collateral functions (CXX, CXY_fn, CYY, CYX_fn)
 // 12. Debt functions (DXX, DXY, DYY, DYX — phase guards, active region formulas)
 // 13. Marginal prices (pXxy, pXyx, pYxy, pYyx — equilibrium, reciprocal, monotonicity)
-// 14. Boundary prices (priceAtXb, priceAtYb — verify (px/py)(1+rx) identity)
+// 14. Boundary prices (priceAtXb = (px/py)(1+rx), priceAtYb = (px/py)/(1+ry))
 // 15. Health branches (H_XX, H_XY, H_XZ on X-side; H_YY, H_YX, H_YZ on Y-side)
 // 15b. Z-debt LLTV asymmetry (vxz≠vyz collateral tier shifting, pXyx non-monotonicity)
 // 16. Boost candidates (zero-LLTV baseline, Z/Y/X debt leverage, health≈1 at boundary)
@@ -675,10 +675,11 @@ describe("boundary prices", () => {
     }
   });
 
-  it("priceAtYb = (py/px)(1+ry)", () => {
+  it("priceAtYb = (px/py)/(1+ry)", () => {
+    // At yb, gYd = -(py/px)(1+ry) (X per Y), so priceAtYb = 1/(-gYd) = (px/py)/(1+ry) (Y per X)
     for (const [ryV, cyV] of [[1, 0.5], [0.5, 0.3], [2, 0.8]] as [number, number][]) {
       const y0v = 20;
-      const expected = (py / px) * (1 + ryV);
+      const expected = (px / py) / (1 + ryV);
       approx(priceAtYb(y0v, ryV, cyV, px, py), expected, 1e-9);
     }
   });
@@ -686,6 +687,12 @@ describe("boundary prices", () => {
   it("priceAtXb with asymmetric prices", () => {
     const pxA = 2, pyA = 1;
     approx(priceAtXb(20, 1, 0.5, pxA, pyA), (pxA / pyA) * 2);
+  });
+
+  it("priceAtYb with asymmetric prices", () => {
+    const pxA = 2, pyA = 1;
+    // priceAtYb = (px/py) / (1+ry) = 2/2 = 1
+    approx(priceAtYb(20, 1, 0.5, pxA, pyA), (pxA / pyA) / 2);
   });
 });
 
