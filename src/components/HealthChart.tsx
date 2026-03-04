@@ -5,6 +5,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import { Params, generateCollateralDebtPoints, generateCollateralDebtPointsY, computeZd } from "@/lib/math";
+import Tex from "./Tex";
 
 interface Props {
   params: Params;
@@ -17,11 +18,11 @@ const TIP = {
   labelStyle: { color: "#999" },
 };
 
-function Legend({ items }: { items: { color: string; label: string }[] }) {
+function Legend({ items }: { items: { color: string; label: React.ReactNode; key?: string }[] }) {
   return (
     <div className="flex flex-wrap gap-4 px-2 pt-1 text-[11px] text-zinc-600">
-      {items.map((it) => (
-        <span key={it.label} className="flex items-center gap-1.5">
+      {items.map((it, i) => (
+        <span key={it.key ?? i} className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full" style={{ backgroundColor: it.color }} />
           {it.label}
         </span>
@@ -31,7 +32,7 @@ function Legend({ items }: { items: { color: string; label: string }[] }) {
 }
 
 function NoDebtHint() {
-  return <p className="text-xs text-zinc-600 mt-2 px-2">Set x_d, y_d, or z_dbt &gt; 0 to see debt and health curves.</p>;
+  return <p className="text-xs text-zinc-600 mt-2 px-2">Set x_d, y_d, or z_d &gt; 0 to see debt and health curves.</p>;
 }
 
 export default function HealthChart({ params }: Props) {
@@ -60,8 +61,8 @@ export default function HealthChart({ params }: Props) {
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#3b82f6", label: "C_XX — X collateral" },
-            { color: "#8b5cf6", label: "C_XY — Y collateral" },
+            { color: "#3b82f6", label: <><Tex>{"C_{XX}"}</Tex> — X collateral</> },
+            { color: "#8b5cf6", label: <><Tex>{"C_{XY}"}</Tex> — Y collateral</> },
           ]} />
         </div>
       </section>
@@ -81,9 +82,9 @@ export default function HealthChart({ params }: Props) {
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#f59e0b", label: "D_XX — X debt" },
-            { color: "#ef4444", label: "D_XY — Y debt" },
-            ...(zd > 0 ? [{ color: "#ec4899", label: "D_XZ — Z debt" }] : []),
+            { color: "#f59e0b", label: <><Tex>{"D_{XX}"}</Tex> — X debt</> },
+            { color: "#ef4444", label: <><Tex>{"D_{XY}"}</Tex> — Y debt</> },
+            ...(zd > 0 ? [{ color: "#ec4899", label: <><Tex>{"D_{XZ}"}</Tex> — Z debt</>, key: "dxz" }] : []),
           ]} />
           {!hasDebt && <NoDebtHint />}
         </div>
@@ -103,8 +104,8 @@ export default function HealthChart({ params }: Props) {
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#34d399", label: "H_X — health score" },
-            { color: "#555", label: "H = 1 (liquidation)" },
+            { color: "#34d399", label: <><Tex>H_X</Tex> — health score</> },
+            { color: "#555", label: <>H = 1 (liquidation)</> },
           ]} />
           {!hasDebt && <NoDebtHint />}
         </div>
@@ -124,7 +125,7 @@ export default function HealthChart({ params }: Props) {
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#06b6d4", label: "n_XX — net asset value" },
+            { color: "#06b6d4", label: <><Tex>{"\\text{NAV}_X"}</Tex> — net asset value</> },
           ]} />
         </div>
       </section>
@@ -147,8 +148,8 @@ export default function HealthChart({ params }: Props) {
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#3b82f6", label: "C_YY — Y collateral" },
-            { color: "#8b5cf6", label: "C_YX — X collateral" },
+            { color: "#3b82f6", label: <><Tex>{"C_{YY}"}</Tex> — Y collateral</> },
+            { color: "#8b5cf6", label: <><Tex>{"C_{YX}"}</Tex> — X collateral</> },
           ]} />
         </div>
       </section>
@@ -168,9 +169,9 @@ export default function HealthChart({ params }: Props) {
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#f59e0b", label: "D_YY — Y debt" },
-            { color: "#ef4444", label: "D_YX — X debt" },
-            ...(zd > 0 ? [{ color: "#ec4899", label: "D_YZ — Z debt" }] : []),
+            { color: "#f59e0b", label: <><Tex>{"D_{YY}"}</Tex> — Y debt</> },
+            { color: "#ef4444", label: <><Tex>{"D_{YX}"}</Tex> — X debt</> },
+            ...(zd > 0 ? [{ color: "#ec4899", label: <><Tex>{"D_{YZ}"}</Tex> — Z debt</>, key: "dyz" }] : []),
           ]} />
           {!hasDebt && <NoDebtHint />}
         </div>
@@ -190,8 +191,8 @@ export default function HealthChart({ params }: Props) {
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#34d399", label: "H_Y — health score" },
-            { color: "#555", label: "H = 1 (liquidation)" },
+            { color: "#34d399", label: <><Tex>H_Y</Tex> — health score</> },
+            { color: "#555", label: <>H = 1 (liquidation)</> },
           ]} />
           {!hasDebt && <NoDebtHint />}
         </div>
@@ -211,7 +212,7 @@ export default function HealthChart({ params }: Props) {
             </LineChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#06b6d4", label: "n_YY — net asset value" },
+            { color: "#06b6d4", label: <><Tex>{"\\text{NAV}_Y"}</Tex> — net asset value</> },
           ]} />
         </div>
       </section>

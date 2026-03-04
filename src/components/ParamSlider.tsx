@@ -1,5 +1,7 @@
 "use client";
 
+import Tex from "./Tex";
+
 interface ParamSliderProps {
   label: string;
   value: number;
@@ -12,7 +14,7 @@ interface ParamSliderProps {
 export default function ParamSlider({ label, value, min, max, step, onChange }: ParamSliderProps) {
   return (
     <div className="flex items-center gap-2">
-      <label className="w-10 text-xs text-zinc-500 font-mono shrink-0">{label}</label>
+      <span className="w-10 text-zinc-500 shrink-0 flex items-center"><Tex>{label}</Tex></span>
       <input
         type="range"
         min={min}

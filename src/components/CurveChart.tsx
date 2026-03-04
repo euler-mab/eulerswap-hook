@@ -11,6 +11,7 @@ import {
   generateShiftedFXPoints, generateShiftedGYPoints,
   fX, gY, priceAtXb, priceAtYb,
 } from "@/lib/math";
+import Tex from "./Tex";
 
 interface Props {
   params: Params;
@@ -25,11 +26,11 @@ const TIP = {
 };
 const line = (color: string) => ({ stroke: color, strokeWidth: 1.5 });
 
-function Legend({ items }: { items: { color: string; label: string }[] }) {
+function Legend({ items }: { items: { color: string; label: React.ReactNode; key?: string }[] }) {
   return (
     <div className="flex flex-wrap gap-4 px-2 pt-1 text-[11px] text-zinc-600">
-      {items.map((it) => (
-        <span key={it.label} className="flex items-center gap-1.5">
+      {items.map((it, i) => (
+        <span key={it.key ?? i} className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full" style={{ backgroundColor: it.color }} />
           {it.label}
         </span>
@@ -126,11 +127,11 @@ export default function CurveChart({ params }: Props) {
             </ScatterChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#6366f1", label: "fX (x \u2264 x0)" },
-            { color: "#a78bfa", label: "fY (x \u2265 x0)" },
-            { color: "#34d399", label: "(x0, y0)" },
-            { color: "#fbbf24", label: "xb" },
-            { color: "#fb923c", label: "yb" },
+            { color: "#6366f1", label: <><Tex>{"f_X"}</Tex>{" (x \u2264 x\u2080)"}</> },
+            { color: "#a78bfa", label: <><Tex>{"g_Y"}</Tex>{" (x \u2265 x\u2080)"}</> },
+            { color: "#34d399", label: <>(x\u2080, y\u2080)</> },
+            { color: "#fbbf24", label: <><Tex>{"x_b"}</Tex></> },
+            { color: "#fb923c", label: <><Tex>{"y_b"}</Tex></> },
           ]} />
         </div>
       </section>
@@ -151,9 +152,9 @@ export default function CurveChart({ params }: Props) {
             </ScatterChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#6366f1", label: "fX (x \u2264 xr)" },
-            { color: "#a78bfa", label: "fY (x \u2265 xr)" },
-            { color: "#34d399", label: "(xr, yr)" },
+            { color: "#6366f1", label: <><Tex>{"f_X"}</Tex>{" (x \u2264 x\u1d63)"}</> },
+            { color: "#a78bfa", label: <><Tex>{"g_Y"}</Tex>{" (x \u2265 x\u1d63)"}</> },
+            { color: "#34d399", label: <>(x\u1d63, y\u1d63)</> },
           ]} />
         </div>
       </section>
@@ -176,9 +177,9 @@ export default function CurveChart({ params }: Props) {
             </ScatterChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#6366f1", label: "shifted fX" },
-            { color: "#a78bfa", label: "shifted gY" },
-            { color: "#34d399", label: "boosted range" },
+            { color: "#6366f1", label: <><Tex>{"f_X"}</Tex> shifted</> },
+            { color: "#a78bfa", label: <><Tex>{"g_Y"}</Tex> shifted</> },
+            { color: "#34d399", label: <>boosted range</> },
           ]} />
         </div>
       </section>
@@ -200,9 +201,9 @@ export default function CurveChart({ params }: Props) {
             </ScatterChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#6366f1", label: "shifted fX" },
-            { color: "#a78bfa", label: "shifted gY" },
-            { color: "#34d399", label: "real range" },
+            { color: "#6366f1", label: <><Tex>{"f_X"}</Tex> shifted</> },
+            { color: "#a78bfa", label: <><Tex>{"g_Y"}</Tex> shifted</> },
+            { color: "#34d399", label: <>real range</> },
           ]} />
         </div>
       </section>
@@ -210,33 +211,33 @@ export default function CurveChart({ params }: Props) {
       {/* Computed values */}
       <section>
         <h2 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Computed values</h2>
-        <div className="grid grid-cols-2 gap-x-10 gap-y-1 font-mono text-xs text-zinc-400">
+        <div className="grid grid-cols-2 gap-x-10 gap-y-1 text-xs text-zinc-400">
           <span className="text-zinc-600">Boost</span>
           <span />
-          <span>b_XC = {fmt(data.bXC)}</span>
-          <span>b_YC = {fmt(data.bYC)}</span>
-          <span>b_XL = {fmt(data.bXL)}</span>
-          <span>b_YL = {fmt(data.bYL)}</span>
+          <span><Tex>{"b_{XC}"}</Tex> = {fmt(data.bXC)}</span>
+          <span><Tex>{"b_{YC}"}</Tex> = {fmt(data.bYC)}</span>
+          <span><Tex>{"b_{XL}"}</Tex> = {fmt(data.bXL)}</span>
+          <span><Tex>{"b_{YL}"}</Tex> = {fmt(data.bYL)}</span>
           <span className="text-zinc-600 mt-1">Boosted reserves</span>
           <span />
-          <span>x0 = {fmt(data.x0)}</span>
-          <span>y0 = {fmt(data.y0)}</span>
-          <span>xb(x0) = {fmt(data.xbB)}</span>
-          <span>yb(y0) = {fmt(data.ybB)}</span>
-          <span>boosted range = ({fmt(data.x0 - data.xbB)}, {fmt(data.y0 - data.ybB)})</span>
+          <span><Tex>x_0</Tex> = {fmt(data.x0)}</span>
+          <span><Tex>y_0</Tex> = {fmt(data.y0)}</span>
+          <span><Tex>{"x_b(x_0)"}</Tex> = {fmt(data.xbB)}</span>
+          <span><Tex>{"y_b(y_0)"}</Tex> = {fmt(data.ybB)}</span>
+          <span>range = ({fmt(data.x0 - data.xbB)}, {fmt(data.y0 - data.ybB)})</span>
           <span />
           <span className="text-zinc-600 mt-1">Real reserves</span>
           <span />
-          <span>xr = {fmt(params.xr)}</span>
-          <span>yr = {fmt(params.yr)}</span>
-          <span>xb(xr) = {fmt(data.xbR)}</span>
-          <span>yb(yr) = {fmt(data.ybR)}</span>
-          <span>real range = ({fmt(params.xr - data.xbR)}, {fmt(params.yr - data.ybR)})</span>
+          <span><Tex>x_r</Tex> = {fmt(params.xr)}</span>
+          <span><Tex>y_r</Tex> = {fmt(params.yr)}</span>
+          <span><Tex>{"x_b(x_r)"}</Tex> = {fmt(data.xbR)}</span>
+          <span><Tex>{"y_b(y_r)"}</Tex> = {fmt(data.ybR)}</span>
+          <span>range = ({fmt(params.xr - data.xbR)}, {fmt(params.yr - data.ybR)})</span>
           <span />
           <span className="text-zinc-600 mt-1">Boundary prices</span>
           <span />
-          <span>pXb = {fmt(data.pXb)}</span>
-          <span>pYb = {fmt(data.pYb)}</span>
+          <span><Tex>{"p_{Xb}"}</Tex> = {fmt(data.pXb)}</span>
+          <span><Tex>{"p_{Yb}"}</Tex> = {fmt(data.pYb)}</span>
         </div>
       </section>
     </div>

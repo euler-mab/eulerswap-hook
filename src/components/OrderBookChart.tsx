@@ -14,6 +14,7 @@ import {
   priceAtXb, priceAtYb,
   FX, FY,
 } from "@/lib/math";
+import Tex from "./Tex";
 
 export type Numeraire = "raw" | "x" | "y";
 
@@ -34,11 +35,11 @@ const TIP = {
   formatter: (val: number | undefined) => val?.toFixed(4) ?? "",
 };
 
-function Legend({ items }: { items: { color: string; label: string; dashed?: boolean }[] }) {
+function Legend({ items }: { items: { color: string; label: React.ReactNode; key?: string; dashed?: boolean }[] }) {
   return (
     <div className="flex flex-wrap gap-4 px-2 pt-1 text-[11px] text-zinc-600">
-      {items.map((it) => (
-        <span key={it.label} className="flex items-center gap-1.5">
+      {items.map((it, i) => (
+        <span key={it.key ?? i} className="flex items-center gap-1.5">
           <span
             className="w-2 h-2 rounded-full"
             style={{
@@ -369,14 +370,14 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
             </ComposedChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#34d399", label: `Collateral${numLabel ? ` (${numLabel})` : ""}` },
-            { color: "#f87171", label: `Debt${numLabel ? ` (${numLabel})` : ""}` },
-            { color: "#06b6d4", label: `NAV${numLabel ? ` (${numLabel})` : ""}` },
+            { color: "#34d399", label: <>Collateral{numLabel ? ` (${numLabel})` : ""}</>, key: "col" },
+            { color: "#f87171", label: <>Debt{numLabel ? ` (${numLabel})` : ""}</>, key: "debt" },
+            { color: "#06b6d4", label: <>NAV{numLabel ? ` (${numLabel})` : ""}</>, key: "nav" },
             ...(data.hasDebt ? [
-              { color: "#a78bfa", label: "Health (right axis)" },
-              { color: "#ef4444", label: "H = 1 (liquidation)", dashed: true },
+              { color: "#a78bfa", label: <>Health (right axis)</>, key: "health" },
+              { color: "#ef4444", label: <>H = 1 (liquidation)</>, key: "hliq", dashed: true },
             ] : []),
-            { color: "#f59e0b", label: "Price boundaries", dashed: true },
+            { color: "#f59e0b", label: <>Price boundaries</>, key: "bounds", dashed: true },
           ]} />
           {!data.hasDebt && (
             <p className="text-[10px] text-zinc-600 mt-1 px-1">
@@ -442,9 +443,9 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                 </ComposedChart>
               </ResponsiveContainer>
               <Legend items={[
-                { color: "#3b82f6", label: `${symX} depth (bid)${numeraire === "y" ? ` in ${symY}` : ""}` },
-                { color: "#fb923c", label: `${symY} depth (ask)${numeraire === "x" ? ` in ${symX}` : ""}` },
-                { color: "#f59e0b", label: "Price boundaries", dashed: true },
+                { color: "#3b82f6", label: <>{symX} depth (bid){numeraire === "y" ? ` in ${symY}` : ""}</>, key: "bid" },
+                { color: "#fb923c", label: <>{symY} depth (ask){numeraire === "x" ? ` in ${symX}` : ""}</>, key: "ask" },
+                { color: "#f59e0b", label: <>Price boundaries</>, key: "bounds", dashed: true },
               ]} />
             </>
           )}
@@ -468,10 +469,10 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                 </ComposedChart>
               </ResponsiveContainer>
               <Legend items={[
-                { color: "#3b82f6", label: `l_XX — ${symX} in (price ↓)` },
-                { color: "#a78bfa", label: `l_YY — ${symY} in (price ↑)` },
-                { color: "#6366f1", label: `l_XY — ${symY} out (price ↓)`, dashed: true },
-                { color: "#8b5cf6", label: `l_YX — ${symX} out (price ↑)`, dashed: true },
+                { color: "#3b82f6", label: <><Tex>{"\\ell_{XX}"}</Tex> — {symX} in (price ↓)</>, key: "lxx" },
+                { color: "#a78bfa", label: <><Tex>{"\\ell_{YY}"}</Tex> — {symY} in (price ↑)</>, key: "lyy" },
+                { color: "#6366f1", label: <><Tex>{"\\ell_{XY}"}</Tex> — {symY} out (price ↓)</>, key: "lxy", dashed: true },
+                { color: "#8b5cf6", label: <><Tex>{"\\ell_{YX}"}</Tex> — {symX} out (price ↑)</>, key: "lyx", dashed: true },
               ]} />
             </>
           )}
@@ -501,9 +502,9 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                 </ComposedChart>
               </ResponsiveContainer>
               <Legend items={[
-                { color: "#3b82f6", label: `F_${symX} — ${symX} fingerprint (price ↓)` },
-                { color: "#a78bfa", label: `F_${symY} — ${symY} fingerprint (price ↑)` },
-                { color: "#555", label: "xy=k baseline" },
+                { color: "#3b82f6", label: <><Tex>{`F_{${symX}}`}</Tex> — {symX} fingerprint (price ↓)</>, key: "fx" },
+                { color: "#a78bfa", label: <><Tex>{`F_{${symY}}`}</Tex> — {symY} fingerprint (price ↑)</>, key: "fy" },
+                { color: "#555", label: <>xy = k baseline</>, key: "xyk" },
               ]} />
             </>
           )}
