@@ -226,8 +226,7 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
   const fmtLogTick = (logP: number) => {
     const p = Math.exp(logP);
     if (p >= 1000) return `${(p / 1000).toFixed(1)}k`;
-    if (p >= 1) return p.toFixed(0);
-    if (p >= 0.01) return parseFloat(p.toFixed(4)).toString();
+    if (p >= 0.01) return parseFloat(p.toPrecision(3)).toString();
     return p.toExponential(1);
   };
 
@@ -249,7 +248,7 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                   : "text-zinc-600 hover:text-zinc-400"
               }`}
             >
-              {n === "raw" ? "Raw" : n === "x" ? symX : symY}
+              {n === "raw" ? "raw" : n === "x" ? symX : symY}
             </button>
           ))}
         </div>
@@ -292,7 +291,7 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                 x={data.logEq}
                 stroke="#555"
                 strokeDasharray="6 3"
-                label={{ value: "eq", position: "top", fill: "#666", fontSize: 10 }}
+                label={{ value: "p₀", position: "top", fill: "#666", fontSize: 10 }}
               />
               {data.logPXb != null && (
                 <ReferenceLine
@@ -300,7 +299,7 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                   x={data.logPXb}
                   stroke="#f59e0b"
                   strokeDasharray="4 3"
-                  label={{ value: `upper ${fmtLogTick(data.logPXb)}`, position: "insideTopLeft", fill: "#f59e0b", fontSize: 10 }}
+                  label={{ value: `↑ ${fmtLogTick(data.logPXb)}`, position: "insideTopLeft", fill: "#f59e0b", fontSize: 10 }}
                 />
               )}
               {data.logPYb != null && (
@@ -309,7 +308,7 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                   x={data.logPYb}
                   stroke="#f59e0b"
                   strokeDasharray="4 3"
-                  label={{ value: `lower ${fmtLogTick(data.logPYb)}`, position: "insideTopRight", fill: "#f59e0b", fontSize: 10 }}
+                  label={{ value: `↓ ${fmtLogTick(data.logPYb)}`, position: "insideTopRight", fill: "#f59e0b", fontSize: 10 }}
                 />
               )}
               <Area
@@ -371,14 +370,14 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
             </ComposedChart>
           </ResponsiveContainer>
           <Legend items={[
-            { color: "#34d399", label: <>Collateral{numLabel ? ` (${numLabel})` : ""}</>, key: "col" },
-            { color: "#f87171", label: <>Debt{numLabel ? ` (${numLabel})` : ""}</>, key: "debt" },
-            { color: "#06b6d4", label: <>NAV{numLabel ? ` (${numLabel})` : ""}</>, key: "nav" },
+            { color: "#34d399", label: <><Tex>C</Tex> — collateral{numLabel ? ` (${numLabel})` : ""}</>, key: "col" },
+            { color: "#f87171", label: <><Tex>D</Tex> — debt{numLabel ? ` (${numLabel})` : ""}</>, key: "debt" },
+            { color: "#06b6d4", label: <><Tex>{"\\text{NAV}"}</Tex>{numLabel ? ` (${numLabel})` : ""}</>, key: "nav" },
             ...(data.hasDebt ? [
-              { color: "#a78bfa", label: <>Health (right axis)</>, key: "health" },
-              { color: "#ef4444", label: <>H = 1 (liquidation)</>, key: "hliq", dashed: true },
+              { color: "#a78bfa", label: <><Tex>H</Tex> — health (right axis)</>, key: "health" },
+              { color: "#ef4444", label: <><Tex>{"H = 1"}</Tex> — liquidation</>, key: "hliq", dashed: true },
             ] : []),
-            { color: "#f59e0b", label: <>Price boundaries</>, key: "bounds", dashed: true },
+            { color: "#f59e0b", label: <>price boundaries</>, key: "bounds", dashed: true },
           ]} />
           {!data.hasDebt && (
             <p className="text-[10px] text-zinc-600 mt-1 px-1">
@@ -435,18 +434,18 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                     x={data.logEq}
                     stroke="#555"
                     strokeDasharray="6 3"
-                    label={{ value: "eq", position: "top", fill: "#666", fontSize: 10 }}
+                    label={{ value: "p₀", position: "top", fill: "#666", fontSize: 10 }}
                   />
                   {data.logPXb != null && <ReferenceLine yAxisId="left" x={data.logPXb} stroke="#f59e0b" strokeDasharray="4 3" />}
                   {data.logPYb != null && <ReferenceLine yAxisId="left" x={data.logPYb} stroke="#f59e0b" strokeDasharray="4 3" />}
-                  <Area yAxisId="left" type="monotone" dataKey="bidDepth" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} strokeWidth={1.5} dot={false} connectNulls={false} />
-                  <Area yAxisId="left" type="monotone" dataKey="askDepth" stroke="#fb923c" fill="#fb923c" fillOpacity={0.25} strokeWidth={1.5} dot={false} connectNulls={false} />
+                  <Area yAxisId="left" type="monotone" dataKey="bidDepth" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} strokeWidth={1.5} dot={false} connectNulls={false} name={`${symX} bid`} />
+                  <Area yAxisId="left" type="monotone" dataKey="askDepth" stroke="#fb923c" fill="#fb923c" fillOpacity={0.25} strokeWidth={1.5} dot={false} connectNulls={false} name={`${symY} ask`} />
                 </ComposedChart>
               </ResponsiveContainer>
               <Legend items={[
-                { color: "#3b82f6", label: <>{symX} depth (bid){numeraire === "y" ? ` in ${symY}` : ""}</>, key: "bid" },
-                { color: "#fb923c", label: <>{symY} depth (ask){numeraire === "x" ? ` in ${symX}` : ""}</>, key: "ask" },
-                { color: "#f59e0b", label: <>Price boundaries</>, key: "bounds", dashed: true },
+                { color: "#3b82f6", label: <><Tex>{symX}</Tex> — bid depth{numeraire === "y" ? ` (${symY})` : ""}</>, key: "bid" },
+                { color: "#fb923c", label: <><Tex>{symY}</Tex> — ask depth{numeraire === "x" ? ` (${symX})` : ""}</>, key: "ask" },
+                { color: "#f59e0b", label: <>price boundaries</>, key: "bounds", dashed: true },
               ]} />
             </>
           )}
@@ -460,13 +459,13 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                   <YAxis yAxisId="left" {...AXIS} />
                   <YAxis yAxisId="right" orientation="right" width={60} tick={false} axisLine={false} tickLine={false} />
                   <Tooltip {...TIP} labelFormatter={(v) => `price: ${Math.exp(Number(v)).toFixed(2)}`} />
-                  <ReferenceLine yAxisId="left" x={data.logEq} stroke="#555" strokeDasharray="6 3" label={{ value: "eq", position: "top", fill: "#666", fontSize: 10 }} />
+                  <ReferenceLine yAxisId="left" x={data.logEq} stroke="#555" strokeDasharray="6 3" label={{ value: "p₀", position: "top", fill: "#666", fontSize: 10 }} />
                   {data.logPXb != null && <ReferenceLine yAxisId="left" x={data.logPXb} stroke="#f59e0b" strokeDasharray="4 3" />}
                   {data.logPYb != null && <ReferenceLine yAxisId="left" x={data.logPYb} stroke="#f59e0b" strokeDasharray="4 3" />}
-                  <Line yAxisId="left" type="monotone" dataKey="sameL" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="l_XX" connectNulls={false} />
-                  <Line yAxisId="left" type="monotone" dataKey="sameR" stroke="#a78bfa" strokeWidth={1.5} dot={false} name="l_YY" connectNulls={false} />
-                  <Line yAxisId="left" type="monotone" dataKey="crossL" stroke="#6366f1" strokeWidth={1.5} dot={false} name="l_XY" strokeDasharray="4 2" connectNulls={false} />
-                  <Line yAxisId="left" type="monotone" dataKey="crossR" stroke="#8b5cf6" strokeWidth={1.5} dot={false} name="l_YX" strokeDasharray="4 2" connectNulls={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="sameL" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="ℓ_XX" connectNulls={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="sameR" stroke="#a78bfa" strokeWidth={1.5} dot={false} name="ℓ_YY" connectNulls={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="crossL" stroke="#6366f1" strokeWidth={1.5} dot={false} name="ℓ_XY" strokeDasharray="4 2" connectNulls={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="crossR" stroke="#8b5cf6" strokeWidth={1.5} dot={false} name="ℓ_YX" strokeDasharray="4 2" connectNulls={false} />
                 </ComposedChart>
               </ResponsiveContainer>
               <Legend items={[
@@ -494,7 +493,7 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                   <YAxis yAxisId="left" type="number" {...AXIS} domain={[0, "auto"]} />
                   <YAxis yAxisId="right" orientation="right" width={60} tick={false} axisLine={false} tickLine={false} />
                   <Tooltip {...TIP} labelFormatter={(v) => `price: ${Math.exp(Number(v)).toFixed(2)}`} />
-                  <ReferenceLine yAxisId="left" x={data.logEq} stroke="#555" strokeDasharray="6 3" label={{ value: "eq", position: "top", fill: "#666", fontSize: 10 }} />
+                  <ReferenceLine yAxisId="left" x={data.logEq} stroke="#555" strokeDasharray="6 3" label={{ value: "p₀", position: "top", fill: "#666", fontSize: 10 }} />
                   {data.logPXb != null && <ReferenceLine yAxisId="left" x={data.logPXb} stroke="#f59e0b" strokeDasharray="4 3" />}
                   {data.logPYb != null && <ReferenceLine yAxisId="left" x={data.logPYb} stroke="#f59e0b" strokeDasharray="4 3" />}
                   <ReferenceLine yAxisId="left" y={1} stroke="#555" strokeDasharray="6 3" label={{ value: "xy=k", position: "right", fill: "#666", fontSize: 10 }} />
@@ -505,7 +504,7 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
               <Legend items={[
                 { color: "#3b82f6", label: <><Tex>{`F_{${symX}}`}</Tex> — {symX} fingerprint (price ↓)</>, key: "fx" },
                 { color: "#a78bfa", label: <><Tex>{`F_{${symY}}`}</Tex> — {symY} fingerprint (price ↑)</>, key: "fy" },
-                { color: "#555", label: <>xy = k baseline</>, key: "xyk" },
+                { color: "#555", label: <><Tex>{"xy = k"}</Tex> — baseline</>, key: "xyk" },
               ]} />
             </>
           )}

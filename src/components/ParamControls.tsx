@@ -42,7 +42,7 @@ export default function ParamControls({ params, onChange }: Props) {
 
   return (
     <div className="grid grid-cols-2 gap-x-6 gap-y-6">
-      <Section title="LLTV (X ↔ Y)">
+      <Section title="LLTV (X, Y)">
         <ParamSlider label="v_yx" value={params.vyx} min={0} max={1} step={0.01} onChange={set("vyx")} />
         <ParamSlider label="v_xy" value={params.vxy} min={0} max={1} step={0.01} onChange={set("vxy")} />
       </Section>
@@ -85,7 +85,7 @@ export default function ParamControls({ params, onChange }: Props) {
             <button
               key={m}
               onClick={() => setDebtMode(m)}
-              className={`px-2.5 py-0.5 rounded text-[11px] font-mono transition-colors ${
+              className={`px-2.5 py-0.5 rounded text-[11px] transition-colors ${
                 mode === m
                   ? "bg-zinc-700 text-zinc-100"
                   : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
