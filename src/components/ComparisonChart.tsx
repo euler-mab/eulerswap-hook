@@ -79,6 +79,27 @@ function Controls({ config, onChange }: { config: ComparisonConfig; onChange: (c
         <label className="flex items-center gap-1.5 text-[11px] text-zinc-500 cursor-pointer">
           <input
             type="checkbox"
+            checked={config.retailEnabled}
+            onChange={(e) => onChange({ ...config, retailEnabled: e.target.checked })}
+            className="accent-blue-500"
+          />
+          <span>Retail flow</span>
+        </label>
+        {config.retailEnabled && (
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] text-zinc-600">vol</span>
+            <input
+              type="number"
+              value={config.retailVolPerStep}
+              onChange={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v) && v >= 0) onChange({ ...config, retailVolPerStep: v }); }}
+              className="w-14 bg-transparent border border-zinc-800 rounded px-1 py-0.5 text-xs font-mono text-zinc-300 text-right focus:outline-none focus:border-zinc-600"
+            />
+            <span className="text-[10px] text-zinc-600">Y/step</span>
+          </div>
+        )}
+        <label className="flex items-center gap-1.5 text-[11px] text-zinc-500 cursor-pointer">
+          <input
+            type="checkbox"
             checked={config.dynamicFee}
             onChange={(e) => onChange({ ...config, dynamicFee: e.target.checked })}
             className="accent-emerald-500"
@@ -340,6 +361,8 @@ export default function ComparisonChart({ params, labels }: Props) {
           All static pools use fair params (no LLTV boost, same capital/range).{" "}
           <strong>Static</strong>: IL = lpNav − HODL(50/50). <strong>Discrete/Ideal</strong>: IL = equity − HODL(100% X).
           Residual discrete IL ≈ σ²T/4 from simple leverage gap (2√r−1 vs r per step).
+          {config.retailEnabled && <> Retail flow: {config.retailVolPerStep.toFixed(1)} Y/step per ref-depth pool — deeper pools capture more (proportional to √(x₀·y₀)).</>}
+          {" "}
           {config.dynamicFee && (() => {
             const elapsed = 86400 / config.stepsPerDay;
             const tFrac = Math.min(elapsed / config.feeDecaySeconds, 1);

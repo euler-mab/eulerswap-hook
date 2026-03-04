@@ -20,6 +20,7 @@
 import {
   Params,
   computeSx, computeBxc,
+  computeX0, computeY0,
 } from "./math";
 import {
   SimConfig, defaultSimConfig,
@@ -34,6 +35,8 @@ export interface ComparisonConfig extends SimConfig {
   dynamicFee: boolean;       // enable time-decay fee for releverage strategies
   feeMaxBps: number;         // max fee right after re-centering (e.g. 500 = 5%)
   feeDecaySeconds: number;   // τ decay time constant (e.g. 60)
+  retailEnabled: boolean;    // enable depth-proportional retail flow model
+  retailVolPerStep: number;  // retail volume (Y/step) hitting a reference-depth pool
 }
 
 export const defaultComparisonConfig: ComparisonConfig = {
@@ -42,6 +45,8 @@ export const defaultComparisonConfig: ComparisonConfig = {
   dynamicFee: false,
   feeMaxBps: 500,
   feeDecaySeconds: 60,
+  retailEnabled: false,
+  retailVolPerStep: 10,
 };
 
 /** Per-timestep snapshot for all strategies. All monetary values in Y units. */
@@ -131,11 +136,25 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
   // Concentration boost at cx=0 for releverage strategies
   const sx = computeSx(rx, 0);
   const bXC = computeBxc(sx);
+  const sy = computeSx(params.ry, 0); // same formula, ry instead of rx
+  const bYC = computeBxc(sy);
 
   // Run three static simulations at different cx, all with fair params
-  const s0Result = runSimulation(fairParams(params, 0), config);
-  const s50Result = runSimulation(fairParams(params, 0.5), config);
-  const s90Result = runSimulation(fairParams(params, 0.9), config);
+  const s0Params = fairParams(params, 0);
+  const s50Params = fairParams(params, 0.5);
+  const s90Params = fairParams(params, 0.9);
+  const s0Result = runSimulation(s0Params, config);
+  const s50Result = runSimulation(s50Params, config);
+  const s90Result = runSimulation(s90Params, config);
+
+  // Equilibrium depths for retail flow model.
+  // EulerSwap effective liquidity ∝ x0/(1-cx): the curve flatness (cx) reduces
+  // price impact, so a cx=0.9 pool is ~10× deeper than its virtual reserves suggest.
+  // depth = sqrt(x0 * y0) / (1 - cx) captures both virtual reserve size and curve shape.
+  const s0Depth = Math.sqrt(computeX0(s0Params) * computeY0(s0Params));  // cx=0: 1-cx=1
+  const s50Depth = Math.sqrt(computeX0(s50Params) * computeY0(s50Params)) / (1 - 0.5);
+  const s90Depth = Math.sqrt(computeX0(s90Params) * computeY0(s90Params)) / (1 - 0.9);
+  const refDepth = s0Depth; // cx=0 pool as reference (1-cx=1, no division needed)
 
   // Generate same price path for releverage sims
   const pricePath = generatePricePath(p0, config);
@@ -160,6 +179,10 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
   let idealEquity = E0;
   let idealFeesCum = 0;
   let idealDebtCum = 0;
+
+  // Retail fee accumulators (added on top of arb fees)
+  let s0RetailCum = 0, s50RetailCum = 0, s90RetailCum = 0;
+  let discRetailCum = 0, idealRetailCum = 0;
 
   const steps: ComparisonStep[] = [];
 
@@ -204,6 +227,27 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
       }
     }
 
+    // --- Retail fees (depth-proportional) ---
+    if (config.retailEnabled && i > 0 && refDepth > 0) {
+      const feeFrac = config.feeBps / 10000;
+      const rvol = config.retailVolPerStep;
+
+      // Static: earn retail only when in range, proportional to equilibrium depth
+      if (s0.inRange) s0RetailCum += rvol * (s0Depth / refDepth) * feeFrac;
+      if (s50.inRange) s50RetailCum += rvol * (s50Depth / refDepth) * feeFrac;
+      if (s90.inRange) s90RetailCum += rvol * (s90Depth / refDepth) * feeFrac;
+
+      // Releverage: depth scales with equity (re-centered each step)
+      if (!discLiquidated) {
+        const discDepth = (discEquity / 2) * Math.sqrt(bXC * bYC / p);
+        discRetailCum += rvol * (discDepth / refDepth) * feeFrac;
+      }
+      {
+        const idealDepth = (idealEquity / 2) * Math.sqrt(bXC * bYC / p);
+        idealRetailCum += rvol * (idealDepth / refDepth) * feeFrac;
+      }
+    }
+
     const hodl = xr * p + yr;
     const hodlX = E0 * p / p0;
 
@@ -212,17 +256,17 @@ export function runComparison(params: Params, config: ComparisonConfig): Compari
       extPrice: p,
       hodl,
       hodlX,
-      s0Nav: s0.lpNav, s0Fees: s0.feesCum, s0Total: s0.lpNav + s0.feesCum,
-      s50Nav: s50.lpNav, s50Fees: s50.feesCum, s50Total: s50.lpNav + s50.feesCum,
-      s90Nav: s90.lpNav, s90Fees: s90.feesCum, s90Total: s90.lpNav + s90.feesCum,
+      s0Nav: s0.lpNav, s0Fees: s0.feesCum + s0RetailCum, s0Total: s0.lpNav + s0.feesCum + s0RetailCum,
+      s50Nav: s50.lpNav, s50Fees: s50.feesCum + s50RetailCum, s50Total: s50.lpNav + s50.feesCum + s50RetailCum,
+      s90Nav: s90.lpNav, s90Fees: s90.feesCum + s90RetailCum, s90Total: s90.lpNav + s90.feesCum + s90RetailCum,
       discEquity,
-      discFees: discFeesCum,
+      discFees: discFeesCum + discRetailCum,
       discDebt: discDebtCum,
-      discTotal: discEquity + discFeesCum - discDebtCum,
+      discTotal: discEquity + discFeesCum + discRetailCum - discDebtCum,
       idealEquity,
-      idealFees: idealFeesCum,
+      idealFees: idealFeesCum + idealRetailCum,
       idealDebt: idealDebtCum,
-      idealTotal: idealEquity + idealFeesCum - idealDebtCum,
+      idealTotal: idealEquity + idealFeesCum + idealRetailCum - idealDebtCum,
     });
   }
 

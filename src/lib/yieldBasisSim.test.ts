@@ -40,6 +40,7 @@ const shortConfig: ComparisonConfig = {
   vol: 0.8, drift: 0, durationDays: 30, stepsPerDay: 24,
   feeBps: 30, seed: 42, borrowRateAnnual: 0.05,
   dynamicFee: false, feeMaxBps: 500, feeDecaySeconds: 60,
+  retailEnabled: false, retailVolPerStep: 10,
 };
 
 // ============================================================================
@@ -382,5 +383,87 @@ describe("Monte Carlo comparison", () => {
     }
 
     expect(mean(idealNets)).toBeGreaterThan(mean(staticNets));
+  });
+});
+
+// ============================================================================
+// 8. RETAIL FLOW MODEL
+// ============================================================================
+
+describe("Retail flow model", () => {
+  it("retail disabled: fees unchanged from arb-only", () => {
+    const noRetail = runComparison(baseParams, { ...shortConfig, retailEnabled: false });
+    const withRetail = runComparison(baseParams, { ...shortConfig, retailEnabled: true, retailVolPerStep: 10 });
+
+    // Without retail, fees should be smaller
+    expect(withRetail.summary.statics[0].fees).toBeGreaterThan(noRetail.summary.statics[0].fees);
+    expect(withRetail.summary.idealFees).toBeGreaterThan(noRetail.summary.idealFees);
+    expect(withRetail.summary.discFees).toBeGreaterThan(noRetail.summary.discFees);
+  });
+
+  it("retail fees scale with depth: higher cx earns more retail per step in range", () => {
+    // Use low vol so pools stay in range, isolating the depth effect
+    const cfg = { ...shortConfig, retailEnabled: true, retailVolPerStep: 10, vol: 0.2 };
+    const noRetail = runComparison(baseParams, { ...cfg, retailEnabled: false });
+    const withRetail = runComparison(baseParams, cfg);
+
+    // Isolate retail contribution: total fees - arb-only fees
+    const retail0 = withRetail.summary.statics[0].fees - noRetail.summary.statics[0].fees;
+    const retail50 = withRetail.summary.statics[1].fees - noRetail.summary.statics[1].fees;
+    const retail90 = withRetail.summary.statics[2].fees - noRetail.summary.statics[2].fees;
+
+    // Higher cx → deeper pool → more retail per step
+    expect(retail90).toBeGreaterThan(retail50);
+    expect(retail50).toBeGreaterThan(retail0);
+  });
+
+  it("retail fees scale with retailVolPerStep", () => {
+    const low = runComparison(baseParams, { ...shortConfig, retailEnabled: true, retailVolPerStep: 5 });
+    const high = runComparison(baseParams, { ...shortConfig, retailEnabled: true, retailVolPerStep: 20 });
+
+    // Higher volume → more fees for all strategies
+    expect(high.summary.statics[0].fees).toBeGreaterThan(low.summary.statics[0].fees);
+    expect(high.summary.idealFees).toBeGreaterThan(low.summary.idealFees);
+  });
+
+  it("retail does not affect IL or equity (pure fee income)", () => {
+    const noRetail = runComparison(baseParams, { ...shortConfig, retailEnabled: false });
+    const withRetail = runComparison(baseParams, { ...shortConfig, retailEnabled: true, retailVolPerStep: 50 });
+
+    // IL unchanged (retail doesn't move the pool)
+    for (let i = 0; i < 3; i++) {
+      expect(withRetail.summary.statics[i].il).toBeCloseTo(noRetail.summary.statics[i].il, 8);
+    }
+    expect(withRetail.summary.idealIL).toBeCloseTo(noRetail.summary.idealIL, 10);
+    expect(withRetail.summary.discIL).toBeCloseTo(noRetail.summary.discIL, 10);
+
+    // Equity unchanged
+    const fNoRetail = noRetail.steps[noRetail.steps.length - 1];
+    const fWithRetail = withRetail.steps[withRetail.steps.length - 1];
+    expect(fWithRetail.idealEquity).toBeCloseTo(fNoRetail.idealEquity, 8);
+    expect(fWithRetail.discEquity).toBeCloseTo(fNoRetail.discEquity, 8);
+  });
+
+  it("releverage retail fees grow with equity (ideal tracks price)", () => {
+    // With positive drift, ideal equity grows → its depth grows → more retail fees
+    const noDrift = runComparison(baseParams, {
+      ...shortConfig, retailEnabled: true, retailVolPerStep: 10, drift: 0, seed: 77,
+    });
+    const highDrift = runComparison(baseParams, {
+      ...shortConfig, retailEnabled: true, retailVolPerStep: 10, drift: 1.0, seed: 77,
+    });
+
+    // Higher drift → price up → ideal equity up → more retail capture
+    expect(highDrift.summary.idealFees).toBeGreaterThan(noDrift.summary.idealFees);
+  });
+
+  it("retail fees are zero at t=0", () => {
+    const res = runComparison(baseParams, { ...shortConfig, retailEnabled: true, retailVolPerStep: 10 });
+    const step0 = res.steps[0];
+    expect(step0.s0Fees).toBe(0);
+    expect(step0.s50Fees).toBe(0);
+    expect(step0.s90Fees).toBe(0);
+    expect(step0.discFees).toBe(0);
+    expect(step0.idealFees).toBe(0);
   });
 });
