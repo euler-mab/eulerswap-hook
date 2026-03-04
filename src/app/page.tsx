@@ -9,8 +9,9 @@ import CurveChart from "@/components/CurveChart";
 import HealthChart from "@/components/HealthChart";
 import OrderBookChart from "@/components/OrderBookChart";
 import SimChart from "@/components/SimChart";
+import ComparisonChart from "@/components/ComparisonChart";
 
-type ChartTab = "orderbook" | "health" | "curve" | "simulate";
+type ChartTab = "orderbook" | "health" | "curve" | "simulate" | "compare";
 
 export default function Home() {
   const [params, setParams] = useState<Params>(defaultParams);
@@ -52,6 +53,7 @@ export default function Home() {
             ["health", "Health"],
             ["curve", "Curve"],
             ["simulate", "Simulate"],
+            ["compare", "Yield Basis"],
           ] as [ChartTab, string][]).map(([tab, label]) => (
             <button
               key={tab}
@@ -71,6 +73,7 @@ export default function Home() {
         {chartTab === "health" && <HealthChart params={params} labelX={labels.x} labelY={labels.y} />}
         {chartTab === "curve" && <CurveChart params={params} labelX={labels.x} labelY={labels.y} />}
         {chartTab === "simulate" && <SimChart params={params} labels={labels} />}
+        {chartTab === "compare" && <ComparisonChart params={params} labels={labels} />}
       </main>
     </div>
   );
