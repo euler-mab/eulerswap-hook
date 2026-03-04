@@ -2,11 +2,13 @@
 
 import { useState } from "react";
 import { Params } from "@/lib/math";
+import { AssetLabels } from "@/lib/labels";
 import ParamSlider from "./ParamSlider";
 
 interface Props {
   params: Params;
   onChange: (p: Params) => void;
+  labels?: AssetLabels;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -25,8 +27,22 @@ function initDebtMode(p: Params): DebtMode {
   return "z";
 }
 
-export default function ParamControls({ params, onChange }: Props) {
+function NumHint({ value, unit }: { value: number; unit: string }) {
+  if (value === 0) return null;
+  const s = value >= 1e6 ? `${(value / 1e6).toFixed(1)}M`
+    : value >= 1e3 ? `${(value / 1e3).toFixed(1)}k`
+    : value >= 1 ? value.toFixed(1)
+    : value.toFixed(2);
+  return <span className="text-[9px] text-zinc-600 tabular-nums">≈ {s} {unit}</span>;
+}
+
+export default function ParamControls({ params, onChange, labels }: Props) {
   const set = (key: keyof Params) => (v: number) => onChange({ ...params, [key]: v });
+  const pz = params.pxz > 0 ? params.px / params.pxz : 0;
+  const symX = labels?.x ?? "X";
+  const symY = labels?.y ?? "Y";
+  const symZ = labels?.z ?? "Z";
+  const symNum = labels?.num ?? "USD";
 
   const [mode, setMode] = useState<DebtMode>(() => initDebtMode(params));
   const setDebtMode = (m: DebtMode) => {
@@ -57,10 +73,10 @@ export default function ParamControls({ params, onChange }: Props) {
         <ParamSlider label="v_zy" value={params.vzy} min={0} max={1} step={0.01} onChange={set("vzy")} />
       </Section>
 
-      <Section title="Prices">
-        <ParamSlider label="p_x" value={params.px} min={1} max={1000} step={1} onChange={set("px")} />
-        <ParamSlider label="p_y" value={params.py} min={1} max={1000} step={1} onChange={set("py")} />
-        <ParamSlider label="p_xz" value={params.pxz} min={1} max={1000} step={1} onChange={set("pxz")} />
+      <Section title={labels ? `Prices (${labels.num})` : "Prices"}>
+        <ParamSlider label="p_x" value={params.px} min={0.01} max={100000} step={0.01} onChange={set("px")} log suffix={labels ? `${labels.num}/${labels.x}` : undefined} />
+        <ParamSlider label="p_y" value={params.py} min={0.01} max={100000} step={0.01} onChange={set("py")} log suffix={labels ? `${labels.num}/${labels.y}` : undefined} />
+        <ParamSlider label="p_xz" value={params.pxz} min={0.01} max={100000} step={0.01} onChange={set("pxz")} log suffix={labels ? `${labels.z}/${labels.x}` : undefined} />
       </Section>
 
       <Section title="Price range">
@@ -74,9 +90,10 @@ export default function ParamControls({ params, onChange }: Props) {
       </Section>
 
       <Section title="Real deposits">
-        <ParamSlider label="x_r" value={params.xr} min={0} max={100} step={1} onChange={set("xr")} />
-        <ParamSlider label="y_r" value={params.yr} min={0} max={100} step={1} onChange={set("yr")} />
-        <ParamSlider label="z_r" value={params.zr} min={0} max={1000} step={1} onChange={set("zr")} />
+        <ParamSlider label="x_r" value={params.xr} min={0} max={100} step={1} onChange={set("xr")} suffix={symX} />
+        <ParamSlider label="y_r" value={params.yr} min={0} max={100} step={1} onChange={set("yr")} suffix={symY} />
+        <ParamSlider label="z_r" value={params.zr} min={0} max={1000} step={1} onChange={set("zr")} suffix={symZ} />
+        {labels && <div className="pt-0.5"><NumHint value={params.xr * params.px + params.yr * params.py + params.zr * pz} unit={symNum} /></div>}
       </Section>
 
       <Section title="Debt mode">
@@ -97,30 +114,38 @@ export default function ParamControls({ params, onChange }: Props) {
         </div>
         {mode === "xy" && (
           <>
-            <ParamSlider label="x_d" value={params.xd} min={0} max={100} step={1} onChange={(v) => onChange({ ...params, xd: v, yd: v > 0 ? 0 : params.yd })} />
-            <ParamSlider label="y_d" value={params.yd} min={0} max={100} step={1} onChange={(v) => onChange({ ...params, yd: v, xd: v > 0 ? 0 : params.xd })} />
+            <ParamSlider label="x_d" value={params.xd} min={0} max={100} step={1} onChange={(v) => onChange({ ...params, xd: v, yd: v > 0 ? 0 : params.yd })} suffix={symX} />
+            <ParamSlider label="y_d" value={params.yd} min={0} max={100} step={1} onChange={(v) => onChange({ ...params, yd: v, xd: v > 0 ? 0 : params.xd })} suffix={symY} />
+            {labels && <div className="pt-0.5"><NumHint value={params.xd * params.px + params.yd * params.py} unit={symNum} /></div>}
           </>
         )}
-        {mode === "z" && <ParamSlider label="z_d" value={params.zdebt} min={0} max={1000} step={1} onChange={set("zdebt")} />}
+        {mode === "z" && (
+          <>
+            <ParamSlider label="z_d" value={params.zdebt} min={0} max={1000} step={1} onChange={set("zdebt")} suffix={symZ} />
+            {labels && <div className="pt-0.5"><NumHint value={params.zdebt * pz} unit={symNum} /></div>}
+          </>
+        )}
       </Section>
 
-      <Section title="Ext. collateral (X)">
-        <ParamSlider label="R_XX" value={params.rXX} min={0} max={1000} step={1} onChange={set("rXX")} />
-        <ParamSlider label="R_XY" value={params.rXY} min={0} max={1000} step={1} onChange={set("rXY")} />
-        <ParamSlider label="R_XZ" value={params.rXZ} min={0} max={1000} step={1} onChange={set("rXZ")} />
+      <Section title={`Ext. collateral (${symX})`}>
+        <ParamSlider label="R_{XX}" value={params.rXX} min={0} max={1000} step={1} onChange={set("rXX")} suffix={symX} />
+        <ParamSlider label="R_{XY}" value={params.rXY} min={0} max={1000} step={1} onChange={set("rXY")} suffix={symY} />
+        <ParamSlider label="R_{XZ}" value={params.rXZ} min={0} max={1000} step={1} onChange={set("rXZ")} suffix={symZ} />
+        {labels && <div className="pt-0.5"><NumHint value={params.rXX * params.px + params.rXY * params.py + params.rXZ * pz} unit={symNum} /></div>}
       </Section>
 
-      <Section title="Ext. collateral (Y)">
-        <ParamSlider label="R_YX" value={params.rYX} min={0} max={1000} step={1} onChange={set("rYX")} />
-        <ParamSlider label="R_YY" value={params.rYY} min={0} max={1000} step={1} onChange={set("rYY")} />
-        <ParamSlider label="R_YZ" value={params.rYZ} min={0} max={1000} step={1} onChange={set("rYZ")} />
+      <Section title={`Ext. collateral (${symY})`}>
+        <ParamSlider label="R_{YX}" value={params.rYX} min={0} max={1000} step={1} onChange={set("rYX")} suffix={symX} />
+        <ParamSlider label="R_{YY}" value={params.rYY} min={0} max={1000} step={1} onChange={set("rYY")} suffix={symY} />
+        <ParamSlider label="R_{YZ}" value={params.rYZ} min={0} max={1000} step={1} onChange={set("rYZ")} suffix={symZ} />
+        {labels && <div className="pt-0.5"><NumHint value={params.rYX * params.px + params.rYY * params.py + params.rYZ * pz} unit={symNum} /></div>}
       </Section>
 
       <Section title="Exogenous NAV">
-        <ParamSlider label="E_XC" value={params.eXC} min={0} max={1000} step={1} onChange={set("eXC")} />
-        <ParamSlider label="E_XD" value={params.eXD} min={0} max={1000} step={1} onChange={set("eXD")} />
-        <ParamSlider label="E_YC" value={params.eYC} min={0} max={1000} step={1} onChange={set("eYC")} />
-        <ParamSlider label="E_YD" value={params.eYD} min={0} max={1000} step={1} onChange={set("eYD")} />
+        <ParamSlider label="E_{XC}" value={params.eXC} min={0} max={1000} step={1} onChange={set("eXC")} suffix={symNum} />
+        <ParamSlider label="E_{XD}" value={params.eXD} min={0} max={1000} step={1} onChange={set("eXD")} suffix={symNum} />
+        <ParamSlider label="E_{YC}" value={params.eYC} min={0} max={1000} step={1} onChange={set("eYC")} suffix={symNum} />
+        <ParamSlider label="E_{YD}" value={params.eYD} min={0} max={1000} step={1} onChange={set("eYD")} suffix={symNum} />
       </Section>
     </div>
   );

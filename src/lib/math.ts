@@ -280,14 +280,12 @@ export function computeSy(ry: number, cy: number): number {
 // b_XC = s_X / (s_X - 1) — concentration boost
 export function computeBxc(sx: number): number {
   if (!isFinite(sx) || sx <= 1) {
-    console.warn(`computeBxc: sx=${sx} yields infinite or degenerate boost — check cx and rx`);
     return NaN;
   }
   return sx / (sx - 1);
 }
 export function computeByc(sy: number): number {
   if (!isFinite(sy) || sy <= 1) {
-    console.warn(`computeByc: sy=${sy} yields infinite or degenerate boost — check cy and ry`);
     return NaN;
   }
   return sy / (sy - 1);
@@ -339,8 +337,8 @@ function computeBoostX(p: Params): number {
     if (disc >= 0) {
       const sqrtDisc = Math.sqrt(disc);
       let t: number;
-      if (Math.abs(AQ) < 1e-15) {
-        // Linear: BQ·t + CQ = 0
+      if (Math.abs(AQ) < 1e-12 * Math.max(Math.abs(BQ), Math.abs(CQ), 1e-30)) {
+        // Near-linear: AQ negligible relative to BQ/CQ → BQ·t + CQ = 0
         t = BQ !== 0 ? -CQ / BQ : NaN;
       } else if (BQ <= 0) {
         // Standard form: sums two positives in numerator
@@ -694,7 +692,7 @@ export function FY(y: number, cy: number): number {
 // L_XY(x) = fX(L_XX(x), cx, x0, y0, px, py)
 export function LXY(x: number, cx: number, x0: number, y0: number, px: number, py: number): number {
   const xPos = LXX(x, cx, x0);
-  if (isNaN(xPos)) return NaN;
+  if (!isFinite(xPos)) return NaN;
   return fX(xPos, cx, x0, y0, px, py);
 }
 
@@ -702,7 +700,7 @@ export function LXY(x: number, cx: number, x0: number, y0: number, px: number, p
 // L_YX(y) = gY(L_YY(y), cy, y0, x0, px, py)
 export function LYX(y: number, cy: number, y0: number, x0: number, px: number, py: number): number {
   const yPos = LYY(y, cy, y0);
-  if (isNaN(yPos)) return NaN;
+  if (!isFinite(yPos)) return NaN;
   return gY(yPos, cy, y0, x0, px, py);
 }
 
@@ -710,20 +708,20 @@ export function LYX(y: number, cy: number, y0: number, x0: number, px: number, p
 // l_XY(x) = pXxy(L_XX(x)) * l_XX(x)
 export function lXY(x: number, cx: number, x0: number, y0: number, px: number, py: number): number {
   const xPos = LXX(x, cx, x0);
-  if (isNaN(xPos)) return NaN;
+  if (!isFinite(xPos)) return NaN;
   const price = pXxy(xPos, cx, x0, px, py);
   const dens = lXX(x, cx, x0);
-  if (isNaN(price) || isNaN(dens)) return NaN;
+  if (!isFinite(price) || !isFinite(dens)) return NaN;
   return price * dens;
 }
 
 // l_YX(y) = pYyx(L_YY(y)) * l_YY(y)
 export function lYX(y: number, cy: number, y0: number, x0: number, px: number, py: number): number {
   const yPos = LYY(y, cy, y0);
-  if (isNaN(yPos)) return NaN;
+  if (!isFinite(yPos)) return NaN;
   const price = pYyx(yPos, cy, y0, px, py);
   const dens = lYY(y, cy, y0);
-  if (isNaN(price) || isNaN(dens)) return NaN;
+  if (!isFinite(price) || !isFinite(dens)) return NaN;
   return price * dens;
 }
 
@@ -749,7 +747,7 @@ export function generateOrderBookPointsX(
     const densSame = lXX(x, cx, x0);
     const densCross = lXY(x, cx, x0, y0, px, py);
     const fingerprint = FX(x, cx);
-    if ([cumSame, cumCross, densSame, densCross, fingerprint].some(v => isNaN(v) || !isFinite(v))) continue;
+    if ([cumSame, cumCross, densSame, densCross, fingerprint].some(v => !isFinite(v))) continue;
     points.push({ priceDelta: x, cumSame, cumCross, densSame, densCross, fingerprint });
   }
   return points;
@@ -766,7 +764,7 @@ export function generateOrderBookPointsY(
     const densSame = lYY(y, cy, y0);
     const densCross = lYX(y, cy, y0, x0, px, py);
     const fingerprint = FY(y, cy);
-    if ([cumSame, cumCross, densSame, densCross, fingerprint].some(v => isNaN(v) || !isFinite(v))) continue;
+    if ([cumSame, cumCross, densSame, densCross, fingerprint].some(v => !isFinite(v))) continue;
     points.push({ priceDelta: y, cumSame, cumCross, densSame, densCross, fingerprint });
   }
   return points;
@@ -786,7 +784,7 @@ export function generateFXPoints(eqX: number, eqY: number, px: number, py: numbe
   for (let i = 0; i <= n; i++) {
     const x = xMin + (eqX - xMin) * (i / n);
     const y = fX(x, cx, eqX, eqY, px, py);
-    if (!isNaN(y) && isFinite(y)) points.push({ x, y });
+    if (isFinite(y)) points.push({ x, y });
   }
   return points;
 }
@@ -798,7 +796,7 @@ export function generateFYPoints(eqX: number, eqY: number, px: number, py: numbe
   for (let i = 0; i <= n; i++) {
     const x = eqX + (xMax - eqX) * (i / n);
     const y = fY(x, cy, eqX, eqY, px, py);
-    if (!isNaN(y) && isFinite(y) && y > 0) points.push({ x, y });
+    if (isFinite(y) && y > 0) points.push({ x, y });
   }
   return points;
 }
@@ -815,7 +813,7 @@ export function generateShiftedFXPoints(
   for (let i = 1; i <= n; i++) {
     const x = xMax * (i / n);
     const y = fX(x + xb, cx, eqX, eqY, px, py) - yb;
-    if (!isNaN(y) && isFinite(y) && y >= 0) points.push({ x, y });
+    if (isFinite(y) && y >= 0) points.push({ x, y });
   }
   return points;
 }
@@ -831,7 +829,7 @@ export function generateShiftedGYPoints(
   for (let i = 1; i <= n; i++) {
     const y = yMax * (i / n);
     const x = gY(y + yb, cy, eqY, eqX, px, py) - xb;
-    if (!isNaN(x) && isFinite(x) && x >= 0) points.push({ x, y });
+    if (isFinite(x) && x >= 0) points.push({ x, y });
   }
   return points;
 }
@@ -1127,7 +1125,7 @@ export function generateCollateralDebtPoints(p: Params, n = 300, ext = 1.0): Mul
     if (isFinite(dxx) && dxx > 0) pt.dxx = dxx;
     if (isFinite(dxy) && dxy > 0) pt.dxy = dxy;
     if (zd > 0) pt.dxz = zd;
-    if (hx > 0 && !isNaN(hx)) pt.hx = Math.min(hx, 50); // cap Infinity to visible max
+    if (isFinite(hx) && hx > 0) pt.hx = hx;
     if (isFinite(navx)) pt.navx = navx;
     points.push(pt);
   }
@@ -1167,7 +1165,7 @@ export function generateCollateralDebtPointsY(p: Params, n = 300, ext = 1.0): Mu
     if (isFinite(dyy) && dyy > 0) pt.dyy = dyy;
     if (isFinite(dyx) && dyx > 0) pt.dyx = dyx;
     if (zd > 0) pt.dyz = zd;
-    if (hy > 0 && !isNaN(hy)) pt.hy = Math.min(hy, 50); // cap Infinity to visible max
+    if (isFinite(hy) && hy > 0) pt.hy = hy;
     if (isFinite(navy)) pt.navy = navy;
     points.push(pt);
   }

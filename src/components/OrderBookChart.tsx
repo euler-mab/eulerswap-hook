@@ -16,13 +16,16 @@ import {
 } from "@/lib/math";
 import Tex from "./Tex";
 
-export type Numeraire = "raw" | "x" | "y";
+export type Numeraire = "raw" | "x" | "y" | "ext";
 
 interface Props {
   params: Params;
   /** Token symbol labels (e.g., "ETH", "USDC"). Default: "X", "Y" */
   labelX?: string;
   labelY?: string;
+  labelZ?: string;
+  /** Name of external numeraire (e.g., "USD"). Default: "USD" */
+  labelNum?: string;
   /** Default numeraire mode. "y" normalises everything to Y units, etc. */
   defaultNumeraire?: Numeraire;
 }
@@ -56,11 +59,46 @@ function Legend({ items }: { items: { color: string; label: React.ReactNode; key
 
 type CurveTab = "depth" | "density" | "fingerprint";
 
-export default function OrderBookChart({ params, labelX, labelY, defaultNumeraire = "raw" }: Props) {
+interface CDTooltipProps {
+  active?: boolean;
+  payload?: ReadonlyArray<{ payload?: Record<string, number> }>;
+  symX: string;
+  symY: string;
+  symZ: string;
+}
+
+function CDTooltip({ active, payload, symX, symY, symZ }: CDTooltipProps) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0]?.payload;
+  if (!d) return null;
+  const fmt = (v: number | undefined) => v != null ? v.toFixed(4) : "—";
+  const hasZ = (d.colZ ?? 0) > 0 || (d.debtZ ?? 0) > 0;
+  return (
+    <div style={{ backgroundColor: "#18181b", border: "1px solid #333", borderRadius: 6, fontSize: 12, padding: "8px 12px" }}>
+      <div style={{ color: "#999", marginBottom: 4 }}>price: {d.price?.toFixed(2)}</div>
+      <div style={{ color: "#34d399" }}>Collateral: {fmt(d.collateral)}</div>
+      <div style={{ color: "#555", fontSize: 11, paddingLeft: 8 }}>
+        {symX}: {fmt(d.colX)} · {symY}: {fmt(d.colY)}{hasZ && <> · {symZ}: {fmt(d.colZ)}</>}
+      </div>
+      <div style={{ color: "#f87171" }}>Debt: {fmt(d.debt)}</div>
+      {((d.debtX ?? 0) > 0 || (d.debtY ?? 0) > 0 || (d.debtZ ?? 0) > 0) && (
+        <div style={{ color: "#555", fontSize: 11, paddingLeft: 8 }}>
+          {symX}: {fmt(d.debtX)} · {symY}: {fmt(d.debtY)}{hasZ && <> · {symZ}: {fmt(d.debtZ)}</>}
+        </div>
+      )}
+      {d.health != null && <div style={{ color: "#a78bfa" }}>Health: {fmt(d.health)}</div>}
+      {d.nav != null && <div style={{ color: "#06b6d4" }}>NAV: {fmt(d.nav)}</div>}
+    </div>
+  );
+}
+
+export default function OrderBookChart({ params, labelX, labelY, labelZ, labelNum, defaultNumeraire = "raw" }: Props) {
   const [numeraire, setNumeraire] = useState<Numeraire>(defaultNumeraire);
   const [curveTab, setCurveTab] = useState<CurveTab>("depth");
   const symX = labelX ?? "X";
   const symY = labelY ?? "Y";
+  const symZ = labelZ ?? "Z";
+  const symNum = labelNum ?? "USD";
 
   const data = useMemo(() => {
     const { px, py, cx, cy, rx, ry } = params;
@@ -78,12 +116,15 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
     // --- Collateral / Debt / Health vs actual price ---
     const xb = computeXb(x0, rx, cx);
     const yb = computeYb(y0, ry, cy);
+    const zd = computeZd(params);
     const xCDPts = generateCollateralDebtPoints(params, 300, ext);
     const yCDPts = generateCollateralDebtPointsY(params, 300, ext);
 
     // Z asset prices: pzx = Z price in X units, pzy = Z price in Y units
     const pzx = params.pxz > 0 ? 1 / params.pxz : 0;
     const pzy = pzx * (px / py);
+    // Z price in external numeraire: pxz = Z/X, so pz_num = px / pxz
+    const pzNum = params.pxz > 0 ? px / params.pxz : 0;
 
     // X side: price rises from pRatio toward upper boundary
     // navx is in X units; convert to numeraire
@@ -92,18 +133,26 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
       const pXyxVal = pXyxFn(xVirtual, cx, x0, px, py); // X per Y
       if (!isFinite(pXyxVal) || pXyxVal <= 0) return null;
       const priceYperX = 1 / pXyxVal; // Y per X (user-facing price)
-      // Total values in Y units (including Z collateral and Z debt)
-      const colY = (pt.cxx || 0) * priceYperX + (pt.cxy || 0) + params.zr * pzy;
-      const debtY = (pt.dxx || 0) * priceYperX + (pt.dxy || 0) + (pt.dxz || 0) * pzy;
-      // NAV: navx is in X units
+      // X/Y collateral & debt vary with AMM price; Z uses constant oracle prices
+      const cxRaw = pt.cxx || 0, cyRaw = pt.cxy || 0, czRaw = params.zr;
+      const dxRaw = pt.dxx || 0, dyRaw = pt.dxy || 0, dzRaw = pt.dxz || 0;
+      const toNum = (xAmt: number, yAmt: number, zAmt: number) => {
+        if (numeraire === "x") return xAmt + yAmt / priceYperX + zAmt * pzx;
+        if (numeraire === "ext") return xAmt * px + yAmt * py + zAmt * pzNum;
+        return xAmt * priceYperX + yAmt + zAmt * pzy; // "raw" and "y"
+      };
+      const col = toNum(cxRaw, cyRaw, czRaw);
+      const debt = toNum(dxRaw, dyRaw, dzRaw);
       const navY = pt.navx != null ? pt.navx * priceYperX : undefined;
+      const navExt = pt.navx != null ? pt.navx * px : undefined;
       return {
         price: priceYperX,
         logPrice: Math.log(priceYperX),
-        collateral: numeraire === "x" ? colY / priceYperX : colY,
-        debt: numeraire === "x" ? debtY / priceYperX : debtY,
+        collateral: col, debt,
+        colX: cxRaw, colY: cyRaw, colZ: czRaw,
+        debtX: dxRaw, debtY: dyRaw, debtZ: dzRaw,
         health: pt.hx,
-        nav: numeraire === "x" ? pt.navx : navY,
+        nav: numeraire === "x" ? pt.navx : numeraire === "ext" ? navExt : navY,
       };
     }).filter(Boolean);
 
@@ -114,18 +163,26 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
       const pYxyVal = pYxyFn(yVirtual, cy, y0, px, py); // Y per X
       if (!isFinite(pYxyVal) || pYxyVal <= 0) return null;
       const priceYperX = pYxyVal;
-      // Total values in Y units (including Z collateral and Z debt)
-      const colY = (pt.cyx || 0) * priceYperX + (pt.cyy || 0) + params.zr * pzy;
-      const debtY = (pt.dyx || 0) * priceYperX + (pt.dyy || 0) + (pt.dyz || 0) * pzy;
-      // NAV: navy is in Y units
+      // X/Y collateral & debt vary with AMM price; Z uses constant oracle prices
+      const cxRaw = pt.cyx || 0, cyRaw = pt.cyy || 0, czRaw = params.zr;
+      const dxRaw = pt.dyx || 0, dyRaw = pt.dyy || 0, dzRaw = pt.dyz || 0;
+      const toNum = (xAmt: number, yAmt: number, zAmt: number) => {
+        if (numeraire === "x") return xAmt + yAmt / priceYperX + zAmt * pzx;
+        if (numeraire === "ext") return xAmt * px + yAmt * py + zAmt * pzNum;
+        return xAmt * priceYperX + yAmt + zAmt * pzy; // "raw" and "y"
+      };
+      const col = toNum(cxRaw, cyRaw, czRaw);
+      const debt = toNum(dxRaw, dyRaw, dzRaw);
       const navX = pt.navy != null ? pt.navy / priceYperX : undefined;
+      const navExt = pt.navy != null ? pt.navy * py : undefined;
       return {
         price: priceYperX,
         logPrice: Math.log(priceYperX),
-        collateral: numeraire === "x" ? colY / priceYperX : colY,
-        debt: numeraire === "x" ? debtY / priceYperX : debtY,
+        collateral: col, debt,
+        colX: cxRaw, colY: cyRaw, colZ: czRaw,
+        debtX: dxRaw, debtY: dyRaw, debtZ: dzRaw,
         health: pt.hy,
-        nav: numeraire === "x" ? navX : pt.navy,
+        nav: numeraire === "x" ? navX : numeraire === "ext" ? navExt : pt.navy,
       };
     }).filter(Boolean);
 
@@ -137,64 +194,125 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
     const logPXb = isFinite(pXb) && pXb > 0 ? Math.log(pXb) : null;
     const logPYb = isFinite(pYb) && pYb > 0 ? Math.log(pYb) : null;
 
+    // Reserve depletion prices (where real reserves run out)
+    const { xr, yr } = params;
+    const xDeplV = x0 - xr; // virtual reserve where X depletes
+    const yDeplV = y0 - yr; // virtual reserve where Y depletes
+
+    // Both charts now use actual marginal price on x-axis
+    const logPXDepl = (xDeplV > xb && xDeplV < x0) ? (() => {
+      const p = pXyxFn(xDeplV, cx, x0, px, py);
+      return (isFinite(p) && p > 0) ? Math.log(1 / p) : null;
+    })() : null;
+    const logPYDepl = (yDeplV > yb && yDeplV < y0) ? (() => {
+      const p = pYxyFn(yDeplV, cy, y0, px, py);
+      return (isFinite(p) && p > 0) ? Math.log(p) : null;
+    })() : null;
+
     // Merge by logPrice, sorted ascending
     const cdData = [
       ...cdYData,
       ...cdXData,
     ].sort((a, b) => a!.logPrice - b!.logPrice);
 
-    // Helper: price delta → log price (Y per X)
-    // X side: price drops as x increases → priceYperX = pRatio / (1 + x)
-    // Y side: price rises as y increases → priceYperX = pRatio * (1 + y)
-    const xLogP = (d: number) => logEq - Math.log(1 + d);
-    const yLogP = (d: number) => logEq + Math.log(1 + d);
+    // For Z debt, freeze C/D values beyond reserve depletion (AMM can't trade further)
+    if (zd > 0) {
+      if (logPYDepl != null) {
+        // Y depletes — find first valid point (at or above), freeze all below
+        let deplPt: typeof cdData[0] = null;
+        for (let i = 0; i < cdData.length; i++) {
+          if (cdData[i]!.logPrice >= logPYDepl) { deplPt = cdData[i]; break; }
+        }
+        if (deplPt) {
+          for (let i = 0; i < cdData.length; i++) {
+            if (cdData[i]!.logPrice >= logPYDepl) break;
+            const lp = cdData[i]!.logPrice;
+            const price = cdData[i]!.price;
+            cdData[i] = { ...deplPt!, logPrice: lp, price };
+          }
+        }
+      }
+      if (logPXDepl != null) {
+        // X depletes — find last valid point (at or below), freeze all above
+        let deplPt: typeof cdData[0] = null;
+        for (let i = cdData.length - 1; i >= 0; i--) {
+          if (cdData[i]!.logPrice <= logPXDepl) { deplPt = cdData[i]; break; }
+        }
+        if (deplPt) {
+          for (let i = cdData.length - 1; i >= 0; i--) {
+            if (cdData[i]!.logPrice <= logPXDepl) break;
+            const lp = cdData[i]!.logPrice;
+            const price = cdData[i]!.price;
+            cdData[i] = { ...deplPt!, logPrice: lp, price };
+          }
+        }
+      }
+    }
+
+    // Helper: price delta → log marginal price (Y per X)
+    // X side: as priceDelta increases, marginal price rises → pXxy = pRatio * (1 + d)
+    // Y side: as priceDelta increases, marginal price drops → pYxy = pRatio / (1 + d)
+    const xLogP = (d: number) => logEq + Math.log(1 + d);
+    const yLogP = (d: number) => logEq - Math.log(1 + d);
 
     // --- Depth chart (reserve view) ---
-    const bidMul = numeraire === "y" ? pRatio : 1;
-    const askMul = numeraire === "x" ? 1 / pRatio : 1;
+    // cumSame = remaining virtual reserve (starts at x0/y0, decreases toward boundary)
+    // depth = x0 - cumSame = cumulative sold from equilibrium
+    // Y side = bid (LEFT, price ↓): AMM buys X / sells Y as price drops
+    // X side = ask (RIGHT, price ↑): AMM sells X / buys Y as price rises
+    // For Z debt, cap cumulative sold at real reserves (AMM can't borrow X/Y)
+    const bidMul = numeraire === "x" ? 1 / pRatio : numeraire === "ext" ? py : 1;
+    const askMul = numeraire === "y" ? pRatio : numeraire === "ext" ? px : 1;
     const depthData = [
-      ...xPts.map(p => ({
-        logPrice: xLogP(p.priceDelta),
-        bidDepth: Math.max(0, (x0 - p.cumSame)) * bidMul,
-      })).reverse(),
+      ...yPts.filter(p => p.priceDelta > 0).map(p => {
+        const sold = y0 - p.cumSame;
+        return {
+          logPrice: yLogP(p.priceDelta),
+          bidDepth: Math.max(0, zd > 0 ? Math.min(sold, params.yr) : sold) * bidMul,
+        };
+      }).reverse(),
       { logPrice: logEq, bidDepth: 0, askDepth: 0 },
-      ...yPts.filter(p => p.priceDelta > 0).map(p => ({
-        logPrice: yLogP(p.priceDelta),
-        askDepth: Math.max(0, (y0 - p.cumSame)) * askMul,
-      })),
+      ...xPts.map(p => {
+        const sold = x0 - p.cumSame;
+        return {
+          logPrice: xLogP(p.priceDelta),
+          askDepth: Math.max(0, zd > 0 ? Math.min(sold, params.xr) : sold) * askMul,
+        };
+      }),
     ];
 
     // --- Fingerprint ---
     const nFp = 200;
-    const fpX = Array.from({ length: nFp }, (_, i) => {
-      const d = rx * ext * ((i + 1) / nFp);
-      const fx = FX(d, cx);
-      return isFinite(fx) ? { logPrice: xLogP(d), fx } : null;
-    }).filter(Boolean).reverse();
     const fpY = Array.from({ length: nFp }, (_, i) => {
       const d = ry * ext * ((i + 1) / nFp);
       const fy = FY(d, cy);
       return isFinite(fy) ? { logPrice: yLogP(d), fy } : null;
+    }).filter(Boolean).reverse();
+    const fpX = Array.from({ length: nFp }, (_, i) => {
+      const d = rx * ext * ((i + 1) / nFp);
+      const fx = FX(d, cx);
+      return isFinite(fx) ? { logPrice: xLogP(d), fx } : null;
     }).filter(Boolean);
     const fpData = [
-      ...fpX,
-      { logPrice: logEq, fx: FX(0, cx), fy: FY(0, cy) },
       ...fpY,
+      { logPrice: logEq, fx: FX(0, cx), fy: FY(0, cy) },
+      ...fpX,
     ];
 
     // --- Combined density ---
-    const xToNum = numeraire === "y" ? pRatio : 1;
-    const yToNum = numeraire === "x" ? 1 / pRatio : 1;
+    // Y side LEFT (price ↓), X side RIGHT (price ↑)
+    const xToNum = numeraire === "y" ? pRatio : numeraire === "ext" ? px : 1;
+    const yToNum = numeraire === "x" ? 1 / pRatio : numeraire === "ext" ? py : 1;
     const densData = [
-      ...xPts.map(p => ({
-        logPrice: xLogP(p.priceDelta),
-        sameL: p.densSame * xToNum,
-        crossL: p.densCross * yToNum,
-      })).reverse(),
       ...yPts.map(p => ({
         logPrice: yLogP(p.priceDelta),
-        sameR: p.densSame * yToNum,
-        crossR: p.densCross * xToNum,
+        sameL: p.densSame * yToNum,
+        crossL: p.densCross * xToNum,
+      })).reverse(),
+      ...xPts.map(p => ({
+        logPrice: xLogP(p.priceDelta),
+        sameR: p.densSame * xToNum,
+        crossR: p.densCross * yToNum,
       })),
     ];
 
@@ -210,7 +328,7 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
       Math.max(...allLogPrices),
     ];
 
-    return { x0, y0, pRatio, logEq, logPXb, logPYb, pXb, pYb, logDomain, hasDebt, cdData, depthData, fpData, densData };
+    return { x0, y0, pRatio, logEq, logPXb, logPYb, pXb, pYb, logPXDepl, logPYDepl, logDomain, hasDebt, hasZDebt: zd > 0, cdData, depthData, fpData, densData };
   }, [params, numeraire]);
 
   if (!data) return null;
@@ -218,9 +336,14 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
   const depthUnit =
     numeraire === "y" ? symY
     : numeraire === "x" ? symX
+    : numeraire === "ext" ? symNum
     : "native";
 
-  const numLabel = numeraire === "y" ? symY : numeraire === "x" ? symX : "";
+  const numLabel =
+    numeraire === "y" ? symY
+    : numeraire === "x" ? symX
+    : numeraire === "ext" ? symNum
+    : "";
 
   // Format log-price tick labels back to readable prices
   const fmtLogTick = (logP: number) => {
@@ -238,7 +361,7 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
           Position analytics {numLabel && <span className="normal-case">({numLabel})</span>}
         </h2>
         <div className="flex gap-1">
-          {(["raw", "x", "y"] as Numeraire[]).map((n) => (
+          {(["raw", "x", "y", "ext"] as Numeraire[]).map((n) => (
             <button
               key={n}
               onClick={() => setNumeraire(n)}
@@ -248,7 +371,7 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                   : "text-zinc-600 hover:text-zinc-400"
               }`}
             >
-              {n === "raw" ? "raw" : n === "x" ? symX : symY}
+              {n === "raw" ? "raw" : n === "x" ? symX : n === "y" ? symY : symNum}
             </button>
           ))}
         </div>
@@ -271,21 +394,21 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                 tickFormatter={fmtLogTick}
                 label={{ value: `price (${symY} per ${symX})`, position: "bottom", fill: "#555", fontSize: 10 }}
               />
-              <YAxis yAxisId="left" {...AXIS} />
+              <YAxis yAxisId="left" width={50} {...AXIS} />
               {data.hasDebt ? (
                 <YAxis
                   yAxisId="right"
                   orientation="right"
-                  width={40}
+                  width={50}
                   {...AXIS}
                   domain={[0, (dataMax: number) => Math.min(dataMax, 10)]}
                   tick={{ fill: "#a78bfa", fontSize: 11 }}
                   tickFormatter={(v: number) => v.toFixed(1)}
                 />
               ) : (
-                <YAxis yAxisId="right" orientation="right" width={60} tick={false} axisLine={false} tickLine={false} />
+                <YAxis yAxisId="right" orientation="right" width={50} tick={false} axisLine={false} tickLine={false} />
               )}
-              <Tooltip {...TIP} labelFormatter={(v) => `price: ${Math.exp(Number(v)).toFixed(2)}`} />
+              <Tooltip content={<CDTooltip symX={symX} symY={symY} symZ={symZ} />} />
               <ReferenceLine
                 yAxisId="left"
                 x={data.logEq}
@@ -309,6 +432,24 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                   stroke="#f59e0b"
                   strokeDasharray="4 3"
                   label={{ value: `↓ ${fmtLogTick(data.logPYb)}`, position: "insideTopRight", fill: "#f59e0b", fontSize: 10 }}
+                />
+              )}
+              {data.logPXDepl != null && (
+                <ReferenceLine
+                  yAxisId="left"
+                  x={data.logPXDepl}
+                  stroke="#e879f9"
+                  strokeDasharray="2 3"
+                  label={{ value: `${symX}=0`, position: "insideTopLeft", fill: "#e879f9", fontSize: 10 }}
+                />
+              )}
+              {data.logPYDepl != null && (
+                <ReferenceLine
+                  yAxisId="left"
+                  x={data.logPYDepl}
+                  stroke="#e879f9"
+                  strokeDasharray="2 3"
+                  label={{ value: `${symY}=0`, position: "insideTopRight", fill: "#e879f9", fontSize: 10 }}
                 />
               )}
               <Area
@@ -378,6 +519,9 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
               { color: "#ef4444", label: <><Tex>{"H = 1"}</Tex> — liquidation</>, key: "hliq", dashed: true },
             ] : []),
             { color: "#f59e0b", label: <>price boundaries</>, key: "bounds", dashed: true },
+            ...((data.logPXDepl != null || data.logPYDepl != null) ? [
+              { color: "#e879f9", label: <>reserves depleted</>, key: "depl", dashed: true },
+            ] : []),
           ]} />
           {!data.hasDebt && (
             <p className="text-[10px] text-zinc-600 mt-1 px-1">
@@ -426,8 +570,8 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                     tickFormatter={fmtLogTick}
                     label={{ value: `price (${symY} per ${symX})`, position: "bottom", fill: "#555", fontSize: 10 }}
                   />
-                  <YAxis yAxisId="left" {...AXIS} />
-                  <YAxis yAxisId="right" orientation="right" width={60} tick={false} axisLine={false} tickLine={false} />
+                  <YAxis yAxisId="left" width={50} {...AXIS} />
+                  <YAxis yAxisId="right" orientation="right" width={50} tick={false} axisLine={false} tickLine={false} />
                   <Tooltip {...TIP} labelFormatter={(v) => `price: ${Math.exp(Number(v)).toFixed(2)}`} />
                   <ReferenceLine
                     yAxisId="left"
@@ -438,14 +582,19 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                   />
                   {data.logPXb != null && <ReferenceLine yAxisId="left" x={data.logPXb} stroke="#f59e0b" strokeDasharray="4 3" />}
                   {data.logPYb != null && <ReferenceLine yAxisId="left" x={data.logPYb} stroke="#f59e0b" strokeDasharray="4 3" />}
-                  <Area yAxisId="left" type="monotone" dataKey="bidDepth" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} strokeWidth={1.5} dot={false} connectNulls={false} name={`${symX} bid`} />
-                  <Area yAxisId="left" type="monotone" dataKey="askDepth" stroke="#fb923c" fill="#fb923c" fillOpacity={0.25} strokeWidth={1.5} dot={false} connectNulls={false} name={`${symY} ask`} />
+                  {data.logPXDepl != null && <ReferenceLine yAxisId="left" x={data.logPXDepl} stroke="#e879f9" strokeDasharray="2 3" />}
+                  {data.logPYDepl != null && <ReferenceLine yAxisId="left" x={data.logPYDepl} stroke="#e879f9" strokeDasharray="2 3" />}
+                  <Area yAxisId="left" type="monotone" dataKey="bidDepth" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} strokeWidth={1.5} dot={false} connectNulls={false} name={`${symY} bid`} />
+                  <Area yAxisId="left" type="monotone" dataKey="askDepth" stroke="#fb923c" fill="#fb923c" fillOpacity={0.25} strokeWidth={1.5} dot={false} connectNulls={false} name={`${symX} ask`} />
                 </ComposedChart>
               </ResponsiveContainer>
               <Legend items={[
-                { color: "#3b82f6", label: <><Tex>{symX}</Tex> — bid depth{numeraire === "y" ? ` (${symY})` : ""}</>, key: "bid" },
-                { color: "#fb923c", label: <><Tex>{symY}</Tex> — ask depth{numeraire === "x" ? ` (${symX})` : ""}</>, key: "ask" },
+                { color: "#3b82f6", label: <><Tex>{symY}</Tex> — bid depth{numeraire === "x" ? ` (${symX})` : ""}</>, key: "bid" },
+                { color: "#fb923c", label: <><Tex>{symX}</Tex> — ask depth{numeraire === "y" ? ` (${symY})` : ""}</>, key: "ask" },
                 { color: "#f59e0b", label: <>price boundaries</>, key: "bounds", dashed: true },
+                ...((data.logPXDepl != null || data.logPYDepl != null) ? [
+                  { color: "#e879f9", label: <>reserves depleted</>, key: "depl", dashed: true },
+                ] : []),
               ]} />
             </>
           )}
@@ -456,23 +605,25 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                 <ComposedChart data={data.densData} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
                   <CartesianGrid {...GRID} />
                   <XAxis dataKey="logPrice" type="number" domain={data.logDomain} {...AXIS} tickFormatter={fmtLogTick} label={{ value: `price (${symY} per ${symX})`, position: "bottom", fill: "#555", fontSize: 10 }} />
-                  <YAxis yAxisId="left" {...AXIS} />
-                  <YAxis yAxisId="right" orientation="right" width={60} tick={false} axisLine={false} tickLine={false} />
+                  <YAxis yAxisId="left" width={50} {...AXIS} />
+                  <YAxis yAxisId="right" orientation="right" width={50} tick={false} axisLine={false} tickLine={false} />
                   <Tooltip {...TIP} labelFormatter={(v) => `price: ${Math.exp(Number(v)).toFixed(2)}`} />
                   <ReferenceLine yAxisId="left" x={data.logEq} stroke="#555" strokeDasharray="6 3" label={{ value: "p₀", position: "top", fill: "#666", fontSize: 10 }} />
                   {data.logPXb != null && <ReferenceLine yAxisId="left" x={data.logPXb} stroke="#f59e0b" strokeDasharray="4 3" />}
                   {data.logPYb != null && <ReferenceLine yAxisId="left" x={data.logPYb} stroke="#f59e0b" strokeDasharray="4 3" />}
-                  <Line yAxisId="left" type="monotone" dataKey="sameL" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="ℓ_XX" connectNulls={false} />
-                  <Line yAxisId="left" type="monotone" dataKey="sameR" stroke="#a78bfa" strokeWidth={1.5} dot={false} name="ℓ_YY" connectNulls={false} />
-                  <Line yAxisId="left" type="monotone" dataKey="crossL" stroke="#6366f1" strokeWidth={1.5} dot={false} name="ℓ_XY" strokeDasharray="4 2" connectNulls={false} />
-                  <Line yAxisId="left" type="monotone" dataKey="crossR" stroke="#8b5cf6" strokeWidth={1.5} dot={false} name="ℓ_YX" strokeDasharray="4 2" connectNulls={false} />
+                  {data.logPXDepl != null && <ReferenceLine yAxisId="left" x={data.logPXDepl} stroke="#e879f9" strokeDasharray="2 3" />}
+                  {data.logPYDepl != null && <ReferenceLine yAxisId="left" x={data.logPYDepl} stroke="#e879f9" strokeDasharray="2 3" />}
+                  <Line yAxisId="left" type="monotone" dataKey="sameL" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="ℓ_YY" connectNulls={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="sameR" stroke="#a78bfa" strokeWidth={1.5} dot={false} name="ℓ_XX" connectNulls={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="crossL" stroke="#6366f1" strokeWidth={1.5} dot={false} name="ℓ_YX" strokeDasharray="4 2" connectNulls={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="crossR" stroke="#8b5cf6" strokeWidth={1.5} dot={false} name="ℓ_XY" strokeDasharray="4 2" connectNulls={false} />
                 </ComposedChart>
               </ResponsiveContainer>
               <Legend items={[
-                { color: "#3b82f6", label: <><Tex>{"\\ell_{XX}"}</Tex> — {symX} in (price ↓)</>, key: "lxx" },
-                { color: "#a78bfa", label: <><Tex>{"\\ell_{YY}"}</Tex> — {symY} in (price ↑)</>, key: "lyy" },
-                { color: "#6366f1", label: <><Tex>{"\\ell_{XY}"}</Tex> — {symY} out (price ↓)</>, key: "lxy", dashed: true },
-                { color: "#8b5cf6", label: <><Tex>{"\\ell_{YX}"}</Tex> — {symX} out (price ↑)</>, key: "lyx", dashed: true },
+                { color: "#3b82f6", label: <><Tex>{"\\ell_{YY}"}</Tex> — {symY} in (price ↓)</>, key: "lyy" },
+                { color: "#a78bfa", label: <><Tex>{"\\ell_{XX}"}</Tex> — {symX} in (price ↑)</>, key: "lxx" },
+                { color: "#6366f1", label: <><Tex>{"\\ell_{YX}"}</Tex> — {symX} out (price ↓)</>, key: "lyx", dashed: true },
+                { color: "#8b5cf6", label: <><Tex>{"\\ell_{XY}"}</Tex> — {symY} out (price ↑)</>, key: "lxy", dashed: true },
               ]} />
             </>
           )}
@@ -490,20 +641,22 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                     tickFormatter={fmtLogTick}
                     label={{ value: `price (${symY} per ${symX})`, position: "bottom", fill: "#555", fontSize: 10 }}
                   />
-                  <YAxis yAxisId="left" type="number" {...AXIS} domain={[0, "auto"]} />
-                  <YAxis yAxisId="right" orientation="right" width={60} tick={false} axisLine={false} tickLine={false} />
+                  <YAxis yAxisId="left" type="number" width={50} {...AXIS} domain={[0, "auto"]} />
+                  <YAxis yAxisId="right" orientation="right" width={50} tick={false} axisLine={false} tickLine={false} />
                   <Tooltip {...TIP} labelFormatter={(v) => `price: ${Math.exp(Number(v)).toFixed(2)}`} />
                   <ReferenceLine yAxisId="left" x={data.logEq} stroke="#555" strokeDasharray="6 3" label={{ value: "p₀", position: "top", fill: "#666", fontSize: 10 }} />
                   {data.logPXb != null && <ReferenceLine yAxisId="left" x={data.logPXb} stroke="#f59e0b" strokeDasharray="4 3" />}
                   {data.logPYb != null && <ReferenceLine yAxisId="left" x={data.logPYb} stroke="#f59e0b" strokeDasharray="4 3" />}
+                  {data.logPXDepl != null && <ReferenceLine yAxisId="left" x={data.logPXDepl} stroke="#e879f9" strokeDasharray="2 3" />}
+                  {data.logPYDepl != null && <ReferenceLine yAxisId="left" x={data.logPYDepl} stroke="#e879f9" strokeDasharray="2 3" />}
                   <ReferenceLine yAxisId="left" y={1} stroke="#555" strokeDasharray="6 3" label={{ value: "xy=k", position: "right", fill: "#666", fontSize: 10 }} />
-                  <Line yAxisId="left" type="monotone" dataKey="fx" stroke="#3b82f6" strokeWidth={1.5} dot={false} name={`F_${symX}`} connectNulls={false} />
-                  <Line yAxisId="left" type="monotone" dataKey="fy" stroke="#a78bfa" strokeWidth={1.5} dot={false} name={`F_${symY}`} connectNulls={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="fy" stroke="#3b82f6" strokeWidth={1.5} dot={false} name={`F_${symY}`} connectNulls={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="fx" stroke="#a78bfa" strokeWidth={1.5} dot={false} name={`F_${symX}`} connectNulls={false} />
                 </ComposedChart>
               </ResponsiveContainer>
               <Legend items={[
-                { color: "#3b82f6", label: <><Tex>{`F_{${symX}}`}</Tex> — {symX} fingerprint (price ↓)</>, key: "fx" },
-                { color: "#a78bfa", label: <><Tex>{`F_{${symY}}`}</Tex> — {symY} fingerprint (price ↑)</>, key: "fy" },
+                { color: "#3b82f6", label: <><Tex>{`F_{${symY}}`}</Tex> — {symY} fingerprint (price ↓)</>, key: "fy" },
+                { color: "#a78bfa", label: <><Tex>{`F_{${symX}}`}</Tex> — {symX} fingerprint (price ↑)</>, key: "fx" },
                 { color: "#555", label: <><Tex>{"xy = k"}</Tex> — baseline</>, key: "xyk" },
               ]} />
             </>

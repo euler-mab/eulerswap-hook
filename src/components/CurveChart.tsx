@@ -15,6 +15,8 @@ import Tex from "./Tex";
 
 interface Props {
   params: Params;
+  labelX?: string;
+  labelY?: string;
 }
 
 const AXIS = { stroke: "#444", tick: { fill: "#666", fontSize: 11 }, tickLine: false };
@@ -39,7 +41,9 @@ function Legend({ items }: { items: { color: string; label: React.ReactNode; key
   );
 }
 
-export default function CurveChart({ params }: Props) {
+export default function CurveChart({ params, labelX, labelY }: Props) {
+  const symX = labelX ?? "X";
+  const symY = labelY ?? "Y";
   const data = useMemo(() => {
     const { px, py, cx, cy, rx, ry, xr, yr } = params;
     const x0 = computeX0(params);
@@ -110,8 +114,8 @@ export default function CurveChart({ params }: Props) {
           <ResponsiveContainer width="100%" height={360}>
             <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
-              <XAxis type="number" dataKey="x" name="x" {...AXIS} />
-              <YAxis type="number" dataKey="y" name="y" {...AXIS} />
+              <XAxis type="number" dataKey="x" name={symX} {...AXIS} />
+              <YAxis type="number" dataKey="y" name={symY} width={50} {...AXIS} />
               <Tooltip {...TIP} />
               <Scatter data={data.fxBoosted} fill="#6366f1" line={line("#6366f1")} shape={() => null} />
               <Scatter data={data.fyBoosted} fill="#a78bfa" line={line("#a78bfa")} shape={() => null} />
@@ -143,8 +147,8 @@ export default function CurveChart({ params }: Props) {
           <ResponsiveContainer width="100%" height={360}>
             <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
-              <XAxis type="number" dataKey="x" name="x" {...AXIS} />
-              <YAxis type="number" dataKey="y" name="y" {...AXIS} />
+              <XAxis type="number" dataKey="x" name={symX} {...AXIS} />
+              <YAxis type="number" dataKey="y" name={symY} width={50} {...AXIS} />
               <Tooltip {...TIP} />
               <Scatter data={data.fxReal} fill="#6366f1" line={line("#6366f1")} shape={() => null} />
               <Scatter data={data.fyReal} fill="#a78bfa" line={line("#a78bfa")} shape={() => null} />
@@ -166,8 +170,8 @@ export default function CurveChart({ params }: Props) {
           <ResponsiveContainer width="100%" height={300}>
             <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
-              <XAxis type="number" dataKey="x" name="x" {...AXIS} />
-              <YAxis type="number" dataKey="y" name="y" {...AXIS} />
+              <XAxis type="number" dataKey="x" name={symX} {...AXIS} />
+              <YAxis type="number" dataKey="y" name={symY} width={50} {...AXIS} />
               <Tooltip {...TIP} />
               <Scatter data={data.sfxBoosted} fill="#6366f1" line={line("#6366f1")} shape={() => null} />
               <Scatter data={data.sgyBoosted} fill="#a78bfa" line={line("#a78bfa")} shape={() => null} />
@@ -190,8 +194,8 @@ export default function CurveChart({ params }: Props) {
           <ResponsiveContainer width="100%" height={300}>
             <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
-              <XAxis type="number" dataKey="x" name="x" {...AXIS} />
-              <YAxis type="number" dataKey="y" name="y" {...AXIS} />
+              <XAxis type="number" dataKey="x" name={symX} {...AXIS} />
+              <YAxis type="number" dataKey="y" name={symY} width={50} {...AXIS} />
               <Tooltip {...TIP} />
               <Scatter data={data.sfxReal} fill="#6366f1" line={line("#6366f1")} shape={() => null} />
               <Scatter data={data.sgyReal} fill="#a78bfa" line={line("#a78bfa")} shape={() => null} />

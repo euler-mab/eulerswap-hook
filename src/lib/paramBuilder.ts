@@ -79,8 +79,8 @@ export function buildParams(form: CreateFormState): Params {
   const pzx = pxz > 0 ? 1 / pxz : 1;
 
   // Range: convert dollar prices to rx, ry using the equilibrium price
-  const rx = Math.max(0.01, priceToRx(form.priceMin, eqPrice));
-  const ry = Math.max(0.01, priceToRy(form.priceMax, eqPrice));
+  const rx = Math.min(100, Math.max(0.01, priceToRx(form.priceMin, eqPrice)));
+  const ry = Math.min(100, Math.max(0.01, priceToRy(form.priceMax, eqPrice)));
 
   // Concentration (symmetric or asymmetric)
   const cx = Math.min(0.99, Math.max(0, form.concentration));
