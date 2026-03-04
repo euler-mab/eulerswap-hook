@@ -8,8 +8,9 @@ import AssetNameInputs from "@/components/AssetNameInputs";
 import CurveChart from "@/components/CurveChart";
 import HealthChart from "@/components/HealthChart";
 import OrderBookChart from "@/components/OrderBookChart";
+import SimChart from "@/components/SimChart";
 
-type ChartTab = "orderbook" | "health" | "curve";
+type ChartTab = "orderbook" | "health" | "curve" | "simulate";
 
 export default function Home() {
   const [params, setParams] = useState<Params>(defaultParams);
@@ -50,6 +51,7 @@ export default function Home() {
             ["orderbook", "Order Book"],
             ["health", "Health"],
             ["curve", "Curve"],
+            ["simulate", "Simulate"],
           ] as [ChartTab, string][]).map(([tab, label]) => (
             <button
               key={tab}
@@ -68,6 +70,7 @@ export default function Home() {
         {chartTab === "orderbook" && <OrderBookChart params={params} labelX={labels.x} labelY={labels.y} labelZ={labels.z} labelNum={labels.num} />}
         {chartTab === "health" && <HealthChart params={params} labelX={labels.x} labelY={labels.y} />}
         {chartTab === "curve" && <CurveChart params={params} labelX={labels.x} labelY={labels.y} />}
+        {chartTab === "simulate" && <SimChart params={params} labels={labels} />}
       </main>
     </div>
   );
