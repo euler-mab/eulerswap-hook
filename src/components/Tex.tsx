@@ -14,5 +14,5 @@ export default function Tex({ children, className }: { children: string; classNa
     throwOnError: false,
     displayMode: false,
   });
-  return <span className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <span className={className} style={{ fontSize: "0.85em" }} dangerouslySetInnerHTML={{ __html: html }} />;
 }

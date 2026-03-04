@@ -17,7 +17,7 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex">
       {/* Left panel — parameters */}
-      <aside className="w-[540px] shrink-0 h-screen sticky top-0 overflow-y-auto border-r border-zinc-800/60 px-6 py-8 space-y-8">
+      <aside className="w-[540px] shrink-0 h-screen sticky top-0 overflow-y-auto border-r border-zinc-800/60 px-6 pt-8 pb-12 space-y-8">
         <header>
           <h1 className="text-xl font-semibold tracking-tight">EulerSwap</h1>
           <p className="text-sm text-zinc-500 mt-0.5">AMM curve explorer</p>

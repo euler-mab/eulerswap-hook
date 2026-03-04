@@ -227,7 +227,8 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
     const p = Math.exp(logP);
     if (p >= 1000) return `${(p / 1000).toFixed(1)}k`;
     if (p >= 1) return p.toFixed(0);
-    return p.toFixed(4);
+    if (p >= 0.01) return parseFloat(p.toFixed(4)).toString();
+    return p.toExponential(1);
   };
 
   return (
@@ -276,11 +277,11 @@ export default function OrderBookChart({ params, labelX, labelY, defaultNumerair
                 <YAxis
                   yAxisId="right"
                   orientation="right"
-                  width={60}
+                  width={40}
                   {...AXIS}
                   domain={[0, (dataMax: number) => Math.min(dataMax, 10)]}
                   tick={{ fill: "#a78bfa", fontSize: 11 }}
-                  label={{ value: "Health", angle: -90, position: "insideRight", fill: "#a78bfa", fontSize: 10 }}
+                  tickFormatter={(v: number) => v.toFixed(1)}
                 />
               ) : (
                 <YAxis yAxisId="right" orientation="right" width={60} tick={false} axisLine={false} tickLine={false} />
