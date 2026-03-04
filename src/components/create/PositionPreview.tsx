@@ -10,6 +10,8 @@ import OrderBookChart from "@/components/OrderBookChart";
 
 interface Props {
   params: Params;
+  tokenX?: string;
+  tokenY?: string;
 }
 
 function Metric({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -22,7 +24,7 @@ function Metric({ label, value, sub }: { label: string; value: string; sub?: str
   );
 }
 
-export default function PositionPreview({ params }: Props) {
+export default function PositionPreview({ params, tokenX, tokenY }: Props) {
   const metrics = useMemo(() => {
     const x0 = computeX0(params);
     const y0 = computeY0(params);
@@ -79,7 +81,7 @@ export default function PositionPreview({ params }: Props) {
       </div>
 
       {/* Depth chart */}
-      <OrderBookChart params={params} />
+      <OrderBookChart params={params} labelX={tokenX} labelY={tokenY} defaultNumeraire={tokenY ? "y" : "raw"} />
     </div>
   );
 }

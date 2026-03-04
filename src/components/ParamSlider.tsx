@@ -32,7 +32,7 @@ export default function ParamSlider({ label, value, min, max, step, onChange }: 
           const v = parseFloat(e.target.value);
           if (!isNaN(v)) onChange(Math.min(max, Math.max(min, v)));
         }}
-        className="w-20 bg-transparent border border-zinc-800 rounded px-2 py-0.5 text-xs font-mono text-zinc-300 text-right focus:outline-none focus:border-zinc-600"
+        className="w-16 bg-transparent border border-zinc-800 rounded px-1.5 py-0.5 text-xs font-mono text-zinc-300 text-right focus:outline-none focus:border-zinc-600"
       />
     </div>
   );

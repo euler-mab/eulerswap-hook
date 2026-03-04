@@ -635,7 +635,9 @@ export function priceAtXb(x0: number, rx: number, cx: number, px: number, py: nu
 
 export function priceAtYb(y0: number, ry: number, cy: number, px: number, py: number): number {
   const yb = computeYb(y0, ry, cy);
-  return -gYd(yb, cy, y0, px, py);
+  const d = -gYd(yb, cy, y0, px, py); // X per Y
+  if (d <= 0) return NaN;
+  return 1 / d; // Y per X (same unit convention as priceAtXb)
 }
 
 // --- Order book functions ---
@@ -1050,6 +1052,28 @@ export function computeNAV_X(x: number, p: Params, x0: number, y0: number): numb
   return cxx + cxy * pXyxVal + zr * pzx - dxx - dxy * pXyxVal - zd * pzx + eXC - eXD;
 }
 
+// --- NAV (Net Asset Value) in terms of Y ---
+// n_YY(y, y0, x0) = CYY + CYX*pYxy + CYZ*pzy - DYY - DYX*pYxy - DYZ*pzy + EYC - EYD
+export function computeNAV_Y(y: number, p: Params, x0: number, y0: number): number {
+  if (y <= 0 || y > y0) return NaN;
+  const { cy, px, py, xr, yr, xd, yd, zr, pxz, eYC, eYD } = p;
+  const zd = computeZd(p);
+  const pzx = 1 / pxz;
+  const pzy = pzx * (px / py);
+  const yYYd = yYYdebt(y0, yr);
+  const yYXd = yYXdebt(y0, cy, xd, px, py);
+
+  const pYxyVal = pYxy(y, cy, y0, px, py);
+  if (!isFinite(pYxyVal)) return NaN;
+
+  const cyy = CYY(y, y0, yr);
+  const cyx = CYX_fn(y, cy, y0, x0, px, py, xr, xd, zd);
+  const dyy = DYY(y, y0, yr, yd, yYYd, yYXd, zd);
+  const dyx = DYX(y, cy, y0, x0, px, py, xd, yYXd, zd);
+
+  return cyy + cyx * pYxyVal + zr * pzy - dyy - dyx * pYxyVal - zd * pzy + eYC - eYD;
+}
+
 // --- Generate collateral/debt/health points ---
 
 export interface MultiPoint {
@@ -1070,7 +1094,7 @@ export interface MultiPoint {
   navy?: number;
 }
 
-export function generateCollateralDebtPoints(p: Params, n = 300): MultiPoint[] {
+export function generateCollateralDebtPoints(p: Params, n = 300, ext = 1.0): MultiPoint[] {
   const { cx, rx, xr, yd, px, py } = p;
   const zd = computeZd(p);
   const x0 = computeX0(p);
@@ -1080,11 +1104,13 @@ export function generateCollateralDebtPoints(p: Params, n = 300): MultiPoint[] {
   const xXYd = xXYdebt(x0, cx, yd, px, py);
 
   const points: MultiPoint[] = [];
-  const xMax = x0 - xb;
-  if (xMax <= 0) return points;
+  const xRange = x0 - xb;
+  if (xRange <= 0) return points;
+  const xExtend = xRange * (ext - 1); // extra range past boundary
+  const xTotal = xRange + xExtend;
 
   for (let i = 0; i <= n; i++) {
-    const xShifted = xMax * (i / n);
+    const xShifted = -xExtend + xTotal * (i / n);
     const xVirtual = xShifted + xb;
     if (xVirtual <= 0 || xVirtual > x0) continue;
 
@@ -1108,7 +1134,7 @@ export function generateCollateralDebtPoints(p: Params, n = 300): MultiPoint[] {
   return points;
 }
 
-export function generateCollateralDebtPointsY(p: Params, n = 300): MultiPoint[] {
+export function generateCollateralDebtPointsY(p: Params, n = 300, ext = 1.0): MultiPoint[] {
   const { cy, ry, yr, xd, px, py } = p;
   const zd = computeZd(p);
   const x0 = computeX0(p);
@@ -1118,11 +1144,13 @@ export function generateCollateralDebtPointsY(p: Params, n = 300): MultiPoint[] 
   const yYXd = yYXdebt(y0, cy, xd, px, py);
 
   const points: MultiPoint[] = [];
-  const yMax = y0 - yb;
-  if (yMax <= 0) return points;
+  const yRange = y0 - yb;
+  if (yRange <= 0) return points;
+  const yExtend = yRange * (ext - 1); // extra range past boundary
+  const yTotal = yRange + yExtend;
 
   for (let i = 0; i <= n; i++) {
-    const yShifted = yMax * (i / n);
+    const yShifted = -yExtend + yTotal * (i / n);
     const yVirtual = yShifted + yb;
     if (yVirtual <= 0 || yVirtual > y0) continue;
 
@@ -1131,6 +1159,7 @@ export function generateCollateralDebtPointsY(p: Params, n = 300): MultiPoint[] 
     const dyy = DYY(yVirtual, y0, yr, p.yd, yYYd, yYXd, zd);
     const dyx = DYX(yVirtual, cy, y0, x0, px, py, xd, yYXd, zd);
     const hy = computeHY(yVirtual, p, x0, y0);
+    const navy = computeNAV_Y(yVirtual, p, x0, y0);
 
     const pt: MultiPoint = { x: yShifted };
     if (isFinite(cyy)) pt.cyy = cyy;
@@ -1139,6 +1168,7 @@ export function generateCollateralDebtPointsY(p: Params, n = 300): MultiPoint[] 
     if (isFinite(dyx) && dyx > 0) pt.dyx = dyx;
     if (zd > 0) pt.dyz = zd;
     if (hy > 0 && !isNaN(hy)) pt.hy = Math.min(hy, 50); // cap Infinity to visible max
+    if (isFinite(navy)) pt.navy = navy;
     points.push(pt);
   }
   return points;

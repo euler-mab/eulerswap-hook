@@ -126,7 +126,7 @@ export default function CreatePage() {
 
         {/* 3. Position Preview (always visible) */}
         <SectionCard title="Position preview" defaultOpen>
-          <PositionPreview params={params} />
+          <PositionPreview params={params} tokenX={form.tokenX} tokenY={form.tokenY} />
         </SectionCard>
 
         {/* 4. Leverage */}

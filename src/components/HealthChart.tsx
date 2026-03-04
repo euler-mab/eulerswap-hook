@@ -196,6 +196,25 @@ export default function HealthChart({ params }: Props) {
           {!hasDebt && <NoDebtHint />}
         </div>
       </section>
+
+      <section>
+        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">NAV (Y side)</h3>
+        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={yPoints} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
+              <CartesianGrid {...GRID} />
+              <XAxis dataKey="x" type="number" {...AXIS} label={{ value: "y (shifted)", position: "bottom", fill: "#555", fontSize: 10 }} />
+              <YAxis {...AXIS} />
+              <Tooltip {...TIP} />
+              <ReferenceLine y={0} stroke="#555" strokeDasharray="6 3" />
+              <Line type="monotone" dataKey="navy" stroke="#06b6d4" strokeWidth={1.5} dot={false} name="NAV_Y" connectNulls={false} />
+            </LineChart>
+          </ResponsiveContainer>
+          <Legend items={[
+            { color: "#06b6d4", label: "n_YY — net asset value" },
+          ]} />
+        </div>
+      </section>
     </div>
   );
 }
