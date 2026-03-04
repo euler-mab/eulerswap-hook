@@ -361,7 +361,7 @@ export default function ComparisonChart({ params, labels }: Props) {
           All static pools use fair params (no LLTV boost, same capital/range).{" "}
           <strong>Static</strong>: IL = lpNav − HODL(50/50). <strong>Discrete/Ideal</strong>: IL = equity − HODL(100% X).
           Residual discrete IL ≈ σ²T/4 from simple leverage gap (2√r−1 vs r per step).
-          {config.retailEnabled && <> Retail flow: {config.retailVolPerStep.toFixed(1)} Y/step per ref-depth pool — deeper pools capture more (proportional to √(x₀·y₀)).</>}
+          {config.retailEnabled && <> Retail flow: {config.retailVolPerStep.toFixed(1)} Y/step per ref-depth pool — deeper pools capture more (effective depth = √(x₀·y₀)/(1−cₓ), accounting for curve flatness).</>}
           {" "}
           {config.dynamicFee && (() => {
             const elapsed = 86400 / config.stepsPerDay;
