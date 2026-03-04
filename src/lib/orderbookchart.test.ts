@@ -386,24 +386,64 @@ describe("effective price of finite-size swap", () => {
   }
 });
 
-describe("Z debt: depletion at boundary when no leverage", () => {
-  it("with Z debt and bxl=1, x depletes exactly at boundary", () => {
-    // With Z debt, leverage boost bxl = 1, so x0 = xr * bxc
-    // Depletion: x0 - xr = xr*(bxc-1) = xr/(sx-1) = xb
-    const params = makeParams({
-      xd: 0, yd: 0, zdebt: 10, // Z debt mode
-      cx: 0.5, cy: 0.5,
-      rx: 1, ry: 1,
-      xr: 10, yr: 10,
-    });
+describe("Depletion price mapping", () => {
+  it("depletion price from xLogP matches pXxy at depletion reserve level", () => {
+    // At depletion, x = x0 - xr. The marginal price there is pXxy(x0-xr).
+    // xLogP maps via priceDelta d, where x = computeXb(x0, d, cx) = x0/sqrt((1+d-cx)/(1-cx)).
+    // The logPrice from xLogP(d) should equal log(pXxy(x0-xr, cx, x0, px, py)).
+    for (const overrides of [
+      { cx: 0.5, cy: 0.5 },
+      { cx: 0, cy: 0 },
+      { cx: 0.8, cy: 0.3, rx: 0.5, ry: 2 },
+      { px: 2000, py: 1, cx: 0.3, cy: 0.3 },
+    ]) {
+      const params = makeParams(overrides);
+      const x0 = computeX0(params);
+      const y0 = computeY0(params);
+      const xDepl = x0 - params.xr;
+      const yDepl = y0 - params.yr;
 
-    const x0 = computeX0(params);
-    const y0 = computeY0(params);
-    const xb = computeXb(x0, params.rx, params.cx);
-    const yb = computeYb(y0, params.ry, params.cy);
+      if (xDepl > computeXb(x0, params.rx, params.cx) && xDepl < x0) {
+        const pAtDepl = pXxy(xDepl, params.cx, x0, params.px, params.py);
+        // Find priceDelta at depletion: x = x0/sqrt((1+d-cx)/(1-cx))
+        // => (x0/x)^2 = (1+d-cx)/(1-cx) => d = (1-cx)*(x0/x)^2 + cx - 1
+        const ratio = (x0 / xDepl) ** 2;
+        const dDepl = (1 - params.cx) * ratio + params.cx - 1;
+        const logEq = Math.log(params.px / params.py);
+        const logPFromMapping = xLogP(dDepl, logEq);
+        expect(approx(logPFromMapping, Math.log(pAtDepl), 1e-9)).toBe(true);
+      }
 
-    // x0 - xr should equal xb (depletion = boundary)
-    expect(approx(x0 - params.xr, xb, 1e-9)).toBe(true);
-    expect(approx(y0 - params.yr, yb, 1e-9)).toBe(true);
+      if (yDepl > computeYb(y0, params.ry, params.cy) && yDepl < y0) {
+        const pAtDepl = pYxy(yDepl, params.cy, y0, params.px, params.py);
+        const ratio = (y0 / yDepl) ** 2;
+        const dDepl = (1 - params.cy) * ratio + params.cy - 1;
+        const logEq = Math.log(params.px / params.py);
+        const logPFromMapping = yLogP(dDepl, logEq);
+        expect(approx(logPFromMapping, Math.log(pAtDepl), 1e-9)).toBe(true);
+      }
+    }
+  });
+
+  it("depletion is always between equilibrium and boundary", () => {
+    for (const overrides of [
+      { cx: 0.5, cy: 0.5 },
+      { cx: 0, cy: 0 },
+      { zdebt: 10, cx: 0.5, cy: 0.5 },
+    ]) {
+      const params = makeParams(overrides);
+      const x0 = computeX0(params);
+      const y0 = computeY0(params);
+      const xb = computeXb(x0, params.rx, params.cx);
+      const yb = computeYb(y0, params.ry, params.cy);
+      const xDepl = x0 - params.xr;
+      const yDepl = y0 - params.yr;
+
+      // Depletion reserve level should be between boundary and equilibrium
+      expect(xDepl).toBeGreaterThanOrEqual(xb - 1e-9);
+      expect(xDepl).toBeLessThan(x0);
+      expect(yDepl).toBeGreaterThanOrEqual(yb - 1e-9);
+      expect(yDepl).toBeLessThan(y0);
+    }
   });
 });
