@@ -58,7 +58,7 @@ Respond with ONLY valid JSON in this format:
   "recommendations": [
     {
       "type": "setFeeParams" | "reconfigure",
-      "params": { "baseFee": "2500000000000", ... },
+      "params": { ... },
       "reasoning": "...",
       "confidence": 0.0-1.0
     }
@@ -68,8 +68,23 @@ Respond with ONLY valid JSON in this format:
 }
 
 If no changes are needed, return empty recommendations array.
-All numeric params must be strings representing WAD-scaled values (1e18 = 100%).
-1 basis point = ${BPS.toString()}.`,
+
+## Parameter format reference
+
+All param values must be strings (stringified integers, no decimals).
+1 basis point = ${BPS.toString()} (1e14).
+
+**setFeeParams** — all values are WAD-scaled (1e18 = 100%):
+  baseFee, maxFee, minFee: fee rates. Example: 25 bps = "${(25n * BPS).toString()}"
+  mismatchScale: multiplier (WAD-scaled). Example: 10x = "${(10n * WAD).toString()}"
+
+**reconfigure** — mixed units:
+  concentrationX, concentrationY: WAD-scaled. Example: 0.50 = "${(WAD / 2n).toString()}"
+  equilibriumReserve0, equilibriumReserve1: RAW token amounts (NOT WAD-scaled).
+    These are the exact on-chain reserve values. Current raw values shown below.
+    equilibriumReserve0 (raw): ${snapshot.equilibriumReserve0.toString()}
+    equilibriumReserve1 (raw): ${snapshot.equilibriumReserve1.toString()}
+  Do NOT set priceX, priceY, swapHook, fee0, fee1, or expiration — those are managed automatically.`,
       },
     ],
   });

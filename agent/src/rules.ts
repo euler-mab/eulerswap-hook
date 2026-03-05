@@ -167,10 +167,12 @@ export function recordAction(): void {
   recentActions.push(Date.now());
 }
 
-/// Validate a Claude recommendation against safety bounds
+/// Validate a Claude recommendation against safety bounds.
+/// For reconfigure, requires current snapshot to validate equilibrium changes.
 export function isSafe(
   rec: ClaudeRecommendation,
-  config: AgentConfig
+  config: AgentConfig,
+  snapshot?: PoolSnapshot
 ): { safe: boolean; reason: string } {
   if (rec.type === "setFeeParams") {
     const baseFee = BigInt(rec.params["baseFee"] as string || "0");
@@ -201,6 +203,14 @@ export function isSafe(
   }
 
   if (rec.type === "reconfigure") {
+    // Reject forbidden fields — Claude must not set these
+    const FORBIDDEN_FIELDS = ["priceX", "priceY", "swapHook", "fee0", "fee1", "expiration", "swapHookedOperations", "minReserve0", "minReserve1"];
+    for (const field of FORBIDDEN_FIELDS) {
+      if (rec.params[field] !== undefined) {
+        return { safe: false, reason: `Claude cannot set ${field} — managed automatically` };
+      }
+    }
+
     const cx = BigInt(rec.params["concentrationX"] as string || "0");
     const cy = BigInt(rec.params["concentrationY"] as string || "0");
     const eq0 = rec.params["equilibriumReserve0"] ? BigInt(rec.params["equilibriumReserve0"] as string) : null;
@@ -219,6 +229,20 @@ export function isSafe(
     }
     if (eq1 !== null && eq1 <= 0n) {
       return { safe: false, reason: "equilibriumReserve1 must be positive" };
+    }
+
+    // Cap equilibrium changes at MAX_RECENTER_CHANGE× relative to current values
+    if (snapshot && eq0 !== null && snapshot.equilibriumReserve0 > 0n) {
+      if (eq0 > snapshot.equilibriumReserve0 * MAX_RECENTER_CHANGE ||
+          eq0 * MAX_RECENTER_CHANGE < snapshot.equilibriumReserve0) {
+        return { safe: false, reason: `equilibriumReserve0 change too large: ${eq0} vs current ${snapshot.equilibriumReserve0} (max ${MAX_RECENTER_CHANGE}x)` };
+      }
+    }
+    if (snapshot && eq1 !== null && snapshot.equilibriumReserve1 > 0n) {
+      if (eq1 > snapshot.equilibriumReserve1 * MAX_RECENTER_CHANGE ||
+          eq1 * MAX_RECENTER_CHANGE < snapshot.equilibriumReserve1) {
+        return { safe: false, reason: `equilibriumReserve1 change too large: ${eq1} vs current ${snapshot.equilibriumReserve1} (max ${MAX_RECENTER_CHANGE}x)` };
+      }
     }
   }
 

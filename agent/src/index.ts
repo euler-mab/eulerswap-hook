@@ -151,7 +151,7 @@ async function main() {
 
       // Execute safe recommendations
       for (const rec of review.recommendations) {
-        const safety = rules.isSafe(rec, config);
+        const safety = rules.isSafe(rec, config, snapshot);
         if (safety.safe) {
           try {
             const executed = await executor.execute(
