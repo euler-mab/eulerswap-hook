@@ -6,7 +6,18 @@ set -euo pipefail
 # Simulates oracle price movements and swap activity on an Anvil fork.
 # Requires: fork-test.sh already running (pool + hook deployed, Anvil alive).
 #
-# Usage:
+# IMPORTANT: Start this harness BEFORE the agent! It replaces the real
+# Chainlink oracle with a SimPriceOracle whose prices match the pool's
+# hardcoded initial reserves (25k USDC / 10 WETH). If the agent polls
+# first, it sees the real oracle (which doesn't match) and recenters to
+# garbage reserves.
+#
+# Test flow:
+#   Terminal 1: ./fork-test.sh              # deploy pool + hook, start Anvil
+#   Terminal 2: ./sim-harness.sh            # replace oracle, start simulation
+#   Terminal 3: cd agent && npm start       # start agent (oracle already correct)
+#
+# Modes:
 #   ./sim-harness.sh                   # default: sinusoidal ±5% around initial price
 #   ./sim-harness.sh --drift           # steady upward drift
 #   ./sim-harness.sh --volatile        # random ±1-5% swings
@@ -20,9 +31,11 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-# Load env
+# Load env (disable nounset during source — .env.fork may reference unset vars like ANTHROPIC_API_KEY)
 set -a
+set +u
 source "$ENV_FILE"
+set -u
 set +a
 
 ANVIL_RPC="${RPC_URL:?RPC_URL not set in .env.fork}"
@@ -42,10 +55,10 @@ DEPLOYER="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 USDC_SWAP_AMOUNT=100000000       # 100 USDC (6 decimals)
 WETH_SWAP_AMOUNT=40000000000000000  # 0.04 WETH (18 decimals)
 
-# Helper: encode a decimal integer as 0x-prefixed left-padded 32-byte hex
+# Helper: encode an integer (decimal or 0x hex) as 0x-prefixed left-padded 32-byte hex
 # (cast to-bytes32 treats input as byte string and RIGHT-pads — wrong for uint256)
 to_bytes32() {
-    python3 -c "print('0x' + format(int('$1'), '064x'))"
+    python3 -c "print('0x' + format(int('$1', 0), '064x'))"
 }
 
 # Helper: strip [sci] suffix from cast call output (e.g. "100000000 [1e8]" → "100000000")
@@ -121,7 +134,7 @@ echo ""
 echo "Deploying EulerSwapPeriphery..."
 
 PERIPHERY_OUTPUT=$(forge create eulerswap/src/EulerSwapPeriphery.sol:EulerSwapPeriphery \
-    --rpc-url "$ANVIL_RPC" --private-key "$DEPLOYER_KEY" 2>&1)
+    --rpc-url "$ANVIL_RPC" --private-key "$DEPLOYER_KEY" --broadcast 2>&1)
 PERIPHERY=$(echo "$PERIPHERY_OUTPUT" | grep "Deployed to:" | awk '{print $3}')
 echo "  Periphery: $PERIPHERY"
 

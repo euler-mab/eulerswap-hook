@@ -9,6 +9,7 @@ import type {
 import { WAD, BPS } from "./types.js";
 
 const RECENTER_THRESHOLD = WAD / 20n; // 5% drift triggers recenter
+const MAX_RECENTER_CHANGE = 3n; // max Nx change in either reserve per recenter
 const ORACLE_STALE_SECONDS = 1800; // 30 minutes
 const HOUR_MS = 3_600_000;
 
@@ -38,18 +39,34 @@ function checkPriceRecenter(snapshot: PoolSnapshot): RuleResult {
     return { name: "priceRecenter", triggered: false, reason: "mismatch within threshold" };
   }
 
-  // Compute new equilibrium reserves that match the oracle price
-  // Keep the same total value, but adjust ratio to match oracle
-  // New eq0/eq1 should satisfy: eq1/eq0 ≈ oraclePrice
+  // Compute new equilibrium reserves that match the oracle price.
+  // totalValue is denominated in asset1 raw units:
+  //   eq0 * oraclePrice / WAD converts asset0 raw → asset1-equivalent raw
   const totalValue =
     snapshot.equilibriumReserve0 * snapshot.oraclePrice / WAD +
     snapshot.equilibriumReserve1;
 
-  // eq1 = totalValue / 2, eq0 = totalValue / (2 * oraclePrice)
-  const newEq1 = totalValue / 2n;
-  const newEq0 = snapshot.oraclePrice > 0n
+  // Split 50/50 by value: eq1 = totalValue/2, eq0 = totalValue/(2*oraclePrice)
+  let newEq1 = totalValue / 2n;
+  let newEq0 = snapshot.oraclePrice > 0n
     ? (totalValue * WAD) / (2n * snapshot.oraclePrice)
     : snapshot.equilibriumReserve0;
+
+  // Safety: cap change at MAX_RECENTER_CHANGE× in either direction.
+  // Prevents catastrophic recenters from stale/mismatched oracle prices.
+  const eq0 = snapshot.equilibriumReserve0;
+  const eq1 = snapshot.equilibriumReserve1;
+  if (
+    eq0 > 0n && eq1 > 0n &&
+    (newEq0 > eq0 * MAX_RECENTER_CHANGE || newEq0 * MAX_RECENTER_CHANGE < eq0 ||
+     newEq1 > eq1 * MAX_RECENTER_CHANGE || newEq1 * MAX_RECENTER_CHANGE < eq1)
+  ) {
+    return {
+      name: "priceRecenter",
+      triggered: false,
+      reason: `recenter would change reserves by >${MAX_RECENTER_CHANGE}x — oracle likely stale or mismatched, skipping`,
+    };
+  }
 
   return {
     name: "priceRecenter",
