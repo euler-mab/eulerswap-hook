@@ -27,10 +27,20 @@ export const POOLS: PoolConfig[] = [
     description: "Dynamic fee hook, test pool",
     deployBlock: 24591724n,
   },
+  {
+    address: "0x719529e99b7b272c5ef4CE07C30d15BC57CD68A8",
+    hook: "0xdc1b84c674fa39a66cbecf3cec4ed62e18ca021f",
+    agentEoa: "0x2909bCc87c17d8Be263621bF087bC806BA313BFE",
+    eulerAccount: "0x2909BCc87c17D8be263621bf087Bc806ba313BFf",
+    name: "USDC/USDT #1",
+    description: "One-sided USDC equity, ±1% range, dynamic fee hook",
+    deployBlock: 24593397n,
+  },
 ];
 
 /** Static token metadata for known assets */
 export const TOKEN_META: Record<string, { symbol: string; decimals: number; color: string }> = {
   "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": { symbol: "USDC", decimals: 6, color: "#2775ca" },
   "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": { symbol: "WETH", decimals: 18, color: "#627eea" },
+  "0xdac17f958d2ee523a2206206994597c13d831ec7": { symbol: "USDT", decimals: 6, color: "#26a17b" },
 };
