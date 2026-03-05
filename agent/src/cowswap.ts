@@ -7,6 +7,11 @@ export const GPV2_VAULT_RELAYER = "0xC92E8bdf79f0507f65a392b0ab4667716BFE0110" a
 
 const ORDER_TIMEOUT_MS = 300_000; // 5 minutes
 const POLL_INTERVAL_MS = 5_000;
+const FETCH_TIMEOUT_MS = 15_000; // 15 seconds for individual API calls
+
+// Order validity MUST match ORDER_TIMEOUT_MS to prevent race conditions:
+// if validTo > agent timeout, the order could fill during recovery deposit.
+const ORDER_VALIDITY_SECONDS = Math.floor(ORDER_TIMEOUT_MS / 1000);
 
 // EIP-712 domain for GPv2 Settlement (mainnet)
 const GPV2_DOMAIN = {
@@ -55,6 +60,21 @@ export interface CowSwapResult {
   status: "fulfilled" | "expired" | "cancelled";
 }
 
+/** Fetch with AbortController timeout */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = FETCH_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /** Get an execution quote from CowSwap including solver fees */
 export async function getSwapQuote(
   sellToken: Address,
@@ -62,10 +82,10 @@ export async function getSwapQuote(
   sellAmount: bigint,
   from: Address,
 ): Promise<CowSwapOrder | null> {
-  const validTo = Math.floor(Date.now() / 1000) + 600; // 10 min validity
+  const validTo = Math.floor(Date.now() / 1000) + ORDER_VALIDITY_SECONDS;
 
   try {
-    const res = await fetch(`${COWSWAP_API}/quote`, {
+    const res = await fetchWithTimeout(`${COWSWAP_API}/quote`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -155,7 +175,7 @@ export async function submitOrder(
   signature: string,
   from: Address,
 ): Promise<string> {
-  const res = await fetch(`${COWSWAP_API}/orders`, {
+  const res = await fetchWithTimeout(`${COWSWAP_API}/orders`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -193,7 +213,10 @@ export async function waitForOrder(orderUid: string): Promise<CowSwapResult> {
     await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
 
     try {
-      const res = await fetch(`${COWSWAP_API}/orders/${orderUid}`);
+      const res = await fetchWithTimeout(
+        `${COWSWAP_API}/orders/${orderUid}`,
+        { method: "GET" },
+      );
       if (!res.ok) continue;
 
       const data = (await res.json()) as {

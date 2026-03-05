@@ -211,20 +211,8 @@ async function executeExternalSwap(
   });
   await waitAndAccum(withdrawHash);
 
-  // Step 2: Approve CowSwap VaultRelayer to spend sell tokens
-  console.log(`  Swap step 2/5: Approving CowSwap...`);
-  const approveHash = await walletClient.writeContract({
-    address: sellToken,
-    abi: erc20Abi,
-    functionName: "approve",
-    args: [GPV2_VAULT_RELAYER, sellAmount],
-    account,
-    chain: walletClient.chain,
-  });
-  await waitAndAccum(approveHash);
-
-  // Step 3: Get CowSwap quote
-  console.log(`  Swap step 3/5: Getting CowSwap quote...`);
+  // Step 2: Get CowSwap quote (off-chain, no gas)
+  console.log(`  Swap step 2/5: Getting CowSwap quote...`);
   const quote = await getSwapQuote(sellToken, buyToken, sellAmount, account.address);
   if (!quote) {
     console.error("  CowSwap quote failed — recovering tokens to vault...");
@@ -237,6 +225,19 @@ async function executeExternalSwap(
     await depositToVault(sellToken, sellVault, sellAmount);
     throw new Error(`CowSwap quote too low: ${quote.buyAmount} < ${minBuyAmount}`);
   }
+
+  // Step 3: Approve CowSwap VaultRelayer (sellAmount + feeAmount for solver fees)
+  const approveAmount = BigInt(quote.sellAmount) + BigInt(quote.feeAmount);
+  console.log(`  Swap step 3/5: Approving CowSwap for ${approveAmount}...`);
+  const approveHash = await walletClient.writeContract({
+    address: sellToken,
+    abi: erc20Abi,
+    functionName: "approve",
+    args: [GPV2_VAULT_RELAYER, approveAmount],
+    account,
+    chain: walletClient.chain,
+  });
+  await waitAndAccum(approveHash);
 
   // Step 4: Sign and submit order
   console.log(`  Swap step 4/5: Signing and submitting order...`);

@@ -5,8 +5,10 @@ import type {
   VaultDebtInfo,
   RuleResult,
   ClaudeRecommendation,
+  AssetDecimals,
 } from "./types.js";
 import { WAD, BPS } from "./types.js";
+import type { AggregatorQuote } from "./oracle.js";
 
 const RECENTER_THRESHOLD = WAD / 20n; // 5% drift triggers recenter
 const MAX_RECENTER_CHANGE = 3n; // max Nx change in either reserve per recenter
@@ -26,12 +28,14 @@ export function evaluate(
   feeParams: HookFeeParams,
   config: AgentConfig,
   gasSpentToday: bigint,
-  vaultDebt?: VaultDebtInfo
+  vaultDebt?: VaultDebtInfo,
+  aggQuote?: AggregatorQuote | null,
+  decimals?: AssetDecimals,
 ): RuleResult[] {
   const results: RuleResult[] = [];
 
   results.push(checkEmergencyPause(snapshot, feeParams));
-  results.push(checkPriceRecenter(snapshot));
+  results.push(checkPriceRecenter(snapshot, aggQuote, decimals));
   if (vaultDebt) {
     results.push(checkInterestRateRebalance(snapshot, feeParams, vaultDebt, config));
   }
@@ -44,39 +48,70 @@ export function evaluate(
 /**
  * Rule 1: Price recentering
  *
- * If oracle price has drifted >5% from pool equilibrium, reconfigure the pool
- * to realign. A recenter does three things:
+ * Uses CowSwap mid-price as the primary reference (more accurate than Chainlink),
+ * falling back to on-chain oracle if CowSwap is unavailable.
+ *
+ * If the reference price has drifted >5% from pool marginal price, reconfigure:
  *   1. Computes totalValue in asset1-equivalent raw units (preserving pool value)
  *   2. Splits 50/50 to get new equilibriumReserve0 and equilibriumReserve1
- *   3. Updates priceX/priceY (AMM curve params) to match current oracle
+ *   3. Updates priceX/priceY — priceX from on-chain oracle (USDC stable),
+ *      priceY derived from CowSwap so the AMM curve matches the real market rate
  *
  * priceX/priceY MUST be updated alongside equilibrium. They define the AMM
  * curve's exchange rate (amountOut ≈ amountIn * priceX / priceY). If equilibrium
  * shifts but prices stay stale, swaps produce near-zero in one direction and
  * drain the pool in the other.
  *
- * Safety: rejects recenters that would change reserves by >3x (stale oracle guard).
+ * Safety: rejects recenters that would change reserves by >3x (stale price guard).
  */
-function checkPriceRecenter(snapshot: PoolSnapshot): RuleResult {
-  if (snapshot.mismatch < RECENTER_THRESHOLD) {
-    return { name: "priceRecenter", triggered: false, reason: "mismatch within threshold" };
+function checkPriceRecenter(
+  snapshot: PoolSnapshot,
+  aggQuote?: AggregatorQuote | null,
+  decimals?: AssetDecimals,
+): RuleResult {
+  // Compute reference price: CowSwap if available, else on-chain oracle
+  let refPrice = snapshot.oraclePrice;
+  let priceSource = "chainlink";
+
+  if (aggQuote && decimals && aggQuote.midPrice > 0) {
+    // Convert CowSwap mid (human asset1-per-asset0) to WAD-scaled raw ratio.
+    // midPrice is in human units (e.g. 0.000470 WETH per 1 USDC).
+    // raw ratio = midPrice * 10^(dec1 - dec0), then WAD-scale it.
+    const decDiff = decimals.dec1 - decimals.dec0;
+    const scaledMid = aggQuote.midPrice * (10 ** decDiff);
+    refPrice = BigInt(Math.round(scaledMid * 1e18));
+    priceSource = "cowswap";
   }
 
-  // Compute new equilibrium reserves that match the oracle price.
+  if (refPrice === 0n) {
+    return { name: "priceRecenter", triggered: false, reason: "no reference price available" };
+  }
+
+  // Mismatch: |refPrice - marginal| / refPrice
+  let mismatch = 0n;
+  if (refPrice > snapshot.marginalPrice) {
+    mismatch = ((refPrice - snapshot.marginalPrice) * WAD) / refPrice;
+  } else {
+    mismatch = ((snapshot.marginalPrice - refPrice) * WAD) / refPrice;
+  }
+
+  if (mismatch < RECENTER_THRESHOLD) {
+    return { name: "priceRecenter", triggered: false, reason: `mismatch within threshold (${priceSource})` };
+  }
+
+  // Compute new equilibrium reserves that match the reference price.
   // totalValue is denominated in asset1 raw units:
-  //   eq0 * oraclePrice / WAD converts asset0 raw → asset1-equivalent raw
+  //   eq0 * refPrice / WAD converts asset0 raw → asset1-equivalent raw
   const totalValue =
-    snapshot.equilibriumReserve0 * snapshot.oraclePrice / WAD +
+    snapshot.equilibriumReserve0 * refPrice / WAD +
     snapshot.equilibriumReserve1;
 
-  // Split 50/50 by value: eq1 = totalValue/2, eq0 = totalValue/(2*oraclePrice)
-  let newEq1 = totalValue / 2n;
-  let newEq0 = snapshot.oraclePrice > 0n
-    ? (totalValue * WAD) / (2n * snapshot.oraclePrice)
-    : snapshot.equilibriumReserve0;
+  // Split 50/50 by value: eq1 = totalValue/2, eq0 = totalValue/(2*refPrice)
+  const newEq1 = totalValue / 2n;
+  const newEq0 = (totalValue * WAD) / (2n * refPrice);
 
   // Safety: cap change at MAX_RECENTER_CHANGE× in either direction.
-  // Prevents catastrophic recenters from stale/mismatched oracle prices.
+  // Prevents catastrophic recenters from stale/mismatched prices.
   const eq0 = snapshot.equilibriumReserve0;
   const eq1 = snapshot.equilibriumReserve1;
   if (
@@ -87,25 +122,29 @@ function checkPriceRecenter(snapshot: PoolSnapshot): RuleResult {
     return {
       name: "priceRecenter",
       triggered: false,
-      reason: `recenter would change reserves by >${MAX_RECENTER_CHANGE}x — oracle likely stale or mismatched, skipping`,
+      reason: `recenter would change reserves by >${MAX_RECENTER_CHANGE}x — ${priceSource} price likely stale, skipping`,
     };
   }
+
+  // priceX from on-chain oracle (USDC is stable, Chainlink accurate for stables).
+  // priceY derived from CowSwap reference so AMM curve matches real market rate:
+  //   priceX/priceY = refPrice/WAD  →  priceY = (priceX * WAD²) / refPrice
+  //   = oraclePrice0 / refPrice
+  const newPriceX = snapshot.oraclePrice0 / WAD;
+  const newPriceY = snapshot.oraclePrice0 / refPrice;
 
   return {
     name: "priceRecenter",
     triggered: true,
-    reason: `mismatch ${formatBps(snapshot.mismatch)} bps exceeds ${formatBps(RECENTER_THRESHOLD)} bps threshold`,
+    reason: `mismatch ${formatBps(mismatch)} bps exceeds ${formatBps(RECENTER_THRESHOLD)} bps threshold (${priceSource})`,
     action: {
       type: "reconfigure",
-      reason: "Recenter equilibrium to match oracle price",
+      reason: `Recenter equilibrium to match ${priceSource} price`,
       params: {
         equilibriumReserve0: newEq0.toString(),
         equilibriumReserve1: newEq1.toString(),
-        // Update AMM curve prices to match current oracle.
-        // priceX/priceY are value-per-raw-unit (fixnum basis 1e18), derived by
-        // dividing the oracle's getQuote(WAD, asset, uoa) by WAD.
-        priceX: (snapshot.oraclePrice0 / WAD).toString(),
-        priceY: (snapshot.oraclePrice1 / WAD).toString(),
+        priceX: newPriceX.toString(),
+        priceY: newPriceY.toString(),
       },
     },
   };
@@ -353,6 +392,11 @@ export function isSafe(
   }
 
   if (rec.type === "externalSwap") {
+    // Require high confidence for irreversible external swaps
+    if (rec.confidence < 0.8) {
+      return { safe: false, reason: `confidence ${rec.confidence} below 0.8 threshold for externalSwap` };
+    }
+
     const sellAsset = rec.params["sellAsset"] as string;
     const sellAmount = rec.params["sellAmount"] ? BigInt(rec.params["sellAmount"] as string) : 0n;
     const minBuyAmount = rec.params["minBuyAmount"] ? BigInt(rec.params["minBuyAmount"] as string) : 0n;
@@ -365,6 +409,18 @@ export function isSafe(
     }
     if (minBuyAmount <= 0n) {
       return { safe: false, reason: "minBuyAmount must be positive" };
+    }
+
+    // Enforce slippage floor: minBuyAmount must be ≥ oracle-fair value minus swapSlippageBps
+    if (snapshot && snapshot.oraclePrice > 0n) {
+      // oraclePrice = asset0-per-asset1 in WAD. Compute fair buy amount from sell amount.
+      const fairBuy = sellAsset === "0"
+        ? sellAmount * snapshot.oraclePrice / WAD   // selling asset0 → buying asset1
+        : sellAmount * WAD / snapshot.oraclePrice;  // selling asset1 → buying asset0
+      const slippageFloor = fairBuy * (10000n - BigInt(config.swapSlippageBps)) / 10000n;
+      if (minBuyAmount < slippageFloor) {
+        return { safe: false, reason: `minBuyAmount ${minBuyAmount} below slippage floor ${slippageFloor} (${config.swapSlippageBps}bps from oracle)` };
+      }
     }
 
     // Cap swap size at maxSwapPct of the relevant reserve
