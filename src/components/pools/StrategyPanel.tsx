@@ -1,0 +1,119 @@
+"use client";
+
+import type { PoolState } from "@/lib/pools/types";
+import { fmtAmount, fmtFeeBps, shortAddr } from "@/lib/pools/format";
+
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <>
+      <span className="text-zinc-500">{label}</span>
+      <span className="text-zinc-300">{children}</span>
+    </>
+  );
+}
+
+export default function StrategyPanel({ state }: { state: PoolState }) {
+  const cxPct = (Number(state.concentrationX) / 1e18 * 100).toFixed(2);
+  const cyPct = (Number(state.concentrationY) / 1e18 * 100).toFixed(2);
+
+  return (
+    <div className="space-y-6">
+      {/* Current params */}
+      <div>
+        <h4 className="text-[10px] font-medium uppercase tracking-wider text-zinc-600 mb-2">
+          Dynamic Params
+        </h4>
+        <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-1.5 text-xs">
+          <Row label="Equilibrium reserves">
+            {fmtAmount(state.equilibriumReserve0, state.asset0Decimals)} {state.asset0Symbol} +{" "}
+            {fmtAmount(state.equilibriumReserve1, state.asset1Decimals)} {state.asset1Symbol}
+          </Row>
+          <Row label="Min reserves">
+            {fmtAmount(state.minReserve0, state.asset0Decimals)} {state.asset0Symbol} +{" "}
+            {fmtAmount(state.minReserve1, state.asset1Decimals)} {state.asset1Symbol}
+          </Row>
+          <Row label="Price X / Y">
+            {state.priceX.toString()} / {state.priceY.toString()}
+          </Row>
+          <Row label="Concentration">
+            {cxPct}% / {cyPct}%
+          </Row>
+          <Row label="Fees (pool)">
+            {fmtFeeBps(state.fee0)} / {fmtFeeBps(state.fee1)}
+          </Row>
+          <Row label="Expiration">
+            {state.expiration > 0
+              ? new Date(state.expiration * 1000).toLocaleString()
+              : "none"}
+          </Row>
+          <Row label="Hook">
+            {state.swapHook === "0x0000000000000000000000000000000000000000"
+              ? "none"
+              : (
+                <a
+                  href={`https://etherscan.io/address/${state.swapHook}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+                >
+                  {shortAddr(state.swapHook)} &nearr;
+                </a>
+              )}
+          </Row>
+        </div>
+      </div>
+
+      {/* Hook params */}
+      {state.hookBaseFee !== undefined && (
+        <div>
+          <h4 className="text-[10px] font-medium uppercase tracking-wider text-zinc-600 mb-2">
+            Hook Fee Params
+          </h4>
+          <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-1.5 text-xs">
+            <Row label="Base fee">{fmtFeeBps(state.hookBaseFee)}</Row>
+            <Row label="Min fee">{fmtFeeBps(state.hookMinFee!)}</Row>
+            <Row label="Max fee">{fmtFeeBps(state.hookMaxFee!)}</Row>
+            <Row label="Mismatch scale">{state.hookMismatchScale!.toString()}</Row>
+            <Row label="Paused">
+              <span className={state.hookPaused ? "text-red-400" : "text-emerald-400"}>
+                {state.hookPaused ? "yes" : "no"}
+              </span>
+            </Row>
+          </div>
+        </div>
+      )}
+
+      {/* Static params */}
+      <div>
+        <h4 className="text-[10px] font-medium uppercase tracking-wider text-zinc-600 mb-2">
+          Static Params
+        </h4>
+        <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-1.5 text-xs">
+          <Row label="Euler account">
+            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.eulerAccount)}</span>
+          </Row>
+          <Row label="Supply vault 0">
+            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.supplyVault0)}</span>
+          </Row>
+          <Row label="Supply vault 1">
+            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.supplyVault1)}</span>
+          </Row>
+          <Row label="Borrow vault 0">
+            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.borrowVault0)}</span>
+          </Row>
+          <Row label="Borrow vault 1">
+            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.borrowVault1)}</span>
+          </Row>
+          <Row label="Fee recipient">
+            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.feeRecipient)}</span>
+          </Row>
+          <Row label="Installed">
+            <span className={state.isInstalled ? "text-emerald-400" : "text-red-400"}>
+              {state.isInstalled ? "yes" : "no"}
+            </span>
+          </Row>
+        </div>
+      </div>
+    </div>
+  );
+}
