@@ -98,6 +98,22 @@ export async function execute(
       break;
     }
 
+    case "setDecayParams": {
+      txHash = await walletClient.writeContract({
+        address: config.hookAddress,
+        abi: hookAbi,
+        functionName: "setDecayParams",
+        args: [
+          BigInt(action.params["surcharge"] as string),
+          Number(action.params["period"] as string),
+        ],
+        account,
+        chain: walletClient.chain,
+      });
+      recordRateLimitedAction();
+      break;
+    }
+
     case "setPaused": {
       txHash = await walletClient.writeContract({
         address: config.hookAddress,

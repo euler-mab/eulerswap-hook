@@ -1,5 +1,5 @@
 import type { PublicClient, Address } from "viem";
-import type { AgentConfig, PoolSnapshot, HookStats, HookFeeParams, VaultDebtInfo } from "./types.js";
+import type { AgentConfig, PoolSnapshot, HookStats, HookFeeParams, HookDecayParams, VaultDebtInfo } from "./types.js";
 import { eulerSwapAbi, evaultAbi, priceOracleAbi, hookAbi } from "./abi.js";
 import { WAD } from "./types.js";
 
@@ -323,5 +323,22 @@ export async function getHookFeeParams(
     minFee: result[2],
     mismatchScale: result[3],
     paused: result[4],
+  };
+}
+
+export async function getHookDecayParams(
+  client: PublicClient,
+  config: AgentConfig
+): Promise<HookDecayParams> {
+  const result = await client.readContract({
+    address: config.hookAddress,
+    abi: hookAbi,
+    functionName: "getDecayParams",
+  });
+
+  return {
+    surcharge: result[0],
+    period: Number(result[1]),
+    lastTradeTimestamp: Number(result[2]),
   };
 }

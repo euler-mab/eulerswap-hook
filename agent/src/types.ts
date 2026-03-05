@@ -63,6 +63,12 @@ export interface HookFeeParams {
   paused: boolean;
 }
 
+export interface HookDecayParams {
+  surcharge: bigint;        // WAD-scaled (e.g. 10e14 = 10 bps)
+  period: number;           // seconds
+  lastTradeTimestamp: number;
+}
+
 // --- Vault debt/utilization ---
 
 export interface VaultDebtInfo {

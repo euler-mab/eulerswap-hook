@@ -387,6 +387,26 @@ export function isSafe(
     }
   }
 
+  if (rec.type === "setDecayParams") {
+    if (!rec.params["surcharge"] || !rec.params["period"]) {
+      return { safe: false, reason: "setDecayParams requires surcharge and period" };
+    }
+    const surcharge = BigInt(rec.params["surcharge"] as string);
+    const period = Number(rec.params["period"] as string);
+
+    if (surcharge > WAD) {
+      return { safe: false, reason: `surcharge ${surcharge} exceeds 100%` };
+    }
+    // Surcharge should be reasonable — cap at 500 bps (5%)
+    if (surcharge > 500n * BPS) {
+      return { safe: false, reason: `surcharge ${surcharge} exceeds 500 bps cap` };
+    }
+    // Decay period should be between 12 seconds (1 block) and 600 seconds (10 min)
+    if (period < 12 || period > 600) {
+      return { safe: false, reason: `period ${period} outside bounds [12, 600] seconds` };
+    }
+  }
+
   if (rec.type === "setPaused") {
     return { safe: false, reason: "Claude cannot pause/unpause — only rules engine or owner" };
   }

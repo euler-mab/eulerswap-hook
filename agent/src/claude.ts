@@ -3,6 +3,7 @@ import type {
   AgentConfig,
   PoolSnapshot,
   HookFeeParams,
+  HookDecayParams,
   HookStats,
   ExecutedAction,
   ClaudeReview,
@@ -13,7 +14,7 @@ import type {
 import type { AggregatorQuote } from "./oracle.js";
 import type { FundingSnapshot } from "./funding.js";
 import { WAD, BPS, fmtToken } from "./types.js";
-import { getTrendSummary, getFlowSummary, getMetrics } from "./metrics.js";
+import { getTrendSummary, getFlowSummary, getRealizedVol, getMetrics } from "./metrics.js";
 
 let client: Anthropic | null = null;
 
@@ -35,10 +36,11 @@ export async function review(
   decimals?: AssetDecimals,
   vaultDebt?: VaultDebtInfo,
   funding?: FundingSnapshot | null,
+  decayParams?: HookDecayParams,
 ): Promise<ClaudeReview> {
   const anthropic = getClient(config);
 
-  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals, vaultDebt, funding);
+  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals, vaultDebt, funding, decayParams);
 
   const systemPrompt = buildSystemPrompt(config, snapshot);
 
@@ -142,30 +144,51 @@ When paused, all trades pay maxFee.
 - maxFee: ceiling. Caps total fee including surcharge. Typical: 50-500 bps.
 - mismatchScale: oracle mismatch sensitivity. 0 = disabled (saves gas). Typical: 0-20x.
 
-**Decay params** (setDecayParams):
-- decaySurcharge: the arb tax added to baseFee for the first trade in a new block.
-  Should approximate the typical price move between blocks. Typical: 20-100 bps.
-- decayPeriod: seconds for the surcharge to reach zero. 12 = one Ethereum block.
-  Shorter = more aggressive (surcharge gone faster). Typical: 12-60 seconds.
+**Decay params** (setDecayParams — both required):
+- surcharge: WAD-scaled surcharge (same encoding as fees). 10 bps = "${(10n * BPS).toString()}"
+- period: integer seconds (NOT WAD-scaled). 120 = "${120}"
 
 ## MEV Protection & Flow Quality
 
 ### How the two layers interact
 Time-decay is the workhorse — it captures most arb value without any oracle dependency.
-The oracle mismatch adds refinement: even within a block, it charges more on the side that
-exploits known mispricing. But the oracle is always slightly stale, so the time-decay
-handles the gap between true market price and oracle update.
+The oracle mismatch is an optional refinement (mismatchScale > 0) that adds directionality
+but costs gas for oracle reads. Most pools should run with mismatchScale = 0.
 
-### Tuning the arb tax
-- **decaySurcharge** is the primary arb protection knob. Higher = more arb revenue but
-  risk discouraging even the first aligning trade. Start at ~50 bps for volatile pairs.
-- **decayPeriod = 12** (one block) is the default. Increase to 24-60 if oracle updates
-  are slower than block time.
-- **maxFee** caps the total (baseFee + surcharge + mismatch). If decaySurcharge = 50 bps
-  and baseFee = 25 bps, maxFee should be ≥ 75 bps or the surcharge gets clamped.
-- **mismatchScale = 0** is fine for most pools — the time-decay alone captures arb value.
-  Enable mismatchScale only if you see arbs consistently exploiting directional mispricing
-  that the symmetric surcharge doesn't catch.
+### Understanding the Dutch auction
+The decay mechanism is a **Dutch auction** for block-first trades:
+1. After a trade, the surcharge resets to full value
+2. Each subsequent block (12s), the surcharge decays: surcharge × (period − elapsed) / period
+3. An arb trades when the surcharge drops below their expected profit
+
+**This means decaySurcharge must be calibrated to the pair's per-block volatility (σ_block).**
+- If σ_block ≈ 10 bps but surcharge = 100 bps, arbs wait ~9 blocks (108 seconds) for the
+  surcharge to decay enough. The pool sits with a stale price and NO ONE trades.
+- If σ_block ≈ 10 bps and surcharge = 10 bps, arbs trade in the first available block.
+  They pay most of their profit as a fee. The pool stays fresh.
+
+### Calibrating decaySurcharge from realized volatility
+The context includes a "Realized Volatility" section with measured per-block σ in bps.
+Use this to set decaySurcharge:
+- **decaySurcharge ≈ 1.0–1.5× σ_block** — captures most arb profit without stalling the pool.
+  The "Suggested decaySurcharge" value in the context uses 1.2× σ as a starting point.
+- **Too high** (>> σ): auction takes multiple blocks → stale pool → no trades → bad.
+- **Too low** (<< σ): arbs trade cheaply → you're leaving money on the table.
+- **Adjust based on flow quality**: if arb % is high and arb-interval volume is large,
+  the surcharge is too low. If trade velocity is low, it might be too high.
+
+### Calibrating decayPeriod
+- **decayPeriod = 120** (10 blocks) is a good default for actively traded pools.
+  After 1 block (12s), surcharge is 90% of max — strong protection.
+  After 2 min of inactivity, surcharge is zero — don't penalize fresh activity.
+- **Shorter (60s)**: more aggressive decay, pool goes unprotected faster.
+- **Longer (300s)**: surcharge persists longer during quiet periods.
+- Must be > 12 (one block time), or the surcharge fully decays by the next block and
+  has no effect.
+
+### Ensuring maxFee doesn't clip the surcharge
+maxFee must be ≥ baseFee + decaySurcharge, otherwise the surcharge gets clamped and you
+lose arb protection. Check: if baseFee = 25 bps and surcharge = 10 bps, maxFee must be ≥ 35 bps.
 
 ### Reading the Flow Quality data
 The context includes a Flow Quality section (when enough data exists) showing:
@@ -350,7 +373,7 @@ Respond with ONLY valid JSON:
 {
   "recommendations": [
     {
-      "type": "setFeeParams" | "reconfigure" | "externalSwap",
+      "type": "setFeeParams" | "setDecayParams" | "reconfigure" | "externalSwap",
       "params": { ... },
       "reasoning": "...",
       "confidence": 0.0-1.0
@@ -370,6 +393,10 @@ All values are strings of integers (no decimals, no floats).
   minFee: WAD-scaled. 5 bps = "${(5n * BPS).toString()}"
   maxFee: WAD-scaled. 200 bps = "${(200n * BPS).toString()}"
   mismatchScale: WAD-scaled multiplier. 10x = "${(10n * WAD).toString()}"
+
+**setDecayParams** (both required):
+  surcharge: WAD-scaled. 10 bps = "${(10n * BPS).toString()}"
+  period: plain integer seconds (NOT WAD-scaled). 120 = "120"
 
 **reconfigure**:
   concentrationX, concentrationY: WAD-scaled. 0.40 = "${(40n * WAD / 100n).toString()}"
@@ -395,6 +422,7 @@ function buildContext(
   decimals?: AssetDecimals,
   vaultDebt?: VaultDebtInfo,
   funding?: FundingSnapshot | null,
+  decayParams?: HookDecayParams,
 ): string {
   const fmtR0 = (v: bigint) => decimals ? fmtToken(v, decimals.dec0) : (Number(v) / 1e18).toFixed(6);
   const fmtR1 = (v: bigint) => decimals ? fmtToken(v, decimals.dec1) : (Number(v) / 1e18).toFixed(6);
@@ -479,6 +507,19 @@ Concentration: X=${fmtWad(snapshot.concentrationX)}, Y=${fmtWad(snapshot.concent
   maxFee: ${fmtBps(feeParams.maxFee)}
   mismatchScale: ${fmtWad(feeParams.mismatchScale)}
   paused: ${feeParams.paused}
+${decayParams ? `
+## Decay Params (Arb Protection)
+  surcharge: ${fmtBps(decayParams.surcharge)}
+  period: ${decayParams.period}s
+  lastTrade: ${decayParams.lastTradeTimestamp > 0 ? `${Math.floor(Date.now() / 1000) - decayParams.lastTradeTimestamp}s ago` : "never"}` : ""}
+${(() => {
+  const vol = getRealizedVol();
+  return vol ? `
+## Realized Volatility (for decay calibration)
+  Per-block σ: ${vol.volBps.toFixed(1)} bps
+  Suggested decaySurcharge: ${Math.max(1, Math.round(vol.volBps * 1.2))} bps (1.2× σ)
+  Sample: ${vol.sampleSize} intervals, ~${vol.avgBlocksBetweenPolls.toFixed(0)} blocks between polls` : "";
+})()}
 
 ## Trade Stats
   Total trades: ${stats.tradeCount.toString()}

@@ -135,10 +135,11 @@ async function main() {
   // --- Claude review loop ---
   const claudeLoop = async () => {
     try {
-      const [snapshot, stats, feeParams, vaultDebt] = await Promise.all([
+      const [snapshot, stats, feeParams, decayParams, vaultDebt] = await Promise.all([
         monitor.getPoolSnapshot(publicClient, config),
         monitor.getHookStats(publicClient, config),
         monitor.getHookFeeParams(publicClient, config),
+        monitor.getHookDecayParams(publicClient, config).catch(() => undefined),
         monitor.getVaultDebtInfo(publicClient, config).catch(() => undefined),
       ]);
 
@@ -164,7 +165,8 @@ async function main() {
         aggQuote,
         decimals,
         vaultDebt,
-        funding
+        funding,
+        decayParams,
       );
 
       metrics.recordReview(review);

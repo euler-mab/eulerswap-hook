@@ -83,6 +83,46 @@ export function getRecentActions(n: number = 10): ExecutedAction[] {
   return metrics.actions.slice(-n);
 }
 
+/**
+ * Compute realized per-block volatility from oracle price changes between snapshots.
+ * Returns σ in basis points — the standard deviation of per-block oracle price moves.
+ * This is the key input for calibrating decaySurcharge.
+ */
+export function getRealizedVol(): { volBps: number; avgBlocksBetweenPolls: number; sampleSize: number } | null {
+  const snaps = metrics.snapshots;
+  if (snaps.length < 10) return null;
+
+  const recent = snaps.slice(-50); // use last 50 snapshots
+  const returns: number[] = [];
+  let totalBlocks = 0;
+
+  for (let i = 1; i < recent.length; i++) {
+    const prev = recent[i - 1]!;
+    const curr = recent[i]!;
+    if (prev.oraclePrice <= 0n || curr.oraclePrice <= 0n) continue;
+
+    // Log return between snapshots (in bps)
+    const logReturn = Math.log(Number(curr.oraclePrice) / Number(prev.oraclePrice)) * 10000;
+    const blocksBetween = Number(curr.blockNumber - prev.blockNumber);
+    if (blocksBetween <= 0) continue;
+
+    // Normalize to per-block return (variance scales linearly with time)
+    const perBlockReturn = logReturn / Math.sqrt(blocksBetween);
+    returns.push(perBlockReturn);
+    totalBlocks += blocksBetween;
+  }
+
+  if (returns.length < 5) return null;
+
+  // Standard deviation of per-block returns
+  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const variance = returns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / returns.length;
+  const volBps = Math.sqrt(variance);
+  const avgBlocksBetweenPolls = totalBlocks / returns.length;
+
+  return { volBps, avgBlocksBetweenPolls, sampleSize: returns.length };
+}
+
 /** Compute a trend summary from recent snapshots for Claude context */
 export function getTrendSummary(): string | null {
   const snaps = metrics.snapshots;
