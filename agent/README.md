@@ -33,15 +33,15 @@ Layers 1+2 are in `contracts/src/LPAgentHook.sol`. Layer 3 is this directory.
 |--------|---------|
 | `index.ts` | Main loop: poll every 30s, Claude review every 1h |
 | `config.ts` | Loads env vars, defines safety bounds |
-| `monitor.ts` | Reads on-chain state (reserves, params, hook stats) |
-| `oracle.ts` | Aggregator quote interface (stub — implement 1inch or CowSwap) |
-| `rules.ts` | Rule engine: price recentering (>5% drift), gas budget, rate limiting |
+| `monitor.ts` | Reads on-chain state (reserves, params, real oracle price via Euler vaults) |
+| `oracle.ts` | CowSwap aggregator quotes — bid/ask/spread for market context |
+| `rules.ts` | Rule engine: emergency pause, price recentering, gas budget, rate limiting |
 | `executor.ts` | Submits txs — reconfigure routes through EVC, hook params are direct |
 | `claude.ts` | Hourly Claude API review with structured prompt/response |
 | `journal.ts` | Daily markdown files in `journal/` |
 | `metrics.ts` | In-memory P&L, gas, action history (last 1000 entries) |
 | `types.ts` | Shared types and constants (WAD, BPS) |
-| `abi.ts` | ABI fragments for EulerSwap pool, EVC, and hook |
+| `abi.ts` | ABI fragments for EulerSwap pool, EVC, hook, Euler vaults, and price oracle |
 
 ## Execution Flow
 
@@ -51,18 +51,20 @@ Poll loop (every POLL_INTERVAL seconds):
   2. Read hook stats (trade count, volume, last trade)
   3. Read hook fee params (baseFee, mismatchScale, paused)
   4. Evaluate rules:
+     - emergencyPause: if oracle returns 0 (stale/broken) → pause hook
      - priceRecenter: if oracle drifted >5% from equilibrium → reconfigure
      - gasBudget: if daily spend exceeded → block all actions
-     - rateLimit: if >12 reconfigs this hour → block actions
+     - rateLimit: if >12 actions this hour → block actions
   5. Execute triggered actions (if not blocked by gas/rate limits)
   6. Log snapshot to journal every 10th poll
 
 Claude loop (every CLAUDE_REVIEW_INTERVAL seconds):
   1. Build context: snapshot, P&L, recent trades, current params
-  2. Call Claude API for strategy recommendations
-  3. Validate each recommendation against safety bounds
-  4. Execute safe recommendations, log rejected ones
-  5. Write review to journal
+  2. Fetch CowSwap aggregator quote (bid/ask/spread — null is OK)
+  3. Call Claude API for strategy recommendations
+  4. Validate each recommendation against safety bounds
+  5. Execute safe recommendations, log rejected ones
+  6. Write review to journal
 ```
 
 ## EVC Routing
@@ -84,9 +86,14 @@ Hardcoded in `config.ts`, not adjustable by Claude:
 | Param | Min | Max | Rationale |
 |-------|-----|-----|-----------|
 | baseFee | 1 bp | 100 bp | Below 1bp loses money to gas; above 100bp drives away all flow |
+| maxFee | — | 100% | Contract also enforces this; prevents total lockout |
+| mismatchScale | — | 100x | Prevents extreme fee sensitivity to small mismatch |
+| fee ordering | min ≤ base ≤ max | — | Contract reverts on violation; agent validates first |
 | concentration | 0.01 | 0.95 | Near-zero is useless; near-1 is constant-sum (infinite IL risk) |
-| reconfigs/hour | — | 12 | Rate limit to prevent gas drain from feedback loops |
+| equilibrium reserves | >0 | — | Zero reserves would brick the pool |
+| actions/hour | — | 12 | Rate limit covers both reconfigure and setFeeParams |
 | daily gas budget | — | configurable | Hard stop on total spend |
+| tx timeout | — | 2 min | Prevents stuck txs from blocking the agent loop |
 
 Claude cannot pause/unpause the pool — only the rules engine (emergency) or the owner.
 
