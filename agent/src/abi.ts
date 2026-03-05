@@ -121,6 +121,45 @@ export const evcAbi = [
   },
 ] as const;
 
+// Euler vault and price oracle ABIs (for reading real oracle price)
+export const evaultAbi = [
+  {
+    name: "oracle",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    name: "unitOfAccount",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    name: "asset",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+] as const;
+
+export const priceOracleAbi = [
+  {
+    name: "getQuote",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "amount", type: "uint256" },
+      { name: "base", type: "address" },
+      { name: "quote", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
 export const hookAbi = [
   {
     name: "getTradeStats",

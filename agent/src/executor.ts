@@ -2,7 +2,7 @@ import type { WalletClient, PublicClient, Hash } from "viem";
 import { encodeFunctionData } from "viem";
 import type { AgentConfig, Action, ExecutedAction } from "./types.js";
 import { eulerSwapAbi, evcAbi, hookAbi } from "./abi.js";
-import { recordReconfig } from "./rules.js";
+import { recordAction as recordRateLimitedAction } from "./rules.js";
 
 export async function execute(
   action: Action,
@@ -61,7 +61,7 @@ export async function execute(
         chain: walletClient.chain,
       });
 
-      recordReconfig();
+      recordRateLimitedAction();
       break;
     }
 
@@ -79,6 +79,7 @@ export async function execute(
         account,
         chain: walletClient.chain,
       });
+      recordRateLimitedAction();
       break;
     }
 
@@ -98,8 +99,12 @@ export async function execute(
       throw new Error(`Unknown action type: ${action.type}`);
   }
 
-  // Wait for receipt
-  const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  // Wait for receipt with 2-minute timeout to avoid blocking the agent forever
+  const TX_TIMEOUT_MS = 120_000;
+  const receipt = await publicClient.waitForTransactionReceipt({
+    hash: txHash,
+    timeout: TX_TIMEOUT_MS,
+  });
 
   return {
     ...action,

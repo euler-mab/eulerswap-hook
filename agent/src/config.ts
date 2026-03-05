@@ -3,6 +3,15 @@ import type { AgentConfig } from "./types.js";
 import { parseEther } from "viem";
 import { WAD, BPS } from "./types.js";
 
+/** Return a copy of config safe for logging/serialization (secrets redacted) */
+export function sanitizeConfig(config: AgentConfig): Omit<AgentConfig, "privateKey" | "anthropicApiKey"> & { privateKey: string; anthropicApiKey: string } {
+  return {
+    ...config,
+    privateKey: "0x[REDACTED]" as `0x${string}`,
+    anthropicApiKey: "[REDACTED]",
+  };
+}
+
 export function loadConfig(): AgentConfig {
   const required = (key: string): string => {
     const val = process.env[key];
