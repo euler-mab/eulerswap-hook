@@ -10,6 +10,7 @@ import type {
   ClaudeRecommendation,
   AssetDecimals,
   VaultDebtInfo,
+  RegistryInfo,
 } from "./types.js";
 import type { AggregatorQuote } from "./oracle.js";
 import type { FundingSnapshot } from "./funding.js";
@@ -38,10 +39,11 @@ export async function review(
   funding?: FundingSnapshot | null,
   decayParams?: HookDecayParams,
   lastReview?: ClaudeReview | null,
+  registryInfo?: RegistryInfo,
 ): Promise<ClaudeReview> {
   const anthropic = getClient(config);
 
-  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals, vaultDebt, funding, decayParams, lastReview);
+  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals, vaultDebt, funding, decayParams, lastReview, registryInfo);
 
   const systemPrompt = buildSystemPrompt(config, snapshot);
 
@@ -277,10 +279,20 @@ The formulas:
    You can recommend recenters with different minReserves to widen/narrow the range.
 
 5. **Booster health model**: In booster pools (supplyVault == borrowVault), self-LTV = 0.
-   Only cross-collateral counts for health: USDC deposits back WETH debt (via LTV_usdc2weth),
-   and WETH deposits back USDC debt (via LTV_weth2usdc). At the X boundary (max asset1,
-   min asset0), the binding health is: H_weth = minReserve0 × priceX × LTV_usdc2weth /
-   (debt1 × priceY). Set leverage so this equals ~1.0 for maximum capital efficiency.
+   Only cross-collateral counts. At a boundary, the debt is NOT the full equilibrium —
+   it's only the amount actually borrowed: (eq - min) for the output asset. The collateral
+   is the real equity PLUS swap inflows deposited in the other vault.
+
+   For one-sided equity E with cross-LTV L and range r (c=0):
+     X₀ = E × L / (H × β − L × α)
+   where α = √(1+r) − 1, β = 1 − 1/√(1+r), H = target health at boundary (~1.01).
+
+   Example: 500 USDC, LTV=0.94, ±1% range → X₀ ≈ 1,450,000 (2900x boost).
+   The leverage is high because at ±1% range the actual debt at the boundary is only
+   ~0.5% of equilibrium, so health stays well above 1 even with massive virtual reserves.
+
+   For two-sided equity, use the boost computation in src/lib/math.ts which handles
+   all cases (concentration boost, leverage boost, Z-debt, multiple candidate solutions).
 
 6. **Conservative by default**: When uncertain, recommend nothing.
 
@@ -494,6 +506,7 @@ function buildContext(
   funding?: FundingSnapshot | null,
   decayParams?: HookDecayParams,
   lastReview?: ClaudeReview | null,
+  registryInfo?: RegistryInfo,
 ): string {
   const fmtR0 = (v: bigint) => decimals ? fmtToken(v, decimals.dec0) : (Number(v) / 1e18).toFixed(6);
   const fmtR1 = (v: bigint) => decimals ? fmtToken(v, decimals.dec1) : (Number(v) / 1e18).toFixed(6);
@@ -630,6 +643,11 @@ ${vaultDebt ? `
   Real capital: asset0=${vaultDebt.deposit0 > vaultDebt.debt0 ? fmtR0(vaultDebt.deposit0 - vaultDebt.debt0) : "0 (underwater)"}, asset1=${vaultDebt.deposit1 > vaultDebt.debt1 ? fmtR1(vaultDebt.deposit1 - vaultDebt.debt1) : "0 (underwater)"}` : `
 ## Vault Debt & Utilization
   not available`}
+${registryInfo ? `
+## Registry
+  Registered: ${registryInfo.registered}
+  Validity bond: ${(Number(registryInfo.validityBond) / 1e18).toFixed(6)} ETH
+  Total pools in registry: ${registryInfo.totalPoolsInRegistry.toString()}${!registryInfo.registered ? "\n  WARNING: Pool is NOT registered — not discoverable via registry API" : ""}` : ""}
 ${trend ? `\n## Trend\n${trend}` : ""}
 ${flow ? `\n## Flow Quality\n${flow}` : ""}
 ${lastReview && lastReview.recommendations.length > 0 ? `

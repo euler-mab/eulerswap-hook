@@ -375,11 +375,31 @@ When `borrowVault0` or `borrowVault1` is set (non-zero), the pool can borrow:
 - **Withdraw**: first tries supply vault. If insufficient, enables controller + borrows from borrow vault.
 - **Deposit**: if controller enabled, repays debt first (up to deposit amount). Then deposits remainder. Auto-disables controller when debt fully repaid.
 
-**For leveraged LP positions:**
-1. Deploy pool with both supply and borrow vaults
+**For leveraged LP positions (booster pools where supplyVault == borrowVault):**
+1. Deploy pool with both supply and borrow vaults (same vault = "booster")
 2. Set equilibrium reserves larger than actual deposits (virtual > real)
 3. The pool borrows the difference when the price moves
-4. LLTVs are managed at the Euler vault level, not in EulerSwap
+4. Self-LTV = 0 in booster vaults; only cross-collateral counts for health
+
+**Booster math — computing equilibrium from equity:**
+
+At the boundary, debt = eq − min (only what's actually borrowed, NOT the full equilibrium).
+Collateral = real equity + swap inflows deposited in the other vault.
+
+For one-sided equity E, cross-LTV L, range r, concentration c=0, target health H:
+```
+X₀ = E × L / (H × β − L × α)
+where α = √(1+r) − 1,  β = 1 − 1/√(1+r)
+```
+
+Example: E=500 USDC, L=0.94, r=1%, H=1.01 → X₀ ≈ 1,450,000 (2900× boost).
+The leverage is high because at ±1% range the boundary debt is only ~0.5% of eq.
+
+For two-sided equity, use the general boost computation in `src/lib/math.ts`
+which handles concentration boost, leverage boost, Z-debt, and multiple candidate solutions.
+
+**IMPORTANT**: Do NOT use the naive formula H = minReserve × LTV / equilibrium.
+That treats the full equilibrium as debt, which is wrong by orders of magnitude.
 
 ## Registry & Validity Bonds
 
