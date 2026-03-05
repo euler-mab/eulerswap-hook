@@ -38,7 +38,8 @@ export interface PoolState {
   feeRecipient: Address;
 
   // Derived
-  marginalPrice: number; // asset1/asset0 in human units
+  marginalPrice: number; // asset1/asset0 in human units (accounts for reserve displacement)
+  equilibriumPrice: number; // asset1/asset0 at equilibrium (px/py normalised)
   isInstalled: boolean;
 
   // Hook state

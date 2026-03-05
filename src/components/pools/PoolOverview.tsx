@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { formatUnits } from "viem";
 import type { PoolConfig } from "@/lib/pools/config";
 import type { PoolState } from "@/lib/pools/types";
@@ -25,6 +26,7 @@ function Badge({ ok, label }: { ok: boolean; label: string }) {
 }
 
 export default function PoolOverview({ state, pool }: { state: PoolState; pool: PoolConfig }) {
+  const [inverted, setInverted] = useState(true); // default: show asset0/asset1 (e.g. USDC/WETH)
   const ethPrice = state.hookOraclePrice
     ? Number(formatUnits(state.hookOraclePrice, 6))
     : undefined;
@@ -50,15 +52,30 @@ export default function PoolOverview({ state, pool }: { state: PoolState; pool: 
         {tvl !== undefined && <span className="text-gray-500 ml-1">(~${tvl.toFixed(2)})</span>}
       </Row>
 
-      {/* Marginal price — show in both directions */}
+      {/* Marginal price — click to flip direction */}
       <Row label="Marginal price">
         {state.marginalPrice > 0 ? (
-          <>
-            {fmtPrice(1 / state.marginalPrice)} {state.asset0Symbol}/{state.asset1Symbol}
-            <span className="text-gray-400 ml-1">
-              ({fmtPrice(state.marginalPrice)} {state.asset1Symbol}/{state.asset0Symbol})
-            </span>
-          </>
+          <button
+            onClick={() => setInverted((v) => !v)}
+            className="cursor-pointer hover:text-gray-900 transition-colors text-left"
+            title="Click to flip price direction"
+          >
+            {inverted
+              ? `${fmtPrice(1 / state.marginalPrice)} ${state.asset0Symbol}/${state.asset1Symbol}`
+              : `${fmtPrice(state.marginalPrice)} ${state.asset1Symbol}/${state.asset0Symbol}`}
+            <span className="text-gray-400 ml-1 text-xs">&#x21C5;</span>
+          </button>
+        ) : "—"}
+      </Row>
+
+      {/* Equilibrium price */}
+      <Row label="Equilibrium price">
+        {state.equilibriumPrice > 0 ? (
+          <span>
+            {inverted
+              ? `${fmtPrice(1 / state.equilibriumPrice)} ${state.asset0Symbol}/${state.asset1Symbol}`
+              : `${fmtPrice(state.equilibriumPrice)} ${state.asset1Symbol}/${state.asset0Symbol}`}
+          </span>
         ) : "—"}
       </Row>
 

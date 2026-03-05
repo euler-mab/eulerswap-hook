@@ -98,18 +98,31 @@ export async function fetchPoolState(
   const tradeStats = val(results[8], null) as any;
   const oraclePrice = val(results[9], null) as bigint | null;
 
-  // Compute marginal price using EulerSwap curve: pXxy = (px/py)(cx + (1-cx)(x0/x)²)
+  // Compute marginal price using EulerSwap curve.
   // On-chain priceX/priceY are (USD_price / 10^decimals) * 1e18, so normalise to
   // human USD prices: px_human = priceX / 10^(18 - decimals)
   const r0 = Number(formatUnits(reserves[0], meta0.decimals));
+  const r1 = Number(formatUnits(reserves[1], meta1.decimals));
   const x0 = Number(formatUnits(dynamicParams.equilibriumReserve0, meta0.decimals));
+  const y0 = Number(formatUnits(dynamicParams.equilibriumReserve1, meta1.decimals));
   const cx = Number(dynamicParams.concentrationX) / 1e18;
+  const cy = Number(dynamicParams.concentrationY) / 1e18;
   const px = Number(dynamicParams.priceX) / Math.pow(10, 18 - meta0.decimals);
   const py = Number(dynamicParams.priceY) / Math.pow(10, 18 - meta1.decimals);
-  let marginalPrice = 0;
-  if (r0 > 0 && py > 0 && x0 > 0) {
-    const ratio = x0 / r0;
-    marginalPrice = (px / py) * (cx + (1 - cx) * ratio * ratio);
+  const equilibriumPrice = py > 0 ? px / py : 0; // Y per X at equilibrium
+  let marginalPrice = equilibriumPrice;
+  if (px > 0 && py > 0) {
+    if (r0 > 0 && r0 < x0) {
+      // X side: X being sold → price above equilibrium
+      // pXxy = (px/py)(cx + (1-cx)(x0/x)²)
+      const ratio = x0 / r0;
+      marginalPrice = (px / py) * (cx + (1 - cx) * ratio * ratio);
+    } else if (r1 > 0 && r1 < y0) {
+      // Y side: Y being sold → price below equilibrium
+      // pYxy = (px/py) / (cy + (1-cy)(y0/y)²)
+      const ratio = y0 / r1;
+      marginalPrice = (px / py) / (cy + (1 - cy) * ratio * ratio);
+    }
   }
 
   return {
@@ -131,7 +144,7 @@ export async function fetchPoolState(
     borrowVault0: bv0, borrowVault1: bv1,
     eulerAccount: staticParams.eulerAccount as Address,
     feeRecipient: staticParams.feeRecipient as Address,
-    marginalPrice, isInstalled: installed,
+    marginalPrice, equilibriumPrice, isInstalled: installed,
     // Hook
     hookPaused: feeParams ? feeParams[4] : undefined,
     hookBaseFee: feeParams ? feeParams[0] : undefined,
