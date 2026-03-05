@@ -160,6 +160,16 @@ export const priceOracleAbi = [
   },
 ] as const;
 
+export const erc20Abi = [
+  {
+    name: "decimals",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+] as const;
+
 export const hookAbi = [
   {
     name: "getTradeStats",

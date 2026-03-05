@@ -6,8 +6,9 @@ import type {
   ExecutedAction,
   ClaudeReview,
   RuleResult,
+  AssetDecimals,
 } from "./types.js";
-import { BPS } from "./types.js";
+import { BPS, fmtToken } from "./types.js";
 
 const JOURNAL_DIR = join(import.meta.dirname ?? ".", "..", "journal");
 
@@ -53,9 +54,11 @@ export function startup(config: AgentConfig): void {
   append("");
 }
 
-export function snapshot(snap: PoolSnapshot): void {
+export function snapshot(snap: PoolSnapshot, decimals?: AssetDecimals): void {
+  const r0 = decimals ? fmtToken(snap.reserve0, decimals.dec0) : fmtWad(snap.reserve0);
+  const r1 = decimals ? fmtToken(snap.reserve1, decimals.dec1) : fmtWad(snap.reserve1);
   append(`## ${timestamp()} — Snapshot (block ${snap.blockNumber})`);
-  append(`- Reserves: ${fmtWad(snap.reserve0)} / ${fmtWad(snap.reserve1)}`);
+  append(`- Reserves: ${r0} / ${r1}`);
   append(`- Oracle: ${fmtWad(snap.oraclePrice)}, Marginal: ${fmtWad(snap.marginalPrice)}`);
   append(`- Mismatch: ${fmtBps(snap.mismatch)} bps`);
   append(`- Concentration: X=${fmtWad(snap.concentrationX)}, Y=${fmtWad(snap.concentrationY)}`);

@@ -9,7 +9,8 @@ import * as executor from "./executor.js";
 import * as claude from "./claude.js";
 import * as journal from "./journal.js";
 import * as metrics from "./metrics.js";
-import { eulerSwapAbi } from "./abi.js";
+import { eulerSwapAbi, erc20Abi } from "./abi.js";
+import { fmtToken, fmtBps as fmtBpsUtil, type AssetDecimals } from "./types.js";
 
 async function main() {
   const config = loadConfig();
@@ -34,6 +35,13 @@ async function main() {
   });
   const asset0 = assets[0] as Address;
   const asset1 = assets[1] as Address;
+
+  // Read token decimals (one-time)
+  const [dec0, dec1] = await Promise.all([
+    publicClient.readContract({ address: asset0, abi: erc20Abi, functionName: "decimals" }),
+    publicClient.readContract({ address: asset1, abi: erc20Abi, functionName: "decimals" }),
+  ]);
+  const decimals: AssetDecimals = { dec0: Number(dec0), dec1: Number(dec1) };
 
   console.log("EulerSwap LP Agent starting...");
   console.log(`  Pool: ${config.poolAddress}`);
@@ -96,9 +104,9 @@ async function main() {
       // Periodic snapshot log (every 10th poll)
       const snapCount = metrics.getMetrics().snapshots.length;
       if (snapCount % 10 === 0) {
-        journal.snapshot(snapshot);
+        journal.snapshot(snapshot, decimals);
         console.log(
-          `Snapshot #${snapCount}: reserves=${fmt(snapshot.reserve0)}/${fmt(snapshot.reserve1)}, mismatch=${fmtBps(snapshot.mismatch)}bps`
+          `Snapshot #${snapCount}: reserves=${fmtToken(snapshot.reserve0, decimals.dec0)}/${fmtToken(snapshot.reserve1, decimals.dec1)}, mismatch=${fmtBpsUtil(snapshot.mismatch)}bps`
         );
       }
     } catch (err) {
@@ -131,7 +139,8 @@ async function main() {
         stats,
         recentActions,
         gasToday,
-        aggQuote
+        aggQuote,
+        decimals
       );
 
       metrics.recordReview(review);
@@ -191,14 +200,6 @@ async function main() {
     console.log("\nShutting down...");
     process.exit(0);
   });
-}
-
-function fmt(v: bigint): string {
-  return (Number(v) / 1e18).toFixed(4);
-}
-
-function fmtBps(v: bigint): string {
-  return (Number(v) / 1e14).toFixed(1);
 }
 
 main().catch((err) => {

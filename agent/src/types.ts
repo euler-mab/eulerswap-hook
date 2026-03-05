@@ -121,3 +121,29 @@ export interface AgentConfig {
 
 export const WAD = 10n ** 18n;
 export const BPS = 10n ** 14n; // 1 basis point in WAD
+
+// Token decimal info (read once at startup, passed to formatters)
+export interface AssetDecimals {
+  dec0: number;
+  dec1: number;
+}
+
+/** Format a raw token amount using its actual decimals */
+export function fmtToken(v: bigint, decimals: number): string {
+  return (Number(v) / 10 ** decimals).toFixed(Math.min(decimals, 6));
+}
+
+/** Format a WAD-scaled value (fees, concentration, mismatch) */
+export function fmtWad(v: bigint): string {
+  return (Number(v) / 1e18).toFixed(6);
+}
+
+/** Format basis points from a WAD-scaled value */
+export function fmtBps(v: bigint): string {
+  return (Number(v) / Number(BPS)).toFixed(1);
+}
+
+/** Format ETH from wei */
+export function fmtEth(v: bigint): string {
+  return (Number(v) / 1e18).toFixed(6);
+}

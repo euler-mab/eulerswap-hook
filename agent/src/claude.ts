@@ -7,9 +7,10 @@ import type {
   ExecutedAction,
   ClaudeReview,
   ClaudeRecommendation,
+  AssetDecimals,
 } from "./types.js";
 import type { AggregatorQuote } from "./oracle.js";
-import { WAD, BPS } from "./types.js";
+import { WAD, BPS, fmtToken } from "./types.js";
 
 let client: Anthropic | null = null;
 
@@ -27,11 +28,12 @@ export async function review(
   stats: HookStats,
   recentActions: ExecutedAction[],
   gasSpentToday: bigint,
-  aggQuote: AggregatorQuote | null = null
+  aggQuote: AggregatorQuote | null = null,
+  decimals?: AssetDecimals
 ): Promise<ClaudeReview> {
   const anthropic = getClient(config);
 
-  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote);
+  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals);
 
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
@@ -106,15 +108,18 @@ function buildContext(
   stats: HookStats,
   recentActions: ExecutedAction[],
   gasSpentToday: bigint,
-  aggQuote: AggregatorQuote | null
+  aggQuote: AggregatorQuote | null,
+  decimals?: AssetDecimals
 ): string {
+  const fmtR0 = (v: bigint) => decimals ? fmtToken(v, decimals.dec0) : (Number(v) / 1e18).toFixed(6);
+  const fmtR1 = (v: bigint) => decimals ? fmtToken(v, decimals.dec1) : (Number(v) / 1e18).toFixed(6);
   const fmtWad = (v: bigint) => (Number(v) / 1e18).toFixed(6);
   const fmtBps = (v: bigint) => (Number(v) / Number(BPS)).toFixed(1) + " bps";
   const fmtEth = (v: bigint) => (Number(v) / 1e18).toFixed(6) + " ETH";
 
   return `
-Reserves: ${fmtWad(snapshot.reserve0)} / ${fmtWad(snapshot.reserve1)}
-Equilibrium: ${fmtWad(snapshot.equilibriumReserve0)} / ${fmtWad(snapshot.equilibriumReserve1)}
+Reserves: ${fmtR0(snapshot.reserve0)} / ${fmtR1(snapshot.reserve1)}
+Equilibrium: ${fmtR0(snapshot.equilibriumReserve0)} / ${fmtR1(snapshot.equilibriumReserve1)}
 Oracle price: ${fmtWad(snapshot.oraclePrice)} (asset1 per asset0)
 Marginal price: ${fmtWad(snapshot.marginalPrice)}
 Mismatch: ${fmtBps(snapshot.mismatch)}
@@ -129,8 +134,8 @@ Hook fee params:
 
 Trade stats:
   Total trades: ${stats.tradeCount.toString()}
-  Volume: ${fmtWad(stats.cumulativeVolume0)} / ${fmtWad(stats.cumulativeVolume1)}
-  Last trade: ${stats.lastTradeAsset0In ? "asset0 in" : "asset1 in"}, size ${fmtWad(stats.lastTradeSize)}
+  Volume: ${fmtR0(stats.cumulativeVolume0)} / ${fmtR1(stats.cumulativeVolume1)}
+  Last trade: ${stats.lastTradeAsset0In ? "asset0 in" : "asset1 in"}, size ${stats.lastTradeAsset0In ? fmtR0(stats.lastTradeSize) : fmtR1(stats.lastTradeSize)}
 
 Gas spent today: ${fmtEth(gasSpentToday)}
 Recent actions: ${recentActions.length > 0 ? recentActions.map((a) => `${a.type}: ${a.reason} (${a.success ? "OK" : "FAILED"})`).join("; ") : "none"}
