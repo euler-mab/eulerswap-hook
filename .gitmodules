@@ -4,3 +4,21 @@
 [submodule "contracts/amm-challenge"]
 	path = contracts/amm-challenge
 	url = https://github.com/benedictbrady/amm-challenge
+[submodule "contracts/evk-periphery"]
+	path = contracts/evk-periphery
+	url = https://github.com/euler-xyz/evk-periphery.git
+[submodule "contracts/ethereum-vault-connector"]
+	path = contracts/ethereum-vault-connector
+	url = https://github.com/euler-xyz/ethereum-vault-connector.git
+[submodule "contracts/euler-vault-kit"]
+	path = contracts/euler-vault-kit
+	url = https://github.com/euler-xyz/euler-vault-kit.git
+[submodule "contracts/euler-price-oracle"]
+	path = contracts/euler-price-oracle
+	url = https://github.com/euler-xyz/euler-price-oracle.git
+[submodule "contracts/euler-interfaces"]
+	path = contracts/euler-interfaces
+	url = https://github.com/euler-xyz/euler-interfaces.git
+[submodule "contracts/euler-orderflow-router"]
+	path = contracts/euler-orderflow-router
+	url = https://github.com/euler-xyz/euler-orderflow-router.git
