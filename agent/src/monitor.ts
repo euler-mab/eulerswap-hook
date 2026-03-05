@@ -55,8 +55,19 @@ async function getVaultMeta(client: PublicClient, config: AgentConfig) {
   return cachedVaultMeta;
 }
 
-/** Read oracle prices for both assets and the combined ratio.
- *  price0/price1 are raw getQuote values; oraclePrice matches LPAgentHook._getOraclePrice(). */
+/**
+ * Read oracle prices for both assets and the combined ratio.
+ *
+ * Oracle chain: pool.getStaticParams() → supplyVault0 → vault.oracle() → IPriceOracle.
+ * The oracle's getQuote(WAD, asset, unitOfAccount) returns the value of 1e18 raw units
+ * of the asset in the unit of account (e.g. USD). Results:
+ *   price0 = getQuote(WAD, asset0, uoa)  — e.g. 1e30 for USDC ($1e12 worth of 1e18 raw USDC)
+ *   price1 = getQuote(WAD, asset1, uoa)  — e.g. 2500e18 for WETH ($2500 per 1 WETH)
+ *   oraclePrice = (price0 * WAD) / price1 — matches LPAgentHook._getOraclePrice()
+ *
+ * The individual prices are needed for reconfiguring the pool's priceX/priceY curve
+ * parameters: priceX = price0 / WAD, priceY = price1 / WAD.
+ */
 async function readOraclePrices(
   client: PublicClient,
   config: AgentConfig

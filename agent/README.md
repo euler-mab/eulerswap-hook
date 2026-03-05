@@ -108,6 +108,30 @@ npm install
 npm start
 ```
 
+## Oracle Price Chain
+
+The agent reads oracle prices through the Euler vault's oracle adapter:
+
+```
+pool.getStaticParams().supplyVault0
+  → vault.oracle()         → IPriceOracle address
+  → vault.unitOfAccount()  → e.g. USD
+  → vault.asset()          → e.g. USDC
+
+getQuote(WAD, asset0, uoa) → price0  (value of 1e18 raw units of asset0)
+getQuote(WAD, asset1, uoa) → price1  (value of 1e18 raw units of asset1)
+
+oraclePrice = (price0 * WAD) / price1   ← matches hook's _getOraclePrice()
+priceX = price0 / WAD                   ← AMM curve param (value per 1 raw unit)
+priceY = price1 / WAD                   ← AMM curve param (value per 1 raw unit)
+```
+
+For USDC/WETH at $2500:
+- `price0 = 1e30` (1e18 raw USDC = 1e12 actual USDC = $1e12)
+- `price1 = 2500e18` (1e18 raw WETH = 1 WETH = $2500)
+- `oraclePrice = 4e26` (raw WETH per raw USDC, WAD-scaled)
+- `priceX = 1e12`, `priceY = 2500`
+
 ## Fork Testing
 
 Automated script deploys a USDC/WETH pool with LPAgentHook on an Anvil mainnet fork:
@@ -125,13 +149,19 @@ This will:
 5. Deploy and install `LPAgentHook`
 6. Write `agent/.env.fork` with all addresses
 
-Then run the agent against the fork:
+## Simulation Harness
 
-```bash
-cp .env.fork .env
-# Add your ANTHROPIC_API_KEY to .env
-npm start
+The simulation harness (`sim-harness.sh`) adds oracle price movements and swap activity to the fork, so the agent can exercise its full strategy loop.
+
 ```
+Terminal 1: RPC_URL=... ./fork-test.sh         # Deploy pool + hook, Anvil stays alive
+Terminal 2: ./sim-harness.sh                   # Replace oracle, start swaps
+Terminal 3: cp .env.fork .env && npm start     # Start agent
+```
+
+**Order matters**: start sim-harness BEFORE the agent. The harness replaces the real Chainlink oracle (frozen at fork block) with a `SimPriceOracle` whose prices match the pool's initial reserves. If the agent polls first, it sees the stale Chainlink price, detects a huge mismatch, and recenters to garbage.
+
+Modes: `--default` (sinusoidal ±5%), `--drift` (steady +0.5%/step), `--volatile` (random ±5%).
 
 The fork test uses short intervals (10s poll, 5min Claude review) for faster feedback.
 

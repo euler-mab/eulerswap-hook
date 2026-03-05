@@ -32,8 +32,22 @@ export function evaluate(
   return results;
 }
 
-/// Rule 1: Price recentering
-/// If oracle price has drifted significantly from pool equilibrium, recenter.
+/**
+ * Rule 1: Price recentering
+ *
+ * If oracle price has drifted >5% from pool equilibrium, reconfigure the pool
+ * to realign. A recenter does three things:
+ *   1. Computes totalValue in asset1-equivalent raw units (preserving pool value)
+ *   2. Splits 50/50 to get new equilibriumReserve0 and equilibriumReserve1
+ *   3. Updates priceX/priceY (AMM curve params) to match current oracle
+ *
+ * priceX/priceY MUST be updated alongside equilibrium. They define the AMM
+ * curve's exchange rate (amountOut ≈ amountIn * priceX / priceY). If equilibrium
+ * shifts but prices stay stale, swaps produce near-zero in one direction and
+ * drain the pool in the other.
+ *
+ * Safety: rejects recenters that would change reserves by >3x (stale oracle guard).
+ */
 function checkPriceRecenter(snapshot: PoolSnapshot): RuleResult {
   if (snapshot.mismatch < RECENTER_THRESHOLD) {
     return { name: "priceRecenter", triggered: false, reason: "mismatch within threshold" };

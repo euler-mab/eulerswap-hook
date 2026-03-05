@@ -5,21 +5,45 @@ import type { Address, Hash } from "viem";
 export interface PoolSnapshot {
   timestamp: number;
   blockNumber: bigint;
+
+  // Current reserves (raw token units — asset0 may have different decimals from asset1)
   reserve0: bigint;
   reserve1: bigint;
+
+  // Equilibrium reserves — the "center" of the AMM curve (raw token units)
   equilibriumReserve0: bigint;
   equilibriumReserve1: bigint;
+
+  // AMM curve price parameters (value per 1 raw unit, fixnum basis 1e18).
+  // Used by CurveLib to compute swap outputs: amountOut ≈ amountIn * priceX / priceY.
+  // For USDC (6 dec): priceX = 1e-6 * 1e18 = 1e12.
+  // For WETH (18 dec) at $2500: priceY = 2500e-18 * 1e18 = 2500.
   priceX: bigint;
   priceY: bigint;
+
+  // Concentration (WAD): 0 = constant-product, 1e18 = constant-sum
   concentrationX: bigint;
   concentrationY: bigint;
+
+  // Current dynamic fees from the hook (WAD-scaled)
   fee0: bigint;
   fee1: bigint;
-  oraclePrice: bigint; // asset1 per asset0 (WAD)
-  oraclePrice0: bigint; // getQuote(WAD, asset0, unitOfAccount) — raw oracle value
-  oraclePrice1: bigint; // getQuote(WAD, asset1, unitOfAccount) — raw oracle value
-  marginalPrice: bigint; // reserve1/reserve0 (WAD)
-  mismatch: bigint; // |oracle - marginal| / oracle (WAD)
+
+  // Oracle price ratio: (price0 * WAD) / price1, matching hook's _getOraclePrice().
+  // Units: raw asset1 per raw asset0, WAD-scaled.
+  oraclePrice: bigint;
+
+  // Individual oracle quotes: getQuote(WAD, asset, unitOfAccount).
+  // price0 = value of 1e18 raw units of asset0 in unitOfAccount.
+  // Needed to compute priceX/priceY for reconfigure: priceX = oraclePrice0 / WAD.
+  oraclePrice0: bigint;
+  oraclePrice1: bigint;
+
+  // Marginal price at current reserves: (reserve1 * WAD) / reserve0
+  marginalPrice: bigint;
+
+  // Mismatch: |oraclePrice - marginalPrice| / oraclePrice (WAD-scaled, 0 = perfectly aligned)
+  mismatch: bigint;
 }
 
 export interface HookStats {
