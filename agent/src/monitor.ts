@@ -195,37 +195,49 @@ export async function getVaultDebtInfo(
   const hasBorrow0 = meta.borrowVault0 !== ZERO_ADDRESS;
   const hasBorrow1 = meta.borrowVault1 !== ZERO_ADDRESS;
 
-  // Read debt and utilization for each borrow vault (skip if no borrow vault)
-  const [debt0, debt1, borrowRate0, borrowRate1, totalBorrows0, totalAssets0, totalBorrows1, totalAssets1, shares0, shares1] =
-    await Promise.all([
-      hasBorrow0
-        ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "debtOf", args: [meta.eulerAccount] })
-        : Promise.resolve(0n),
-      hasBorrow1
-        ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "debtOf", args: [meta.eulerAccount] })
-        : Promise.resolve(0n),
-      hasBorrow0
-        ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "interestRate" })
-        : Promise.resolve(0n),
-      hasBorrow1
-        ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "interestRate" })
-        : Promise.resolve(0n),
-      hasBorrow0
-        ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "totalBorrows" })
-        : Promise.resolve(0n),
-      hasBorrow0
-        ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "totalAssets" })
-        : Promise.resolve(1n),
-      hasBorrow1
-        ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "totalBorrows" })
-        : Promise.resolve(0n),
-      hasBorrow1
-        ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "totalAssets" })
-        : Promise.resolve(1n),
-      // Pool's supply vault deposits (shares → assets)
-      client.readContract({ address: meta.supplyVault0, abi: evaultAbi, functionName: "balanceOf", args: [meta.eulerAccount] }),
-      client.readContract({ address: meta.supplyVault1, abi: evaultAbi, functionName: "balanceOf", args: [meta.eulerAccount] }),
-    ]);
+  // Read debt/utilization for borrow vaults + rates/utilization for supply vaults
+  const [
+    debt0, debt1, borrowRate0, borrowRate1,
+    totalBorrows0, totalAssets0, totalBorrows1, totalAssets1,
+    shares0, shares1,
+    supplyRate0, supplyRate1,
+    supplyTotalBorrows0, supplyTotalAssets0, supplyTotalBorrows1, supplyTotalAssets1,
+  ] = await Promise.all([
+    hasBorrow0
+      ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "debtOf", args: [meta.eulerAccount] })
+      : Promise.resolve(0n),
+    hasBorrow1
+      ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "debtOf", args: [meta.eulerAccount] })
+      : Promise.resolve(0n),
+    hasBorrow0
+      ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "interestRate" })
+      : Promise.resolve(0n),
+    hasBorrow1
+      ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "interestRate" })
+      : Promise.resolve(0n),
+    hasBorrow0
+      ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "totalBorrows" })
+      : Promise.resolve(0n),
+    hasBorrow0
+      ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "totalAssets" })
+      : Promise.resolve(1n),
+    hasBorrow1
+      ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "totalBorrows" })
+      : Promise.resolve(0n),
+    hasBorrow1
+      ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "totalAssets" })
+      : Promise.resolve(1n),
+    // Pool's supply vault deposits (shares → assets)
+    client.readContract({ address: meta.supplyVault0, abi: evaultAbi, functionName: "balanceOf", args: [meta.eulerAccount] }),
+    client.readContract({ address: meta.supplyVault1, abi: evaultAbi, functionName: "balanceOf", args: [meta.eulerAccount] }),
+    // Supply vault rates and utilization (for computing deposit yield)
+    client.readContract({ address: meta.supplyVault0, abi: evaultAbi, functionName: "interestRate" }),
+    client.readContract({ address: meta.supplyVault1, abi: evaultAbi, functionName: "interestRate" }),
+    client.readContract({ address: meta.supplyVault0, abi: evaultAbi, functionName: "totalBorrows" }),
+    client.readContract({ address: meta.supplyVault0, abi: evaultAbi, functionName: "totalAssets" }),
+    client.readContract({ address: meta.supplyVault1, abi: evaultAbi, functionName: "totalBorrows" }),
+    client.readContract({ address: meta.supplyVault1, abi: evaultAbi, functionName: "totalAssets" }),
+  ]);
 
   const [deposit0, deposit1] = await Promise.all([
     client.readContract({ address: meta.supplyVault0, abi: evaultAbi, functionName: "convertToAssets", args: [shares0 as bigint] }),
@@ -239,9 +251,21 @@ export async function getVaultDebtInfo(
     ? (totalBorrows1 as bigint) * WAD / (totalAssets1 as bigint)
     : 0n;
 
+  // Supply vault utilization (deposit yield ≈ borrowRate × utilization)
+  const supplyUtil0 = (supplyTotalAssets0 as bigint) > 0n
+    ? (supplyTotalBorrows0 as bigint) * WAD / (supplyTotalAssets0 as bigint)
+    : 0n;
+  const supplyUtil1 = (supplyTotalAssets1 as bigint) > 0n
+    ? (supplyTotalBorrows1 as bigint) * WAD / (supplyTotalAssets1 as bigint)
+    : 0n;
+
   // Daily interest cost: debt × rate × 86400 / 1e27
   const dailyCost0 = (debt0 as bigint) * (borrowRate0 as bigint) * SECONDS_PER_DAY / RAY;
   const dailyCost1 = (debt1 as bigint) * (borrowRate1 as bigint) * SECONDS_PER_DAY / RAY;
+
+  // Daily supply yield: deposit × supplyRate × utilization × 86400 / (1e27 × 1e18)
+  const dailyYield0 = (deposit0 as bigint) * (supplyRate0 as bigint) * supplyUtil0 * SECONDS_PER_DAY / (RAY * WAD);
+  const dailyYield1 = (deposit1 as bigint) * (supplyRate1 as bigint) * supplyUtil1 * SECONDS_PER_DAY / (RAY * WAD);
 
   return {
     debt0: debt0 as bigint,
@@ -256,6 +280,12 @@ export async function getVaultDebtInfo(
     dailyCost1,
     hasBorrowVault0: hasBorrow0,
     hasBorrowVault1: hasBorrow1,
+    supplyRate0: supplyRate0 as bigint,
+    supplyRate1: supplyRate1 as bigint,
+    supplyUtilization0: supplyUtil0,
+    supplyUtilization1: supplyUtil1,
+    dailyYield0,
+    dailyYield1,
   };
 }
 

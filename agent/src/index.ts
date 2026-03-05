@@ -57,18 +57,19 @@ async function main() {
   const pollLoop = async () => {
     try {
       // Read state (including vault debt for interest-rate awareness)
-      const [snapshot, stats, feeParams, vaultDebt] = await Promise.all([
+      const [snapshot, stats, feeParams, vaultDebt, aggQuote] = await Promise.all([
         monitor.getPoolSnapshot(publicClient, config),
         monitor.getHookStats(publicClient, config),
         monitor.getHookFeeParams(publicClient, config),
         monitor.getVaultDebtInfo(publicClient, config).catch(() => undefined),
+        oracle.getAggregatorQuote(publicClient, asset0, asset1).catch(() => null),
       ]);
 
       metrics.recordSnapshot(snapshot);
 
-      // Evaluate rules
+      // Evaluate rules (CowSwap mid-price used for recentering decisions)
       const gasToday = metrics.getGasSpentToday();
-      const ruleResults = rules.evaluate(snapshot, feeParams, config, gasToday, vaultDebt);
+      const ruleResults = rules.evaluate(snapshot, feeParams, config, gasToday, vaultDebt, aggQuote, decimals);
       journal.ruleResults(ruleResults);
 
       // Check if gas budget or rate limit blocks execution

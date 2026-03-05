@@ -75,3 +75,55 @@ export function getGasSpentToday(): bigint {
 export function getRecentActions(n: number = 10): ExecutedAction[] {
   return metrics.actions.slice(-n);
 }
+
+/** Compute a trend summary from recent snapshots for Claude context */
+export function getTrendSummary(): string | null {
+  const snaps = metrics.snapshots;
+  if (snaps.length < 3) return null;
+
+  // Use last 20 snapshots (or all if fewer)
+  const recent = snaps.slice(-20);
+  const first = recent[0]!;
+  const last = recent[recent.length - 1]!;
+  const periodMin = Math.round((last.timestamp - first.timestamp) / 60);
+  if (periodMin <= 0) return null;
+
+  // Average mismatch
+  const avgMismatch = recent.reduce((sum, s) => sum + Number(s.mismatch), 0) / recent.length;
+  const avgMismatchBps = avgMismatch / 1e14;
+
+  // Mismatch trend: compare first half avg vs second half avg
+  const mid = Math.floor(recent.length / 2);
+  const firstHalfMismatch = recent.slice(0, mid).reduce((s, r) => s + Number(r.mismatch), 0) / mid;
+  const secondHalfMismatch = recent.slice(mid).reduce((s, r) => s + Number(r.mismatch), 0) / (recent.length - mid);
+  const mismatchDelta = secondHalfMismatch - firstHalfMismatch;
+  const mismatchTrend = Math.abs(mismatchDelta) < firstHalfMismatch * 0.1
+    ? "stable"
+    : mismatchDelta > 0 ? "rising" : "falling";
+
+  // Reserve drift: % change from first to last
+  const drift0 = first.reserve0 > 0n
+    ? Number((last.reserve0 - first.reserve0) * 10000n / first.reserve0) / 100
+    : 0;
+  const drift1 = first.reserve1 > 0n
+    ? Number((last.reserve1 - first.reserve1) * 10000n / first.reserve1) / 100
+    : 0;
+
+  // Imbalance: current reserves vs equilibrium
+  const imbal0 = last.equilibriumReserve0 > 0n
+    ? Number((last.reserve0 - last.equilibriumReserve0) * 10000n / last.equilibriumReserve0) / 100
+    : 0;
+  const imbal1 = last.equilibriumReserve1 > 0n
+    ? Number((last.reserve1 - last.equilibriumReserve1) * 10000n / last.equilibriumReserve1) / 100
+    : 0;
+
+  // Action count in this period
+  const periodStart = first.timestamp;
+  const actionsInPeriod = metrics.actions.filter(a => a.timestamp >= periodStart).length;
+
+  return `Over last ${periodMin} min (${recent.length} snapshots):
+  Avg mismatch: ${avgMismatchBps.toFixed(1)} bps (${mismatchTrend})
+  Reserve drift: asset0 ${drift0 >= 0 ? "+" : ""}${drift0.toFixed(1)}%, asset1 ${drift1 >= 0 ? "+" : ""}${drift1.toFixed(1)}%
+  Current imbalance: asset0 ${imbal0 >= 0 ? "+" : ""}${imbal0.toFixed(1)}% vs eq, asset1 ${imbal1 >= 0 ? "+" : ""}${imbal1.toFixed(1)}% vs eq
+  Agent actions in period: ${actionsInPeriod}`;
+}

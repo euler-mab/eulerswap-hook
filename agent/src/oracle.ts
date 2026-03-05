@@ -11,6 +11,9 @@ export interface AggregatorQuote {
 // CowSwap Orderbook API — aggregates across DEXes for best execution price
 const COWSWAP_API = "https://api.cow.fi/mainnet/api/v1";
 const QUOTE_TIMEOUT_MS = 10_000;
+// Quote size in human units. Must be large enough for CowSwap fixed fees to be
+// negligible (at $1 the fee is ~61%, at $10K it's <0.01%).
+const QUOTE_UNITS = 10_000;
 
 const erc20Abi = [
   {
@@ -76,17 +79,17 @@ export async function getAggregatorQuote(
     getDecimals(client, asset1),
   ]);
 
-  const oneToken0 = (10n ** BigInt(dec0)).toString();
+  const quoteRaw = (BigInt(QUOTE_UNITS) * 10n ** BigInt(dec0)).toString();
   const validTo = Math.floor(Date.now() / 1000) + 600;
   const from = "0x0000000000000000000000000000000000000001";
 
-  // Bid: sell 1 asset0 → how much asset1 do we receive?
-  // Ask: buy 1 asset0 → how much asset1 do we spend?
+  // Bid: sell QUOTE_UNITS asset0 → how much asset1 do we receive?
+  // Ask: buy QUOTE_UNITS asset0 → how much asset1 do we spend?
   const [bidQuote, askQuote] = await Promise.all([
     cowQuote({
       sellToken: asset0,
       buyToken: asset1,
-      sellAmountBeforeFee: oneToken0,
+      sellAmountBeforeFee: quoteRaw,
       kind: "sell",
       from,
       validTo,
@@ -95,7 +98,7 @@ export async function getAggregatorQuote(
     cowQuote({
       sellToken: asset1,
       buyToken: asset0,
-      buyAmountAfterFee: oneToken0,
+      buyAmountAfterFee: quoteRaw,
       kind: "buy",
       from,
       validTo,
@@ -110,11 +113,12 @@ export async function getAggregatorQuote(
 
   if (bidBuyAmount <= 0 || askSellAmount <= 0) return null;
 
-  // bidPrice: sold 1 asset0, got bidBuyAmount smallest-units of asset1
-  const bidPrice = bidBuyAmount / 10 ** dec1;
+  // bidPrice: sold QUOTE_UNITS asset0, got bidBuyAmount smallest-units of asset1
+  // per-unit price = bidBuyAmount / (10^dec1 * QUOTE_UNITS)
+  const bidPrice = bidBuyAmount / (10 ** dec1 * QUOTE_UNITS);
 
-  // askPrice: to buy 1 asset0, must pay askSellAmount smallest-units of asset1
-  const askPrice = askSellAmount / 10 ** dec1;
+  // askPrice: to buy QUOTE_UNITS asset0, must pay askSellAmount smallest-units of asset1
+  const askPrice = askSellAmount / (10 ** dec1 * QUOTE_UNITS);
 
   const midPrice = (bidPrice + askPrice) / 2;
   const spread = midPrice > 0 ? ((askPrice - bidPrice) / midPrice) * 10000 : 0;

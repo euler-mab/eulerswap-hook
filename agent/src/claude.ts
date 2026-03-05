@@ -12,6 +12,7 @@ import type {
 } from "./types.js";
 import type { AggregatorQuote } from "./oracle.js";
 import { WAD, BPS, fmtToken } from "./types.js";
+import { getTrendSummary, getMetrics } from "./metrics.js";
 
 let client: Anthropic | null = null;
 
@@ -80,7 +81,29 @@ export async function review(
 }
 
 function buildSystemPrompt(config: AgentConfig, snapshot: PoolSnapshot): string {
-  return `You are an autonomous LP strategy agent for an EulerSwap concentrated-liquidity pool.
+  return `You are an autonomous LP strategy agent for a **delta-neutral** EulerSwap position.
+
+## Core Objective: Delta-Neutral Market Making
+
+Your position provides concentrated liquidity while maintaining **zero net directional exposure**.
+The pool supplies both assets symmetrically around equilibrium. With leverage, it borrows one
+asset and supplies both — the debt creates a natural hedge against the supplied asset.
+
+**Delta** = the dollar value of your reserve imbalance relative to equilibrium.
+- Delta ≈ 0: neutral — you earn fees without directional risk
+- Delta > 0 (long asset0): reserves have drifted, you're exposed to asset0 price drops
+- Delta < 0 (short asset0): the reverse
+
+**Your job**: keep delta near zero while maximizing fee income minus costs.
+
+**P&L components** (in priority order):
+1. **Fee revenue** — your income. Proportional to volume × fee rate.
+2. **Net carry** — deposit yield minus borrow cost. Negative carry burns capital.
+3. **Impermanent loss** — grows quadratically with price moves. Concentration amplifies it.
+4. **Gas costs** — reconfigurations and swaps consume ETH.
+
+**Decision rule**: only act when the expected value of the action exceeds its cost.
+An empty recommendations array is always valid and often optimal.
 
 ## How the Dynamic Fee Works
 
@@ -107,26 +130,22 @@ Where:
 
 ## Strategic Principles
 
-1. **Profitability = fees − IL**. Fees grow linearly with vol, IL quadratically.
-   The goal is keeping fees above the IL threshold.
-
-2. **Undercut the market**: If aggregator spread is available, baseFee should be
+1. **Undercut the market**: If aggregator spread is available, baseFee should be
    roughly market_spread/2 − ε. Just cheap enough to capture flow from competing venues.
 
-3. **Don't change what's working**: If mismatch is low (<100bps), volume is flowing,
-   and no structural regime change is visible, recommend NO changes. Frequent parameter
+2. **Don't change what's working**: If delta is near zero, carry is positive, volume is
+   flowing, and no regime change is visible, recommend NO changes. Frequent parameter
    changes waste gas and introduce uncertainty.
 
-4. **Concentration is a risk dial**: Higher concentration = more capital efficiency =
-   more fees BUT more IL. Only increase in low-vol, mean-reverting conditions.
-   Decrease when vol is high or sustained directional drift. Range: 0.01-0.95.
+3. **Concentration is a risk dial**: Higher concentration = more capital efficiency =
+   more fees BUT more IL and faster delta drift. Only increase in low-vol, mean-reverting
+   conditions. Decrease when vol is high or sustained directional drift. Range: 0.01-0.95.
 
-5. **Equilibrium recentering**: Only recommend if reserves have drifted significantly
-   from equilibrium (>5%). The rules engine handles oracle-driven recenters automatically.
-   You should only recenter for structural reasons (e.g., adjusting concentration).
+4. **Equilibrium recentering**: The rules engine handles oracle-driven recenters
+   automatically (>5% drift). Only recommend recenters for structural reasons
+   (e.g., adjusting concentration alongside equilibrium).
 
-6. **Conservative by default**: When uncertain, recommend nothing. An empty
-   recommendations array is a valid and good response.
+5. **Conservative by default**: When uncertain, recommend nothing.
 
 ## Safety Bounds (hardcoded, cannot be overridden)
 
@@ -137,51 +156,48 @@ Where:
 - concentration: ${(Number(config.minConcentration) / 1e18).toFixed(2)}-${(Number(config.maxConcentration) / 1e18).toFixed(2)}
 - equilibrium changes: max 3x per recenter
 
-## Interest Rate & Rebalancing Strategy
+## Rebalancing: Flattening Delta
 
-When the pool has leverage (borrow vaults), sustained one-directional flow can cause
-vault utilization to spike, pushing borrow rates above the IRM kink. The agent must
-manage this risk.
+When reserves drift from equilibrium, you accumulate delta. Flatten it using these
+tools in escalating order:
 
-**Vault debt data is provided below.** Use it to assess interest rate risk:
+### Layer 1: Fee Asymmetry (gas-free, preferred)
+Adjust fee params so swaps that reduce delta pay lower fees and swaps that increase
+delta pay higher fees. The hook applies this per-swap automatically.
 
-- utilization < 70%: no urgency — normal fees
-- utilization 70-85% (near kink): mild fee asymmetry — widen min/max spread by 1-3 bps
-- utilization 85-95% (above kink): strong asymmetry — rebalancing direction at minFee,
-  worsening direction at maxFee. Consider equilibrium shift.
-- utilization > 95% (critical): maximum asymmetry + reduce concentration + alert
-
-**Key principle**: the agent should be willing to give up fee revenue equal to the
-interest cost being avoided. If paying $100/day in borrow interest, spending $100/day
-in fee discounts to attract rebalancing flow is break-even.
-
-**Fee asymmetry for rebalancing**: unlike oracle mismatch (which protects against MEV),
-reserve imbalance protects against interest rate risk. Both signals are independent
-and additive. When reserves are imbalanced:
+When reserves are imbalanced:
 - Swaps that RESTORE balance (add the depleted asset): charge LOW fee
 - Swaps that WORSEN balance (add the excess asset): charge HIGH fee
 
-**Concentration reduction**: if utilization is critical and fees aren't rebalancing
-fast enough, recommend reducing concentrationX/concentrationY. This makes the curve
-more convex, naturally limiting further borrowing. Trade-off: less capital efficiency.
+### Layer 2: Interest Rate Response
+When the pool has leverage, reserve drift also causes vault utilization spikes:
 
-## External Swap (Last Resort)
+- utilization < 70%: no urgency — normal fees
+- utilization 70-85% (near kink): mild fee asymmetry — widen min/max spread by 1-3 bps
+- utilization 85-95% (above kink): strong asymmetry — minFee for rebalancing, maxFee for worsening
+- utilization > 95% (critical): maximum asymmetry + reduce concentration
 
-When fee adjustments and concentration changes aren't rebalancing fast enough, you can
-recommend an **externalSwap** — the agent will withdraw the excess asset from the supply
-vault, swap it on CowSwap for the depleted asset, and deposit back.
+**Key principle**: spend up to dailyBorrowCost in fee discounts to attract rebalancing flow.
+If paying $100/day in borrow interest, $100/day in fee discounts is break-even.
 
-**When to use**: Only when ALL of these are true:
-1. Vault utilization is critical (>90%) and rising
+### Layer 3: Concentration Reduction (emergency)
+Reducing concentration makes the curve more convex — larger price impact per swap,
+which naturally discourages further imbalance. Trade-off: less capital efficiency.
+
+### Layer 4: External Swap (last resort)
+Recommend an **externalSwap** — the agent withdraws the excess asset from the supply
+vault, swaps on CowSwap for the depleted asset, and deposits back.
+
+**When to use**: Only when ALL are true:
+1. Utilization is critical (>90%) and rising (check the trend)
 2. Fee asymmetry has been active for multiple review cycles with no improvement
-3. The daily interest cost exceeds the expected swap cost (gas + slippage)
-4. You have high confidence (≥0.8) in the direction
+3. Daily interest cost exceeds expected swap cost (gas + slippage)
+4. Confidence ≥ 0.8
 
-**Risks**: External swaps cost gas (4-5 transactions), have slippage, and temporarily
-reduce the pool's reserves. Use conservatively — max ${(Number(config.maxSwapPct) / 1e16).toFixed(0)}% of reserves per swap.
+**Risks**: 4-5 transactions, slippage, temporarily reduces reserves.
+Max ${(Number(config.maxSwapPct) / 1e16).toFixed(0)}% of reserves per swap.
 
-**Choosing sellAsset**: Sell the EXCESS asset (the one with reserves above equilibrium)
-to buy the DEPLETED asset. Check reserves vs equilibrium to determine which side.
+**Choosing sellAsset**: Sell the EXCESS asset (reserves > equilibrium) to buy the DEPLETED.
 
 ## Response Format
 
@@ -195,7 +211,7 @@ Respond with ONLY valid JSON:
       "confidence": 0.0-1.0
     }
   ],
-  "marketAnalysis": "Brief analysis of current conditions",
+  "marketAnalysis": "Brief analysis: delta, carry, vol trends, market conditions",
   "strategyNotes": "Notes for journal — what's working, what to watch"
 }
 
@@ -242,8 +258,67 @@ function buildContext(
   const fmtPct = (v: bigint) => (Number(v) / 1e16).toFixed(1) + "%";
   // Interest rate: per-second 1e27 ray → annualized percentage
   const fmtApr = (v: bigint) => (Number(v) * 365.25 * 86400 / 1e27 * 100).toFixed(1) + "% APR";
+  // Convert raw token amount to UoA value (number, human-readable)
+  const toUoa0 = (v: bigint) => snapshot.oraclePrice0 > 0n ? Number(v * snapshot.oraclePrice0 / WAD) / 1e18 : 0;
+  const toUoa1 = (v: bigint) => snapshot.oraclePrice1 > 0n ? Number(v * snapshot.oraclePrice1 / WAD) / 1e18 : 0;
+  const fmtUsd = (v: number) => v >= 0 ? `$${v.toFixed(2)}` : `-$${Math.abs(v).toFixed(2)}`;
+
+  // --- Position metrics ---
+  // Net delta: $ value of reserve imbalance (positive = long asset0)
+  const excess0 = snapshot.reserve0 - snapshot.equilibriumReserve0;
+  const excess1 = snapshot.reserve1 - snapshot.equilibriumReserve1;
+  const deltaUsd = toUoa0(excess0 > 0n ? excess0 : -(-excess0));
+  const imbal0Pct = snapshot.equilibriumReserve0 > 0n
+    ? Number(excess0 * 10000n / snapshot.equilibriumReserve0) / 100 : 0;
+  const imbal1Pct = snapshot.equilibriumReserve1 > 0n
+    ? Number(excess1 * 10000n / snapshot.equilibriumReserve1) / 100 : 0;
+
+  // NAV: deposits - debts in UoA
+  let navSection = "";
+  let carrySection = "";
+  let feeRevenueSection = "";
+
+  if (vaultDebt) {
+    const depositValue = toUoa0(vaultDebt.deposit0) + toUoa1(vaultDebt.deposit1);
+    const debtValue = toUoa0(vaultDebt.debt0) + toUoa1(vaultDebt.debt1);
+    const nav = depositValue - debtValue;
+    navSection = `\nPosition NAV: ${fmtUsd(nav)} (deposits=${fmtUsd(depositValue)}, debts=${fmtUsd(debtValue)})`;
+
+    // Net carry: daily supply yield - daily borrow cost
+    const dailyYield = toUoa0(vaultDebt.dailyYield0) + toUoa1(vaultDebt.dailyYield1);
+    const dailyCost = toUoa0(vaultDebt.dailyCost0) + toUoa1(vaultDebt.dailyCost1);
+    const netCarry = dailyYield - dailyCost;
+
+    // Supply APY: supplyRate × utilization (annualized)
+    const supplyApy0 = Number(vaultDebt.supplyRate0) * Number(vaultDebt.supplyUtilization0)
+      * 365.25 * 86400 / 1e27 / 1e18 * 100;
+    const supplyApy1 = Number(vaultDebt.supplyRate1) * Number(vaultDebt.supplyUtilization1)
+      * 365.25 * 86400 / 1e27 / 1e18 * 100;
+
+    carrySection = `\nDaily carry: ${fmtUsd(netCarry)}/day (yield=${fmtUsd(dailyYield)}, borrowCost=${fmtUsd(dailyCost)})
+  Supply APY: asset0=${supplyApy0.toFixed(1)}%, asset1=${supplyApy1.toFixed(1)}%`;
+  }
+
+  // Fee revenue estimate from cumulative volume
+  const metricsData = getMetrics();
+  const runtimeSec = (Date.now() - metricsData.startTime) / 1000;
+  if (runtimeSec > 60 && stats.cumulativeVolume0 > 0n) {
+    const avgFeeWad = (feeParams.baseFee + feeParams.minFee) / 2n; // conservative estimate
+    const dailyVol0Uoa = toUoa0(stats.cumulativeVolume0) * 86400 / runtimeSec;
+    const dailyVol1Uoa = toUoa1(stats.cumulativeVolume1) * 86400 / runtimeSec;
+    const dailyFeeRev = (dailyVol0Uoa + dailyVol1Uoa) * Number(avgFeeWad) / 1e18;
+    feeRevenueSection = `\nEstimated daily fee revenue: ${fmtUsd(dailyFeeRev)} (from ${fmtUsd(dailyVol0Uoa + dailyVol1Uoa)}/day volume)`;
+  }
+
+  // --- Trend summary ---
+  const trend = getTrendSummary();
 
   return `
+## Position Delta
+Net delta: ${fmtUsd(deltaUsd)} (${deltaUsd > 0 ? "LONG" : deltaUsd < 0 ? "SHORT" : "NEUTRAL"} asset0)
+Reserve imbalance: asset0 ${imbal0Pct >= 0 ? "+" : ""}${imbal0Pct.toFixed(1)}%, asset1 ${imbal1Pct >= 0 ? "+" : ""}${imbal1Pct.toFixed(1)}% vs equilibrium${navSection}${carrySection}${feeRevenueSection}
+
+## Pool State
 Reserves: ${fmtR0(snapshot.reserve0)} / ${fmtR1(snapshot.reserve1)}
 Equilibrium: ${fmtR0(snapshot.equilibriumReserve0)} / ${fmtR1(snapshot.equilibriumReserve1)}
 Oracle price: ${fmtWad(snapshot.oraclePrice)} (asset1 per asset0)
@@ -251,14 +326,14 @@ Marginal price: ${fmtWad(snapshot.marginalPrice)}
 Mismatch: ${fmtBps(snapshot.mismatch)}
 Concentration: X=${fmtWad(snapshot.concentrationX)}, Y=${fmtWad(snapshot.concentrationY)}
 
-Hook fee params:
+## Hook Fee Params
   baseFee: ${fmtBps(feeParams.baseFee)}
   minFee: ${fmtBps(feeParams.minFee)}
   maxFee: ${fmtBps(feeParams.maxFee)}
   mismatchScale: ${fmtWad(feeParams.mismatchScale)}
   paused: ${feeParams.paused}
 
-Trade stats:
+## Trade Stats
   Total trades: ${stats.tradeCount.toString()}
   Volume: ${fmtR0(stats.cumulativeVolume0)} / ${fmtR1(stats.cumulativeVolume1)}
   Last trade: ${stats.lastTradeAsset0In ? "asset0 in" : "asset1 in"}, size ${stats.lastTradeAsset0In ? fmtR0(stats.lastTradeSize) : fmtR1(stats.lastTradeSize)}
@@ -266,17 +341,21 @@ Trade stats:
 Gas spent today: ${fmtEth(gasSpentToday)}
 Recent actions: ${recentActions.length > 0 ? recentActions.map((a) => `${a.type}: ${a.reason} (${a.success ? "OK" : "FAILED"})`).join("; ") : "none"}
 ${aggQuote ? `
-Aggregator market data (CowSwap):
+## Aggregator Market Data (CowSwap)
   Mid price: ${aggQuote.midPrice.toFixed(6)} (asset1 per asset0)
   Bid: ${aggQuote.bidPrice.toFixed(6)}, Ask: ${aggQuote.askPrice.toFixed(6)}
   Spread: ${aggQuote.spread.toFixed(1)} bps` : `
-Aggregator market data: unavailable`}
+## Aggregator Market Data
+  unavailable`}
 ${vaultDebt ? `
-Vault debt & utilization:
+## Vault Debt & Utilization
   Borrow vault 0: ${vaultDebt.hasBorrowVault0 ? `debt=${fmtR0(vaultDebt.debt0)}, utilization=${fmtPct(vaultDebt.utilization0)}, borrowRate=${fmtApr(vaultDebt.borrowRate0)}, dailyCost=${fmtR0(vaultDebt.dailyCost0)}` : "disabled (no borrow vault)"}
   Borrow vault 1: ${vaultDebt.hasBorrowVault1 ? `debt=${fmtR1(vaultDebt.debt1)}, utilization=${fmtPct(vaultDebt.utilization1)}, borrowRate=${fmtApr(vaultDebt.borrowRate1)}, dailyCost=${fmtR1(vaultDebt.dailyCost1)}` : "disabled (no borrow vault)"}
-  Supply deposits: ${fmtR0(vaultDebt.deposit0)} / ${fmtR1(vaultDebt.deposit1)}` : `
-Vault debt & utilization: not available`}
+  Supply deposits: ${fmtR0(vaultDebt.deposit0)} / ${fmtR1(vaultDebt.deposit1)}
+  Supply yield: asset0=${fmtR0(vaultDebt.dailyYield0)}/day, asset1=${fmtR1(vaultDebt.dailyYield1)}/day` : `
+## Vault Debt & Utilization
+  not available`}
+${trend ? `\n## Trend\n${trend}` : ""}
 `.trim();
 }
 

@@ -81,6 +81,13 @@ export interface VaultDebtInfo {
   // Whether borrow vaults are configured (non-zero address)
   hasBorrowVault0: boolean;
   hasBorrowVault1: boolean;
+  // Supply-side: deposit yield from supply vaults
+  supplyRate0: bigint;        // supply vault 0 borrow rate (per-second, 1e27 ray)
+  supplyRate1: bigint;        // supply vault 1 borrow rate
+  supplyUtilization0: bigint; // supply vault 0 utilization (WAD-scaled)
+  supplyUtilization1: bigint; // supply vault 1 utilization
+  dailyYield0: bigint;        // deposit0 × supplyRate0 × supplyUtil0 × 86400 / (RAY × WAD)
+  dailyYield1: bigint;        // deposit1 × supplyRate1 × supplyUtil1 × 86400 / (RAY × WAD)
 }
 
 // --- Actions ---
