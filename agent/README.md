@@ -33,9 +33,9 @@ Layers 1+2 are in `contracts/src/LPAgentHook.sol`. Layer 3 is this directory.
 |--------|---------|
 | `index.ts` | Main loop: poll every 30s, Claude review every 1h |
 | `config.ts` | Loads env vars, defines safety bounds |
-| `monitor.ts` | Reads on-chain state (reserves, params, real oracle price via Euler vaults) |
+| `monitor.ts` | Reads on-chain state (reserves, params, oracle price, vault debt/utilization) |
 | `oracle.ts` | CowSwap aggregator quotes — bid/ask/spread for market context |
-| `rules.ts` | Rule engine: emergency pause, price recentering, gas budget, rate limiting |
+| `rules.ts` | Rule engine: emergency pause, price recentering, interest rebalancing, gas budget, rate limiting |
 | `executor.ts` | Submits txs — reconfigure routes through EVC, hook params are direct |
 | `claude.ts` | Hourly Claude API review with structured prompt/response |
 | `journal.ts` | Daily markdown files in `journal/` |
@@ -50,13 +50,15 @@ Poll loop (every POLL_INTERVAL seconds):
   1. Read pool snapshot (reserves, dynamic params, oracle price)
   2. Read hook stats (trade count, volume, last trade)
   3. Read hook fee params (baseFee, mismatchScale, paused)
-  4. Evaluate rules:
+  4. Read vault debt info (pool debt, utilization, borrow rates)
+  5. Evaluate rules:
      - emergencyPause: if oracle returns 0 (stale/broken) → pause hook
      - priceRecenter: if oracle drifted >5% from equilibrium → reconfigure
+     - interestRebalance: if vault utilization >70% with pool debt → widen fee spread
      - gasBudget: if daily spend exceeded → block all actions
      - rateLimit: if >12 actions this hour → block actions
-  5. Execute triggered actions (if not blocked by gas/rate limits)
-  6. Log snapshot to journal every 10th poll
+  6. Execute triggered actions (if not blocked by gas/rate limits)
+  7. Log snapshot to journal every 10th poll
 
 Claude loop (every CLAUDE_REVIEW_INTERVAL seconds):
   1. Build context: snapshot, P&L, recent trades, current params
@@ -96,6 +98,23 @@ Hardcoded in `config.ts`, not adjustable by Claude:
 | tx timeout | — | 2 min | Prevents stuck txs from blocking the agent loop |
 
 Claude cannot pause/unpause the pool — only the rules engine (emergency) or the owner.
+
+## Interest Rate Rebalancing
+
+When the pool has leverage (borrow vaults), sustained one-directional flow can spike vault utilization and push borrow rates above the IRM kink. The agent monitors vault debt and adjusts fees automatically.
+
+**Rule: `interestRebalance`** — evaluates every poll cycle:
+
+| Utilization | Severity | Action |
+|-------------|----------|--------|
+| < 70% | None | Normal fees |
+| 70-85% | MILD | Widen min/max spread by 2 bps |
+| 85-95% | HIGH | minFee=1bps, maxFee=3×baseFee (≥100bps) |
+| > 95% | CRITICAL | minFee=1bps, maxFee=500bps |
+
+The rule reads vault state via `monitor.getVaultDebtInfo()`: pool debt, vault utilization, borrow rates, and daily interest cost. It adjusts `setFeeParams` to make the rebalancing direction cheap and the worsening direction expensive, encouraging arbers to restore balance.
+
+Claude also receives vault debt data in its review context and can recommend further action (concentration reduction, equilibrium shift) per the strategy in [REBALANCING_STRATEGY.md](./REBALANCING_STRATEGY.md).
 
 ## Claude Review Strategy
 
@@ -197,6 +216,74 @@ The fork test uses short intervals (10s poll, 5min Claude review) for faster fee
 
 ## Deployment Pipeline
 
-1. **Anvil fork**: `./fork-test.sh` — test full flow locally
-2. **Testnet**: Deploy to Sepolia, run for 48h+
-3. **Mainnet**: Deploy hook → create pool → reconfigure to install hook → register in registry → set agent as manager → start agent with conservative params
+### 1. Local fork testing
+
+```bash
+RPC_URL=https://eth-mainnet.g.alchemy.com/v2/KEY ./fork-test.sh
+./sim-harness.sh --volatile
+cp .env.fork .env && npm start
+```
+
+### 2. Mainnet deployment
+
+**Pre-requisites:** deployer wallet with ETH (for WETH wrap + gas) and USDC.
+
+```bash
+cd ../contracts
+
+# Dry run (simulation only — no gas spent):
+PRIVATE_KEY=0x... forge script script/DeployMainnet.s.sol:DeployMainnet \
+  --rpc-url https://eth-mainnet.g.alchemy.com/v2/KEY -vvvv
+
+# Live deployment:
+PRIVATE_KEY=0x... forge script script/DeployMainnet.s.sol:DeployMainnet \
+  --rpc-url https://eth-mainnet.g.alchemy.com/v2/KEY --broadcast --slow -vvvv
+```
+
+The script auto-wraps ETH to WETH, deposits into Euler vaults, deploys the pool via the factory (with HookMiner salt), deploys `LPAgentHook`, and installs the hook via EVC reconfigure.
+
+**Configurable env vars** (all optional):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WETH_AMOUNT` | 0.2 ether | WETH deposit for pool |
+| `USDC_AMOUNT` | 500e6 | USDC deposit for pool |
+| `CONCENTRATION` | 0.3e18 | AMM curve concentration (0-1) |
+| `EXPIRATION_DAYS` | 30 | Pool auto-expires after N days (0=never) |
+
+**Output:** the script prints `POOL_ADDRESS`, `HOOK_ADDRESS`, `EVC_ADDRESS`, `EULER_ACCOUNT` — copy these to `agent/.env.mainnet`.
+
+### 3. Start the agent
+
+```bash
+cd ../agent
+cp .env.mainnet .env
+npm start
+```
+
+### 4. Post-deployment verification
+
+```bash
+# Pool reserves
+cast call $POOL_ADDRESS "getReserves()(uint112,uint112,uint32)" --rpc-url $RPC_URL
+
+# Hook fee params
+cast call $HOOK_ADDRESS "getFeeParams()(uint64,uint64,uint64,uint256,bool)" --rpc-url $RPC_URL
+
+# Test a small quote (sell 1 USDC for WETH)
+cast call $POOL_ADDRESS "computeQuote(address,address,uint256,bool)(uint256)" \
+  0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 \
+  1000000 true --rpc-url $RPC_URL
+```
+
+### Emergency shutdown
+
+```bash
+# Pause hook (all swaps charged maxFee)
+cast send $HOOK_ADDRESS "setPaused(bool)" true --private-key $PRIVATE_KEY --rpc-url $RPC_URL
+
+# Or revoke pool operator (fully disables swaps)
+cast send 0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383 \
+  "setAccountOperator(address,address,bool)" $EULER_ACCOUNT $POOL_ADDRESS false \
+  --private-key $PRIVATE_KEY --rpc-url $RPC_URL
+```

@@ -13,19 +13,17 @@ interface Props {
   priceMin: number;
   priceMax: number;
   concentration: number;
-  asymmetric: boolean;
   concentrationY: number;
   onPreset: (p: PresetKey) => void;
   onEquilibriumPrice: (v: number) => void;
   onPriceMin: (v: number) => void;
   onPriceMax: (v: number) => void;
   onConcentration: (v: number) => void;
-  onAsymmetric: (v: boolean) => void;
   onConcentrationY: (v: number) => void;
 }
 
 export default function StrategySection(props: Props) {
-  const { preset, equilibriumPrice, oraclePrice, priceMin, priceMax, concentration, asymmetric, concentrationY } = props;
+  const { preset, equilibriumPrice, oraclePrice, priceMin, priceMax, concentration, concentrationY } = props;
   const currentPrice = equilibriumPrice;
 
   // When a preset is selected, compute price bounds and concentration
@@ -40,7 +38,6 @@ export default function StrategySection(props: Props) {
     props.onPriceMax(Number(ryToPrice(p.ry, currentPrice).toFixed(2)));
     props.onConcentration(p.concentration);
     props.onConcentrationY(p.concentration);
-    props.onAsymmetric(false);
   };
 
   // Any manual edit switches to custom
@@ -49,7 +46,6 @@ export default function StrategySection(props: Props) {
   const editConcentration = (v: number) => {
     props.onPreset("custom");
     props.onConcentration(v);
-    if (!asymmetric) props.onConcentrationY(v);
   };
   const editConcentrationY = (v: number) => { props.onPreset("custom"); props.onConcentrationY(v); };
 
@@ -57,9 +53,7 @@ export default function StrategySection(props: Props) {
   const rx = currentPrice > 0 && priceMin > 0 ? currentPrice / priceMin - 1 : 0.5;
   const ry = currentPrice > 0 && priceMax > 0 ? priceMax / currentPrice - 1 : 0.5;
   const effX = efficiencyLabel(concentration, Math.max(0.01, rx));
-  const effY = asymmetric
-    ? efficiencyLabel(concentrationY, Math.max(0.01, ry))
-    : effX;
+  const effY = efficiencyLabel(concentrationY, Math.max(0.01, ry));
 
   return (
     <div className="space-y-5">
@@ -156,29 +150,15 @@ export default function StrategySection(props: Props) {
 
       {/* Concentration */}
       <div className="space-y-2">
-        <div className="flex items-baseline justify-between">
-          <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600">
-            Concentration
-          </h3>
-          <label className="flex items-center gap-1.5 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={asymmetric}
-              onChange={(e) => {
-                props.onAsymmetric(e.target.checked);
-                if (!e.target.checked) props.onConcentrationY(concentration);
-                props.onPreset("custom");
-              }}
-              className="w-3 h-3 rounded border-zinc-700 bg-zinc-900 text-blue-500 focus:ring-0 focus:ring-offset-0"
-            />
-            <span className="text-[10px] text-zinc-600">Asymmetric (cx ≠ cy)</span>
-          </label>
-        </div>
+        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600">
+          Concentration
+        </h3>
 
-        {!asymmetric ? (
+        <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1">
-            <span className="text-xs text-zinc-500 font-mono">
-              {(concentration * 100).toFixed(0)}% — {effX} capital efficiency
+            <span className="text-[10px] text-zinc-600">X side (cx)</span>
+            <span className="text-xs text-zinc-500 font-mono block">
+              {(concentration * 100).toFixed(0)}% — {effX}
             </span>
             <ParamSlider
               label=""
@@ -189,38 +169,21 @@ export default function StrategySection(props: Props) {
               onChange={editConcentration}
             />
           </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <span className="text-[10px] text-zinc-600">X side (cx)</span>
-              <span className="text-xs text-zinc-500 font-mono block">
-                {(concentration * 100).toFixed(0)}% — {effX}
-              </span>
-              <ParamSlider
-                label=""
-                value={concentration}
-                min={0}
-                max={0.99}
-                step={0.01}
-                onChange={editConcentration}
-              />
-            </div>
-            <div className="space-y-1">
-              <span className="text-[10px] text-zinc-600">Y side (cy)</span>
-              <span className="text-xs text-zinc-500 font-mono block">
-                {(concentrationY * 100).toFixed(0)}% — {effY}
-              </span>
-              <ParamSlider
-                label=""
-                value={concentrationY}
-                min={0}
-                max={0.99}
-                step={0.01}
-                onChange={editConcentrationY}
-              />
-            </div>
+          <div className="space-y-1">
+            <span className="text-[10px] text-zinc-600">Y side (cy)</span>
+            <span className="text-xs text-zinc-500 font-mono block">
+              {(concentrationY * 100).toFixed(0)}% — {effY}
+            </span>
+            <ParamSlider
+              label=""
+              value={concentrationY}
+              min={0}
+              max={0.99}
+              step={0.01}
+              onChange={editConcentrationY}
+            />
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

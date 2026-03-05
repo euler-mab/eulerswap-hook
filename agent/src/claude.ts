@@ -8,6 +8,7 @@ import type {
   ClaudeReview,
   ClaudeRecommendation,
   AssetDecimals,
+  VaultDebtInfo,
 } from "./types.js";
 import type { AggregatorQuote } from "./oracle.js";
 import { WAD, BPS, fmtToken } from "./types.js";
@@ -29,11 +30,12 @@ export async function review(
   recentActions: ExecutedAction[],
   gasSpentToday: bigint,
   aggQuote: AggregatorQuote | null = null,
-  decimals?: AssetDecimals
+  decimals?: AssetDecimals,
+  vaultDebt?: VaultDebtInfo
 ): Promise<ClaudeReview> {
   const anthropic = getClient(config);
 
-  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals);
+  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals, vaultDebt);
 
   const systemPrompt = buildSystemPrompt(config, snapshot);
 
@@ -135,6 +137,34 @@ Where:
 - concentration: ${(Number(config.minConcentration) / 1e18).toFixed(2)}-${(Number(config.maxConcentration) / 1e18).toFixed(2)}
 - equilibrium changes: max 3x per recenter
 
+## Interest Rate & Rebalancing Strategy
+
+When the pool has leverage (borrow vaults), sustained one-directional flow can cause
+vault utilization to spike, pushing borrow rates above the IRM kink. The agent must
+manage this risk.
+
+**Vault debt data is provided below.** Use it to assess interest rate risk:
+
+- utilization < 70%: no urgency — normal fees
+- utilization 70-85% (near kink): mild fee asymmetry — widen min/max spread by 1-3 bps
+- utilization 85-95% (above kink): strong asymmetry — rebalancing direction at minFee,
+  worsening direction at maxFee. Consider equilibrium shift.
+- utilization > 95% (critical): maximum asymmetry + reduce concentration + alert
+
+**Key principle**: the agent should be willing to give up fee revenue equal to the
+interest cost being avoided. If paying $100/day in borrow interest, spending $100/day
+in fee discounts to attract rebalancing flow is break-even.
+
+**Fee asymmetry for rebalancing**: unlike oracle mismatch (which protects against MEV),
+reserve imbalance protects against interest rate risk. Both signals are independent
+and additive. When reserves are imbalanced:
+- Swaps that RESTORE balance (add the depleted asset): charge LOW fee
+- Swaps that WORSEN balance (add the excess asset): charge HIGH fee
+
+**Concentration reduction**: if utilization is critical and fees aren't rebalancing
+fast enough, recommend reducing concentrationX/concentrationY. This makes the curve
+more convex, naturally limiting further borrowing. Trade-off: less capital efficiency.
+
 ## Response Format
 
 Respond with ONLY valid JSON:
@@ -176,13 +206,17 @@ function buildContext(
   recentActions: ExecutedAction[],
   gasSpentToday: bigint,
   aggQuote: AggregatorQuote | null,
-  decimals?: AssetDecimals
+  decimals?: AssetDecimals,
+  vaultDebt?: VaultDebtInfo
 ): string {
   const fmtR0 = (v: bigint) => decimals ? fmtToken(v, decimals.dec0) : (Number(v) / 1e18).toFixed(6);
   const fmtR1 = (v: bigint) => decimals ? fmtToken(v, decimals.dec1) : (Number(v) / 1e18).toFixed(6);
   const fmtWad = (v: bigint) => (Number(v) / 1e18).toFixed(6);
   const fmtBps = (v: bigint) => (Number(v) / Number(BPS)).toFixed(1) + " bps";
   const fmtEth = (v: bigint) => (Number(v) / 1e18).toFixed(6) + " ETH";
+  const fmtPct = (v: bigint) => (Number(v) / 1e16).toFixed(1) + "%";
+  // Interest rate: per-second 1e27 ray → annualized percentage
+  const fmtApr = (v: bigint) => (Number(v) * 365.25 * 86400 / 1e27 * 100).toFixed(1) + "% APR";
 
   return `
 Reserves: ${fmtR0(snapshot.reserve0)} / ${fmtR1(snapshot.reserve1)}
@@ -212,6 +246,12 @@ Aggregator market data (CowSwap):
   Bid: ${aggQuote.bidPrice.toFixed(6)}, Ask: ${aggQuote.askPrice.toFixed(6)}
   Spread: ${aggQuote.spread.toFixed(1)} bps` : `
 Aggregator market data: unavailable`}
+${vaultDebt ? `
+Vault debt & utilization:
+  Borrow vault 0: ${vaultDebt.hasBorrowVault0 ? `debt=${fmtR0(vaultDebt.debt0)}, utilization=${fmtPct(vaultDebt.utilization0)}, borrowRate=${fmtApr(vaultDebt.borrowRate0)}, dailyCost=${fmtR0(vaultDebt.dailyCost0)}` : "disabled (no borrow vault)"}
+  Borrow vault 1: ${vaultDebt.hasBorrowVault1 ? `debt=${fmtR1(vaultDebt.debt1)}, utilization=${fmtPct(vaultDebt.utilization1)}, borrowRate=${fmtApr(vaultDebt.borrowRate1)}, dailyCost=${fmtR1(vaultDebt.dailyCost1)}` : "disabled (no borrow vault)"}
+  Supply deposits: ${fmtR0(vaultDebt.deposit0)} / ${fmtR1(vaultDebt.deposit1)}` : `
+Vault debt & utilization: not available`}
 `.trim();
 }
 

@@ -38,17 +38,10 @@ describe("buildParams — default form state", () => {
   });
 });
 
-describe("buildParams — symmetric vs asymmetric concentration", () => {
-  it("symmetric: cx = cy = concentration", () => {
-    const p = buildParams({ ...defaultFormState, concentration: 0.7 });
-    expect(p.cx).toBe(0.7);
-    expect(p.cy).toBe(0.7);
-  });
-
-  it("asymmetric: cx = concentration, cy = concentrationY", () => {
+describe("buildParams — concentration", () => {
+  it("cx and cy are independent", () => {
     const p = buildParams({
       ...defaultFormState,
-      asymmetric: true,
       concentration: 0.3,
       concentrationY: 0.9,
     });

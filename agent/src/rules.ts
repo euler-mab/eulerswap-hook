@@ -2,6 +2,7 @@ import type {
   AgentConfig,
   PoolSnapshot,
   HookFeeParams,
+  VaultDebtInfo,
   Action,
   RuleResult,
   ClaudeRecommendation,
@@ -13,6 +14,11 @@ const MAX_RECENTER_CHANGE = 3n; // max Nx change in either reserve per recenter
 const ORACLE_STALE_SECONDS = 1800; // 30 minutes
 const HOUR_MS = 3_600_000;
 
+// Interest-rate rebalancing thresholds (utilization as WAD-scaled fractions)
+const UTILIZATION_MILD = WAD * 70n / 100n;     // 70% — near IRM kink
+const UTILIZATION_HIGH = WAD * 85n / 100n;     // 85% — above kink, rates accelerating
+const UTILIZATION_CRITICAL = WAD * 95n / 100n; // 95% — emergency
+
 // Track recent actions (reconfigs + setFeeParams) for rate limiting
 const recentActions: number[] = [];
 
@@ -20,12 +26,16 @@ export function evaluate(
   snapshot: PoolSnapshot,
   feeParams: HookFeeParams,
   config: AgentConfig,
-  gasSpentToday: bigint
+  gasSpentToday: bigint,
+  vaultDebt?: VaultDebtInfo
 ): RuleResult[] {
   const results: RuleResult[] = [];
 
   results.push(checkEmergencyPause(snapshot, feeParams));
   results.push(checkPriceRecenter(snapshot));
+  if (vaultDebt) {
+    results.push(checkInterestRateRebalance(snapshot, feeParams, vaultDebt, config));
+  }
   results.push(checkGasBudget(gasSpentToday, config));
   results.push(checkRateLimit(config));
 
@@ -102,7 +112,100 @@ function checkPriceRecenter(snapshot: PoolSnapshot): RuleResult {
   };
 }
 
-/// Rule 2: Emergency pause
+/**
+ * Rule 2: Interest-rate-aware rebalancing
+ *
+ * When vault utilization is high and the pool has debt, adjust fee parameters
+ * to encourage swaps in the rebalancing direction (adding the depleted asset).
+ *
+ * Severity tiers based on utilization:
+ *   < 70% (below kink):  no action
+ *   70-85% (near kink):  mild fee asymmetry — widen min/max by 2 bps
+ *   85-95% (above kink): strong asymmetry — minFee=1bps, maxFee=3×baseFee
+ *   > 95% (critical):    maximum asymmetry — minFee=1bps, maxFee=500bps
+ */
+function checkInterestRateRebalance(
+  snapshot: PoolSnapshot,
+  feeParams: HookFeeParams,
+  vaultDebt: VaultDebtInfo,
+  config: AgentConfig
+): RuleResult {
+  // Find the worst utilization among vaults with pool debt
+  const hasDebt0 = vaultDebt.hasBorrowVault0 && vaultDebt.debt0 > 0n;
+  const hasDebt1 = vaultDebt.hasBorrowVault1 && vaultDebt.debt1 > 0n;
+
+  if (!hasDebt0 && !hasDebt1) {
+    return { name: "interestRebalance", triggered: false, reason: "no pool debt" };
+  }
+
+  // Use the higher utilization of the two vaults the pool is borrowing from
+  const worstUtilization = hasDebt0 && hasDebt1
+    ? (vaultDebt.utilization0 > vaultDebt.utilization1 ? vaultDebt.utilization0 : vaultDebt.utilization1)
+    : hasDebt0 ? vaultDebt.utilization0 : vaultDebt.utilization1;
+
+  if (worstUtilization < UTILIZATION_MILD) {
+    return { name: "interestRebalance", triggered: false, reason: `utilization ${formatPct(worstUtilization)} below mild threshold` };
+  }
+
+  // Determine severity and compute new fee params
+  let newMinFee: bigint;
+  let newMaxFee: bigint;
+  let severity: string;
+
+  if (worstUtilization >= UTILIZATION_CRITICAL) {
+    // Critical: maximum asymmetry
+    newMinFee = 1n * BPS;        // 1 bps floor
+    newMaxFee = 500n * BPS;      // 500 bps ceiling
+    severity = "CRITICAL";
+  } else if (worstUtilization >= UTILIZATION_HIGH) {
+    // High: strong asymmetry
+    newMinFee = 1n * BPS;
+    newMaxFee = feeParams.baseFee * 3n;  // 3× baseFee
+    if (newMaxFee < 100n * BPS) newMaxFee = 100n * BPS;  // at least 100 bps
+    severity = "HIGH";
+  } else {
+    // Mild: widen spread by 2 bps each direction
+    newMinFee = feeParams.minFee > 2n * BPS ? feeParams.minFee - 2n * BPS : 1n * BPS;
+    newMaxFee = feeParams.maxFee + 2n * BPS;
+    severity = "MILD";
+  }
+
+  // Enforce ordering: minFee ≤ baseFee ≤ maxFee
+  if (newMinFee > feeParams.baseFee) newMinFee = feeParams.baseFee;
+  if (newMaxFee < feeParams.baseFee) newMaxFee = feeParams.baseFee;
+  if (newMaxFee > WAD) newMaxFee = WAD - 1n;  // must be < 100%
+
+  // Skip if fees are already at or beyond these levels
+  if (feeParams.minFee <= newMinFee && feeParams.maxFee >= newMaxFee) {
+    return {
+      name: "interestRebalance",
+      triggered: false,
+      reason: `${severity}: utilization ${formatPct(worstUtilization)}, but fees already sufficient (min=${formatBps(feeParams.minFee)}bps, max=${formatBps(feeParams.maxFee)}bps)`,
+    };
+  }
+
+  const debtSummary = hasDebt0 && hasDebt1
+    ? `debt0=${vaultDebt.debt0}, debt1=${vaultDebt.debt1}`
+    : hasDebt0 ? `debt0=${vaultDebt.debt0}` : `debt1=${vaultDebt.debt1}`;
+
+  return {
+    name: "interestRebalance",
+    triggered: true,
+    reason: `${severity}: utilization ${formatPct(worstUtilization)}, ${debtSummary}`,
+    action: {
+      type: "setFeeParams",
+      reason: `Interest rate rebalance (${severity}): widen fee spread to attract rebalancing flow`,
+      params: {
+        baseFee: feeParams.baseFee.toString(),
+        minFee: newMinFee.toString(),
+        maxFee: newMaxFee.toString(),
+        mismatchScale: feeParams.mismatchScale.toString(),
+      },
+    },
+  };
+}
+
+/// Rule 3: Emergency pause
 /// If oracle price is zero (stale/broken) and pool is not already paused, pause it.
 function checkEmergencyPause(
   snapshot: PoolSnapshot,
@@ -257,6 +360,10 @@ export function isSafe(
 
 function formatBps(wadValue: bigint): string {
   return (Number(wadValue) / Number(BPS)).toFixed(1);
+}
+
+function formatPct(wadValue: bigint): string {
+  return (Number(wadValue) / 1e16).toFixed(1) + "%";
 }
 
 function formatEth(wei: bigint): string {

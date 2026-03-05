@@ -63,6 +63,26 @@ export interface HookFeeParams {
   paused: boolean;
 }
 
+// --- Vault debt/utilization ---
+
+export interface VaultDebtInfo {
+  // Per-vault state for each side (asset0 and asset1)
+  debt0: bigint;           // pool's debt in borrow vault 0 (raw token units)
+  debt1: bigint;           // pool's debt in borrow vault 1 (raw token units)
+  deposit0: bigint;        // pool's deposit in supply vault 0 (underlying units)
+  deposit1: bigint;        // pool's deposit in supply vault 1 (underlying units)
+  utilization0: bigint;    // borrow vault 0 utilization (WAD-scaled, 0 = empty, 1e18 = 100%)
+  utilization1: bigint;    // borrow vault 1 utilization (WAD-scaled)
+  borrowRate0: bigint;     // borrow vault 0 interest rate (per-second, 1e27 ray)
+  borrowRate1: bigint;     // borrow vault 1 interest rate (per-second, 1e27 ray)
+  // Derived: daily interest cost in raw token units
+  dailyCost0: bigint;      // debt0 × borrowRate0 × 86400 / 1e27
+  dailyCost1: bigint;      // debt1 × borrowRate1 × 86400 / 1e27
+  // Whether borrow vaults are configured (non-zero address)
+  hasBorrowVault0: boolean;
+  hasBorrowVault1: boolean;
+}
+
 // --- Actions ---
 
 export type ActionType =

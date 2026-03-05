@@ -56,18 +56,19 @@ async function main() {
   // --- Main poll loop ---
   const pollLoop = async () => {
     try {
-      // Read state
-      const [snapshot, stats, feeParams] = await Promise.all([
+      // Read state (including vault debt for interest-rate awareness)
+      const [snapshot, stats, feeParams, vaultDebt] = await Promise.all([
         monitor.getPoolSnapshot(publicClient, config),
         monitor.getHookStats(publicClient, config),
         monitor.getHookFeeParams(publicClient, config),
+        monitor.getVaultDebtInfo(publicClient, config).catch(() => undefined),
       ]);
 
       metrics.recordSnapshot(snapshot);
 
       // Evaluate rules
       const gasToday = metrics.getGasSpentToday();
-      const ruleResults = rules.evaluate(snapshot, feeParams, config, gasToday);
+      const ruleResults = rules.evaluate(snapshot, feeParams, config, gasToday, vaultDebt);
       journal.ruleResults(ruleResults);
 
       // Check if gas budget or rate limit blocks execution
@@ -119,10 +120,11 @@ async function main() {
   // --- Claude review loop ---
   const claudeLoop = async () => {
     try {
-      const [snapshot, stats, feeParams] = await Promise.all([
+      const [snapshot, stats, feeParams, vaultDebt] = await Promise.all([
         monitor.getPoolSnapshot(publicClient, config),
         monitor.getHookStats(publicClient, config),
         monitor.getHookFeeParams(publicClient, config),
+        monitor.getVaultDebtInfo(publicClient, config).catch(() => undefined),
       ]);
 
       const gasToday = metrics.getGasSpentToday();
@@ -140,7 +142,8 @@ async function main() {
         recentActions,
         gasToday,
         aggQuote,
-        decimals
+        decimals,
+        vaultDebt
       );
 
       metrics.recordReview(review);

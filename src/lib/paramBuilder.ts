@@ -16,9 +16,8 @@ export interface CreateFormState {
   equilibriumPrice: number; // Y per X — overridable, defaults to oracle px/py
   priceMin: number;         // Y per X (dollar terms)
   priceMax: number;         // Y per X (dollar terms)
-  concentration: number;    // 0–0.99 (cx, or both when symmetric)
-  asymmetric: boolean;      // when true, cx and cy are independent
-  concentrationY: number;   // cy when asymmetric
+  concentration: number;    // 0–0.99 (cx)
+  concentrationY: number;   // 0–0.99 (cy)
 
   // Leverage
   leverageEnabled: boolean;
@@ -46,7 +45,6 @@ export const defaultFormState: CreateFormState = {
   priceMin: 1333.33,
   priceMax: 3000,
   concentration: 0.5,
-  asymmetric: false,
   concentrationY: 0.5,
   leverageEnabled: false,
   debtAsset: "y",
@@ -82,11 +80,9 @@ export function buildParams(form: CreateFormState): Params {
   const rx = Math.min(100, Math.max(0.01, priceToRx(form.priceMin, eqPrice)));
   const ry = Math.min(100, Math.max(0.01, priceToRy(form.priceMax, eqPrice)));
 
-  // Concentration (symmetric or asymmetric)
+  // Concentration
   const cx = Math.min(0.99, Math.max(0, form.concentration));
-  const cy = form.asymmetric
-    ? Math.min(0.99, Math.max(0, form.concentrationY))
-    : cx;
+  const cy = Math.min(0.99, Math.max(0, form.concentrationY));
 
   // Deposits
   const xr = Math.max(0, form.depositX);

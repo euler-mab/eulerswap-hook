@@ -103,14 +103,12 @@ export default function CreatePage() {
             priceMin={form.priceMin}
             priceMax={form.priceMax}
             concentration={form.concentration}
-            asymmetric={form.asymmetric}
             concentrationY={form.concentrationY}
             onPreset={set("preset")}
             onEquilibriumPrice={set("equilibriumPrice")}
             onPriceMin={set("priceMin")}
             onPriceMax={set("priceMax")}
             onConcentration={set("concentration")}
-            onAsymmetric={set("asymmetric")}
             onConcentrationY={set("concentrationY")}
           />
         </SectionCard>

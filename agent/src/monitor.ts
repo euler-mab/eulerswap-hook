@@ -1,11 +1,19 @@
 import type { PublicClient, Address } from "viem";
-import type { AgentConfig, PoolSnapshot, HookStats, HookFeeParams } from "./types.js";
+import type { AgentConfig, PoolSnapshot, HookStats, HookFeeParams, VaultDebtInfo } from "./types.js";
 import { eulerSwapAbi, evaultAbi, priceOracleAbi, hookAbi } from "./abi.js";
 import { WAD } from "./types.js";
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
+const RAY = 10n ** 27n;
+const SECONDS_PER_DAY = 86400n;
 
 // Cached vault metadata (immutable, only needs one read)
 let cachedVaultMeta: {
   supplyVault0: Address;
+  supplyVault1: Address;
+  borrowVault0: Address;
+  borrowVault1: Address;
+  eulerAccount: Address;
   asset0: Address;
   asset1: Address;
   oracleAddr: Address;
@@ -47,6 +55,10 @@ async function getVaultMeta(client: PublicClient, config: AgentConfig) {
 
   cachedVaultMeta = {
     supplyVault0: staticParams.supplyVault0 as Address,
+    supplyVault1: staticParams.supplyVault1 as Address,
+    borrowVault0: staticParams.borrowVault0 as Address,
+    borrowVault1: staticParams.borrowVault1 as Address,
+    eulerAccount: staticParams.eulerAccount as Address,
     asset0: asset0 as Address,
     asset1: asset1 as Address,
     oracleAddr: oracleAddr as Address,
@@ -172,6 +184,78 @@ export async function getHookStats(
     lastTradeAsset0In: result[3],
     lastTradeSize: result[4],
     lastTradeBlock: result[5],
+  };
+}
+
+export async function getVaultDebtInfo(
+  client: PublicClient,
+  config: AgentConfig
+): Promise<VaultDebtInfo> {
+  const meta = await getVaultMeta(client, config);
+  const hasBorrow0 = meta.borrowVault0 !== ZERO_ADDRESS;
+  const hasBorrow1 = meta.borrowVault1 !== ZERO_ADDRESS;
+
+  // Read debt and utilization for each borrow vault (skip if no borrow vault)
+  const [debt0, debt1, borrowRate0, borrowRate1, totalBorrows0, totalAssets0, totalBorrows1, totalAssets1, shares0, shares1] =
+    await Promise.all([
+      hasBorrow0
+        ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "debtOf", args: [meta.eulerAccount] })
+        : Promise.resolve(0n),
+      hasBorrow1
+        ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "debtOf", args: [meta.eulerAccount] })
+        : Promise.resolve(0n),
+      hasBorrow0
+        ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "interestRate" })
+        : Promise.resolve(0n),
+      hasBorrow1
+        ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "interestRate" })
+        : Promise.resolve(0n),
+      hasBorrow0
+        ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "totalBorrows" })
+        : Promise.resolve(0n),
+      hasBorrow0
+        ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "totalAssets" })
+        : Promise.resolve(1n),
+      hasBorrow1
+        ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "totalBorrows" })
+        : Promise.resolve(0n),
+      hasBorrow1
+        ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "totalAssets" })
+        : Promise.resolve(1n),
+      // Pool's supply vault deposits (shares → assets)
+      client.readContract({ address: meta.supplyVault0, abi: evaultAbi, functionName: "balanceOf", args: [meta.eulerAccount] }),
+      client.readContract({ address: meta.supplyVault1, abi: evaultAbi, functionName: "balanceOf", args: [meta.eulerAccount] }),
+    ]);
+
+  const [deposit0, deposit1] = await Promise.all([
+    client.readContract({ address: meta.supplyVault0, abi: evaultAbi, functionName: "convertToAssets", args: [shares0 as bigint] }),
+    client.readContract({ address: meta.supplyVault1, abi: evaultAbi, functionName: "convertToAssets", args: [shares1 as bigint] }),
+  ]);
+
+  const utilization0 = (totalAssets0 as bigint) > 0n
+    ? (totalBorrows0 as bigint) * WAD / (totalAssets0 as bigint)
+    : 0n;
+  const utilization1 = (totalAssets1 as bigint) > 0n
+    ? (totalBorrows1 as bigint) * WAD / (totalAssets1 as bigint)
+    : 0n;
+
+  // Daily interest cost: debt × rate × 86400 / 1e27
+  const dailyCost0 = (debt0 as bigint) * (borrowRate0 as bigint) * SECONDS_PER_DAY / RAY;
+  const dailyCost1 = (debt1 as bigint) * (borrowRate1 as bigint) * SECONDS_PER_DAY / RAY;
+
+  return {
+    debt0: debt0 as bigint,
+    debt1: debt1 as bigint,
+    deposit0: deposit0 as bigint,
+    deposit1: deposit1 as bigint,
+    utilization0,
+    utilization1,
+    borrowRate0: borrowRate0 as bigint,
+    borrowRate1: borrowRate1 as bigint,
+    dailyCost0,
+    dailyCost1,
+    hasBorrowVault0: hasBorrow0,
+    hasBorrowVault1: hasBorrow1,
   };
 }
 
