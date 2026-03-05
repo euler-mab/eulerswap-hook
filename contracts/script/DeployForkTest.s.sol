@@ -9,6 +9,8 @@ import {IEVC} from "evc/interfaces/IEthereumVaultConnector.sol";
 import {IEVault} from "evk/EVault/IEVault.sol";
 import {LPAgentHook} from "../src/LPAgentHook.sol";
 import "../eulerswap/src/interfaces/IEulerSwapHookTarget.sol";
+import {HookMiner} from "../eulerswap/test/utils/HookMiner.sol";
+import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 
 interface IWETH9 {
     function deposit() external payable;
@@ -93,8 +95,14 @@ contract DeployForkTest is Script {
             reserve1: uint112(WETH_AMOUNT)
         });
 
-        bytes32 salt = bytes32(uint256(1));
-        address poolAddr = factory.computePoolAddress(sParams, salt);
+        // Mine a salt that produces a valid Uniswap V4 hook address
+        // (mainnet factory enforces hook flag bits in the pool address)
+        bytes memory creationCode = factory.creationCode(sParams);
+        uint160 flags = uint160(
+            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+                | Hooks.BEFORE_DONATE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
+        );
+        (address poolAddr, bytes32 salt) = HookMiner.find(address(factory), flags, creationCode);
 
         IEVC.BatchItem[] memory items = new IEVC.BatchItem[](2);
         items[0] = IEVC.BatchItem({
