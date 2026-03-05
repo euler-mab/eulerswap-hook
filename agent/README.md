@@ -108,8 +108,35 @@ npm install
 npm start
 ```
 
+## Fork Testing
+
+Automated script deploys a USDC/WETH pool with LPAgentHook on an Anvil mainnet fork:
+
+```bash
+# Requires: anvil, forge, cast (foundry), and a mainnet RPC
+RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY ./fork-test.sh
+```
+
+This will:
+1. Start an Anvil fork of mainnet
+2. Fund the deployer with USDC (from a whale) and WETH (wrapped ETH)
+3. Deposit into Euler USDC and WETH vaults
+4. Deploy a pool via the EulerSwap factory
+5. Deploy and install `LPAgentHook`
+6. Write `agent/.env.fork` with all addresses
+
+Then run the agent against the fork:
+
+```bash
+cp .env.fork .env
+# Add your ANTHROPIC_API_KEY to .env
+npm start
+```
+
+The fork test uses short intervals (10s poll, 5min Claude review) for faster feedback.
+
 ## Deployment Pipeline
 
-1. **Anvil fork**: `anvil --fork-url $RPC_URL` — test full flow locally
+1. **Anvil fork**: `./fork-test.sh` — test full flow locally
 2. **Testnet**: Deploy to Sepolia, run for 48h+
 3. **Mainnet**: Deploy hook → create pool → reconfigure to install hook → register in registry → set agent as manager → start agent with conservative params
