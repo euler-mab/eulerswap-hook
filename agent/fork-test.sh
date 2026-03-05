@@ -22,6 +22,10 @@ USDC_WHALE="0x55FE002aeff02F77364de339a1292923A15844B8"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONTRACTS_DIR="$SCRIPT_DIR/../contracts"
 
+# --- Kill stale agent processes from prior runs ---
+pkill -f 'tsx.*src/index.ts' 2>/dev/null || true
+pkill -f 'node.*eulerswap-lp-agent' 2>/dev/null || true
+
 # --- Cleanup on exit ---
 cleanup() {
     if [ -n "${ANVIL_PID:-}" ]; then

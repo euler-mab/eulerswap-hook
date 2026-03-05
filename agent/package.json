@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prestart": "pkill -f 'tsx.*src/index.ts' 2>/dev/null; pkill -f 'node.*eulerswap-lp-agent' 2>/dev/null; sleep 0.5; true",
     "start": "tsx src/index.ts",
     "build": "tsc",
     "dev": "tsx watch src/index.ts"
