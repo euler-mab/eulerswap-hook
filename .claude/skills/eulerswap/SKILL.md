@@ -138,9 +138,15 @@ The factory calls `pool.activate()` which:
 ### 2. Reconfigure a Pool
 
 ```solidity
-// Only callable by eulerAccount, manager, or swapHook
+// Only callable by eulerAccount, manager, or swapHook (from within afterSwap)
 pool.reconfigure(newDynamicParams, newInitialState);
 ```
+
+**Important**: External callers (owner, manager) must call through EVC:
+```solidity
+evc.call(pool, eulerAccount, 0, abi.encodeCall(IEulerSwap.reconfigure, (newDP, newIS)));
+```
+Only the `swapHook` can call `reconfigure()` directly — and only from within the `afterSwap` callback (when the pool is unlocked). Direct calls from EOAs will revert with `EVC_NotAuthorized`.
 
 This allows changing prices, concentration, fees, range, and hook — without redeploying. The hook's `afterSwap` callback can call `reconfigure()` to implement releverage.
 
@@ -245,22 +251,27 @@ function afterSwap(
     address, address,
     uint112 reserve0, uint112 reserve1
 ) external {
-    // 1. Read current reserves (post-swap)
-    // 2. Compute new equilibrium at current price
-    // 3. Reconfigure pool to re-center around current price
-    //    This effectively "re-leverages" — the pool always acts as if
-    //    freshly deployed at the current price with L=2 leverage.
+    // 1. Get current pool price from oracle or compute from reserves
+    uint256 currentPrice = getOraclePrice();
+
+    // 2. Compute new equilibrium reserves at current price
+    //    preserving the LP's equity and desired leverage ratio.
+    //    Simply copying current reserves (dp.eq0 = reserve0) is wrong —
+    //    that just declares "where I am is equilibrium" without
+    //    properly recomputing the curve parameters for the new price.
+    (uint112 newEq0, uint112 newEq1) = computeEquilibrium(currentPrice, equity);
 
     DynamicParams memory dp = pool.getDynamicParams();
-    // Update equilibrium reserves to current position
-    dp.equilibriumReserve0 = reserve0;
-    dp.equilibriumReserve1 = reserve1;
+    dp.equilibriumReserve0 = newEq0;
+    dp.equilibriumReserve1 = newEq1;
+    // Update price scalars to reflect new equilibrium price
+    dp.priceX = uint80(currentPrice);
 
-    pool.reconfigure(dp, InitialState(reserve0, reserve1));
+    pool.reconfigure(dp, InitialState(newEq0, newEq1));
 }
 ```
 
-Key insight: the afterSwap hook fires with the pool **unlocked**, so `reconfigure()` succeeds. This is how you build continuous releverage without external keepers.
+Key insight: the afterSwap hook fires with the pool **unlocked**, so the hook can call `reconfigure()` directly (no EVC routing needed). This is how you build continuous releverage without external keepers.
 
 ### Dynamic Fee Strategy (LPAgentHook pattern)
 
@@ -668,17 +679,16 @@ abstract contract CustomLiquidatorBase {
 
 ### Deploying a Releverage Pool with Dynamic Fees
 
-```solidity
-// 1. Deploy hook contract
-LPAgentHook hook = new LPAgentHook(oracle, pool, baseFee, maxFee, minFee, scale);
+The deploy order matters: pool must exist before the hook (hook constructor reads pool state).
 
-// 2. Deploy pool via factory
+```solidity
+// 1. Deploy pool first — without hook
 address pool = factory.deployPool(
     StaticParams({
         supplyVault0: eWETH, supplyVault1: eUSDC,
         borrowVault0: eWETH, borrowVault1: eUSDC,  // enable leverage
         eulerAccount: myAccount,
-        feeRecipient: address(hook)  // hook collects fees
+        feeRecipient: address(0)     // set later via reconfigure
     }),
     DynamicParams({
         equilibriumReserve0: 10e18, equilibriumReserve1: 20000e6,
@@ -687,14 +697,26 @@ address pool = factory.deployPool(
         concentrationX: 0.9e18, concentrationY: 0.9e18,  // high concentration
         fee0: 0.003e18, fee1: 0.003e18,                  // fallback fee
         expiration: 0,
-        swapHookedOperations: 0x06,  // GET_FEE | AFTER_SWAP
-        swapHook: address(hook)
+        swapHookedOperations: 0,     // no hook yet
+        swapHook: address(0)
     }),
     InitialState({ reserve0: 10e18, reserve1: 20000e6 }),
     salt
 );
 
-// 3. Register in registry
+// 2. Deploy hook — constructor reads pool.getStaticParams()
+//    mismatchScale is uint256 (not uint64) — realistic values like 10e18 overflow uint64
+LPAgentHook hook = new LPAgentHook(pool, owner, baseFee, maxFee, minFee, mismatchScale);
+
+// 3. Reconfigure pool to install hook (must go through EVC)
+DynamicParams memory dp = IEulerSwap(pool).getDynamicParams();
+dp.swapHookedOperations = 0x06;  // GET_FEE | AFTER_SWAP
+dp.swapHook = address(hook);
+evc.call(pool, myAccount, 0, abi.encodeCall(
+    IEulerSwap.reconfigure, (dp, InitialState(10e18, 20000e6))
+));
+
+// 4. Register in registry
 registry.registerPool{value: bond}(pool);
 
 // The hook now:
