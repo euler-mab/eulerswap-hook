@@ -61,8 +61,8 @@ struct DynamicParams {
     uint112 equilibriumReserve1;   // y₀ — equilibrium reserve of asset 1
     uint112 minReserve0;           // floor reserve for asset 0
     uint112 minReserve1;           // floor reserve for asset 1
-    uint80  priceX;                // px — price scalar for asset 0 (1e18 scale)
-    uint80  priceY;                // py — price scalar for asset 1 (1e18 scale)
+    uint80  priceX;                // px — price numerator (must encode decimal adjustment)
+    uint80  priceY;                // py — price denominator (see Token Decimals section)
     uint64  concentrationX;        // cx — curve flatness [0, 1e18]. 0=xy=k, 1e18=constant-sum
     uint64  concentrationY;        // cy — curve flatness [0, 1e18]
     uint64  fee0;                  // fee on asset 0 input (1e18 scale)
@@ -79,8 +79,8 @@ struct DynamicParams {
 |---------------|---------------|-------|-------|
 | `xr` (real deposit X) | `equilibriumReserve0` | token units | After boost computation |
 | `yr` (real deposit Y) | `equilibriumReserve1` | token units | After boost computation |
-| `px` | `priceX` | 1e18 | `px * 1e18` |
-| `py` | `priceY` | 1e18 | `py * 1e18` |
+| `px` | `priceX` | uint80 | Must include decimal adjustment: `humanPrice × 10^(dec1−dec0)` scaled |
+| `py` | `priceY` | uint80 | Denominator of price ratio. See Token Decimals section |
 | `cx` | `concentrationX` | 1e18 | `cx * 1e18` (0.5 → 0.5e18) |
 | `cy` | `concentrationY` | 1e18 | `cy * 1e18` |
 | `feeBps` | `fee0` / `fee1` | 1e18 | `feeBps * 1e14` (30 bps → 0.003e18) |
@@ -88,6 +88,71 @@ struct DynamicParams {
 | `ry` | — | — | Determines price range: `pLower = (px/py) / (1 + ry)` |
 
 The `rx`/`ry` params don't map directly to a single contract field — they determine the equilibrium reserves and min reserves together with the deposit amounts. The `minReserve` fields enforce the price boundaries.
+
+## Token Decimals
+
+Reserves and amounts are always in **native token decimals** (1 ETH = `1e18`, 1 USDC = `1e6`, 1 WBTC = `1e8`). The `priceX`/`priceY` parameters must account for both the economic price AND the decimal difference between assets.
+
+### priceX / priceY — decimal-adjusted price ratio
+
+The curve formula converts asset X amounts to asset Y amounts via `(x0 - x) * priceX / priceY`. Since `x` is in asset0's native decimals and the result must be in asset1's native decimals, the ratio must embed decimal scaling:
+
+```
+priceX / priceY = humanPrice × 10^(decimals1 - decimals0)
+```
+
+Where `humanPrice` is "how many human units of asset1 per 1 human unit of asset0."
+
+| Pair (asset0/asset1) | Human Price | dec0 | dec1 | priceX | priceY | Ratio |
+|----------------------|-------------|------|------|--------|--------|-------|
+| ETH / USDC | 2000 | 18 | 6 | `2000e6` | `1e18` | 2e-9 |
+| WBTC / USDC | 60000 | 8 | 6 | `60000` | `100` | 600 |
+| USDC / USDT | 1 | 6 | 6 | `1e18` | `1e18` | 1 |
+| USDC / DAI | 1 | 6 | 18 | `1e18` | `1e6` | 1e12 |
+| wstETH / ETH | 1.15 | 18 | 18 | `1.15e18` | `1e18` | 1.15 |
+
+**Verification**: for ETH/USDC, swap 1 ETH: `v = 1e18 × 2000e6 / 1e18 = 2000e6` (2000 USDC) ✓
+
+**Bounds**: `priceX` and `priceY` are `uint80` values in range `[1, 1e24]`.
+
+### Oracle prices — fully decimal-aware
+
+`IPriceOracle.getQuote(inAmount, base, quote)` handles decimals automatically via `ScaleUtils`:
+- `inAmount` is in **base token's native decimals**
+- Return value is in **quote token's native decimals**
+- Example: `oracle.getQuote(1e18, WETH, USDC)` → `~2000e6` (2000 USDC)
+- Example: `oracle.getQuote(1e6, USDC, WETH)` → `~500000000000000` (0.0005 ETH)
+
+The `ScaleUtils.calcScale(baseDecimals, quoteDecimals, feedDecimals)` computes scale factors from ERC20 `decimals()` and the feed's own decimals (e.g., Chainlink uses 8).
+
+### Marginal price comparison in hooks
+
+In `LPAgentHook.getFee()`, the marginal price is computed as:
+```solidity
+uint256 marginalPrice = uint256(reserve1) * WAD / uint256(reserve0);
+```
+
+For ETH(18)/USDC(6): `marginalPrice = 20000e6 * 1e18 / 10e18 = 2000e6`
+
+The oracle price computation uses `WAD` as `inAmount` for both assets, then divides:
+```solidity
+uint256 price0 = oracle.getQuote(WAD, asset0, unitOfAccount);  // price of 1e18 units of asset0
+uint256 price1 = oracle.getQuote(WAD, asset1, unitOfAccount);  // price of 1e18 units of asset1
+return (price0 * WAD) / price1;  // ratio preserves decimal scaling
+```
+
+Both values end up in the same units (asset1-native-per-asset0-native scaled by WAD), so the mismatch comparison works correctly across any decimal combination.
+
+### Fee parameters — always WAD scale
+
+Fees (`fee0`, `fee1`, `baseFee`, `maxFee`, `minFee`) are always in WAD (1e18) scale regardless of token decimals:
+- 1 basis point = `1e14`
+- 30 bps = `0.003e18` = `3e15`
+- 100% = `1e18` (rejected by swap — `SwapRejected()`)
+
+### Reserve limits
+
+Both `equilibriumReserve` and `reserve` are `uint112` (max ~5.19 × 10³³). For 18-decimal tokens this is ~5.19 × 10¹⁵ tokens. For 6-decimal tokens this is ~5.19 × 10²⁷ tokens.
 
 ## Pool Lifecycle
 
@@ -105,12 +170,12 @@ address pool = factory.deployPool(
         feeRecipient: feeAddr
     }),
     DynamicParams({
-        equilibriumReserve0: 10e18,        // 10 ETH
-        equilibriumReserve1: 20000e6,      // 20,000 USDC
+        equilibriumReserve0: 10e18,        // 10 ETH (18 decimals)
+        equilibriumReserve1: 20000e6,      // 20,000 USDC (6 decimals)
         minReserve0: 0,
         minReserve1: 0,
-        priceX: 2000e18,                   // ETH = $2000
-        priceY: 1e18,                      // USDC = $1
+        priceX: 2000e6,                    // decimal-adjusted: 2000 × 10^(6-18) × 1e18
+        priceY: 1e18,                      // reference denominator
         concentrationX: 0.5e18,            // cx = 0.5
         concentrationY: 0.5e18,            // cy = 0.5
         fee0: 0.003e18,                    // 30 bps
@@ -576,10 +641,14 @@ Resolution order: direct mapping → ERC4626 vault recursion → fallback oracle
 
 ```solidity
 // In a getFee hook — compare oracle vs pool price
-uint256 oraclePrice = IPriceOracle(oracle).getQuote(1e18, asset0, asset1);
+// getQuote is decimal-aware: inAmount in base decimals, returns quote decimals
+// Using same inAmount (WAD) for both tokens, then taking ratio, preserves
+// the decimal scaling so it matches the pool's marginal price formula
+uint256 price0 = IPriceOracle(oracle).getQuote(1e18, asset0, unitOfAccount);
+uint256 price1 = IPriceOracle(oracle).getQuote(1e18, asset1, unitOfAccount);
+uint256 oraclePrice = (price0 * 1e18) / price1;  // same units as marginal
 uint256 poolPrice = uint256(reserve1) * 1e18 / reserve0;
 uint256 mismatch = abs(oraclePrice - poolPrice) * 1e18 / oraclePrice;
-// Set fee proportional to mismatch
 ```
 
 For pull-based oracles (Pyth/Redstone), update price feeds atomically in the same EVC batch before querying.
@@ -693,7 +762,7 @@ address pool = factory.deployPool(
     DynamicParams({
         equilibriumReserve0: 10e18, equilibriumReserve1: 20000e6,
         minReserve0: 0, minReserve1: 0,
-        priceX: 2000e18, priceY: 1e18,
+        priceX: 2000e6, priceY: 1e18,                    // decimal-adjusted (see Token Decimals)
         concentrationX: 0.9e18, concentrationY: 0.9e18,  // high concentration
         fee0: 0.003e18, fee1: 0.003e18,                  // fallback fee
         expiration: 0,
