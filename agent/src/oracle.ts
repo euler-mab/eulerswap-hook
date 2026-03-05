@@ -1,37 +1,129 @@
-import type { AgentConfig } from "./types.js";
+import type { PublicClient, Address } from "viem";
 
 export interface AggregatorQuote {
-  midPrice: number; // asset1 per asset0
-  bidPrice: number; // best bid
-  askPrice: number; // best ask
-  spread: number; // ask - bid (in bps)
+  midPrice: number; // asset1 per asset0 (human-readable, e.g. 3000 for WETH/USDC)
+  bidPrice: number; // price when selling asset0
+  askPrice: number; // price when buying asset0
+  spread: number; // (ask - bid) / mid * 10000 (in bps)
   timestamp: number;
 }
 
-/// Query aggregator for market price data.
-/// In production, this would call 1inch or CowSwap API.
-/// For now, returns a placeholder that the agent can build on.
-export async function getAggregatorQuote(
-  _config: AgentConfig
-): Promise<AggregatorQuote | null> {
-  // TODO: Implement actual aggregator queries
-  // Example 1inch API call:
-  //   GET https://api.1inch.dev/swap/v6.0/1/quote?src=TOKEN0&dst=TOKEN1&amount=1000000000000000000
-  // Example CowSwap API:
-  //   POST https://api.cow.fi/mainnet/api/v1/quote
-  //
-  // For now return null to indicate no quote available.
-  // The rules engine handles this gracefully.
-  return null;
+// CowSwap Orderbook API — aggregates across DEXes for best execution price
+const COWSWAP_API = "https://api.cow.fi/mainnet/api/v1";
+const QUOTE_TIMEOUT_MS = 10_000;
+
+const erc20Abi = [
+  {
+    name: "decimals",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+] as const;
+
+const decimalsCache = new Map<string, number>();
+
+async function getDecimals(client: PublicClient, token: Address): Promise<number> {
+  const cached = decimalsCache.get(token);
+  if (cached !== undefined) return cached;
+
+  const dec = await client.readContract({
+    address: token,
+    abi: erc20Abi,
+    functionName: "decimals",
+  });
+
+  const n = Number(dec);
+  decimalsCache.set(token, n);
+  return n;
 }
 
-/// Parse a raw aggregator response into our quote format.
-/// Separate function so it's easy to swap aggregator backends.
-export function parseQuoteResponse(
-  _raw: unknown,
-  _asset0Decimals: number,
-  _asset1Decimals: number
-): AggregatorQuote {
-  // Placeholder — implement when connecting to real aggregator
-  throw new Error("Not implemented: connect to 1inch or CowSwap API");
+interface CowQuoteResult {
+  sellAmount: string;
+  buyAmount: string;
+}
+
+async function cowQuote(body: Record<string, unknown>): Promise<CowQuoteResult | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), QUOTE_TIMEOUT_MS);
+
+    const res = await fetch(`${COWSWAP_API}/quote`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+
+    const data = (await res.json()) as { quote: CowQuoteResult };
+    return data.quote;
+  } catch {
+    return null; // API down, timeout, or network error
+  }
+}
+
+export async function getAggregatorQuote(
+  client: PublicClient,
+  asset0: Address,
+  asset1: Address,
+): Promise<AggregatorQuote | null> {
+  const [dec0, dec1] = await Promise.all([
+    getDecimals(client, asset0),
+    getDecimals(client, asset1),
+  ]);
+
+  const oneToken0 = (10n ** BigInt(dec0)).toString();
+  const validTo = Math.floor(Date.now() / 1000) + 600;
+  const from = "0x0000000000000000000000000000000000000001";
+
+  // Bid: sell 1 asset0 → how much asset1 do we receive?
+  // Ask: buy 1 asset0 → how much asset1 do we spend?
+  const [bidQuote, askQuote] = await Promise.all([
+    cowQuote({
+      sellToken: asset0,
+      buyToken: asset1,
+      sellAmountBeforeFee: oneToken0,
+      kind: "sell",
+      from,
+      validTo,
+      priceQuality: "fast",
+    }),
+    cowQuote({
+      sellToken: asset1,
+      buyToken: asset0,
+      buyAmountAfterFee: oneToken0,
+      kind: "buy",
+      from,
+      validTo,
+      priceQuality: "fast",
+    }),
+  ]);
+
+  if (!bidQuote || !askQuote) return null;
+
+  const bidBuyAmount = Number(bidQuote.buyAmount);
+  const askSellAmount = Number(askQuote.sellAmount);
+
+  if (bidBuyAmount <= 0 || askSellAmount <= 0) return null;
+
+  // bidPrice: sold 1 asset0, got bidBuyAmount smallest-units of asset1
+  const bidPrice = bidBuyAmount / 10 ** dec1;
+
+  // askPrice: to buy 1 asset0, must pay askSellAmount smallest-units of asset1
+  const askPrice = askSellAmount / 10 ** dec1;
+
+  const midPrice = (bidPrice + askPrice) / 2;
+  const spread = midPrice > 0 ? ((askPrice - bidPrice) / midPrice) * 10000 : 0;
+
+  return {
+    midPrice,
+    bidPrice,
+    askPrice,
+    spread: Math.max(0, spread),
+    timestamp: Math.floor(Date.now() / 1000),
+  };
 }

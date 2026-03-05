@@ -1,13 +1,15 @@
-import { createPublicClient, createWalletClient, http } from "viem";
+import { createPublicClient, createWalletClient, http, type Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { mainnet } from "viem/chains";
 import { loadConfig } from "./config.js";
 import * as monitor from "./monitor.js";
+import * as oracle from "./oracle.js";
 import * as rules from "./rules.js";
 import * as executor from "./executor.js";
 import * as claude from "./claude.js";
 import * as journal from "./journal.js";
 import * as metrics from "./metrics.js";
+import { eulerSwapAbi } from "./abi.js";
 
 async function main() {
   const config = loadConfig();
@@ -24,9 +26,19 @@ async function main() {
     transport: http(config.flashbotsRpcUrl ?? config.rpcUrl),
   });
 
+  // Read asset addresses (immutable, one-time)
+  const assets = await publicClient.readContract({
+    address: config.poolAddress,
+    abi: eulerSwapAbi,
+    functionName: "getAssets",
+  });
+  const asset0 = assets[0] as Address;
+  const asset1 = assets[1] as Address;
+
   console.log("EulerSwap LP Agent starting...");
   console.log(`  Pool: ${config.poolAddress}`);
   console.log(`  Hook: ${config.hookAddress}`);
+  console.log(`  Assets: ${asset0} / ${asset1}`);
   console.log(`  Agent: ${account.address}`);
   console.log(`  Poll: every ${config.pollInterval}s`);
   console.log(`  Claude review: every ${config.claudeReviewInterval}s`);
@@ -108,6 +120,9 @@ async function main() {
       const gasToday = metrics.getGasSpentToday();
       const recentActions = metrics.getRecentActions();
 
+      // Aggregator quote for market context (non-blocking — null is OK)
+      const aggQuote = await oracle.getAggregatorQuote(publicClient, asset0, asset1);
+
       console.log("Running Claude review...");
       const review = await claude.review(
         config,
@@ -115,7 +130,8 @@ async function main() {
         feeParams,
         stats,
         recentActions,
-        gasToday
+        gasToday,
+        aggQuote
       );
 
       metrics.recordReview(review);

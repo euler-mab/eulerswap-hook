@@ -8,6 +8,7 @@ import type {
   ClaudeReview,
   ClaudeRecommendation,
 } from "./types.js";
+import type { AggregatorQuote } from "./oracle.js";
 import { WAD, BPS } from "./types.js";
 
 let client: Anthropic | null = null;
@@ -25,11 +26,12 @@ export async function review(
   feeParams: HookFeeParams,
   stats: HookStats,
   recentActions: ExecutedAction[],
-  gasSpentToday: bigint
+  gasSpentToday: bigint,
+  aggQuote: AggregatorQuote | null = null
 ): Promise<ClaudeReview> {
   const anthropic = getClient(config);
 
-  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday);
+  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote);
 
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
@@ -103,7 +105,8 @@ function buildContext(
   feeParams: HookFeeParams,
   stats: HookStats,
   recentActions: ExecutedAction[],
-  gasSpentToday: bigint
+  gasSpentToday: bigint,
+  aggQuote: AggregatorQuote | null
 ): string {
   const fmtWad = (v: bigint) => (Number(v) / 1e18).toFixed(6);
   const fmtBps = (v: bigint) => (Number(v) / Number(BPS)).toFixed(1) + " bps";
@@ -131,6 +134,12 @@ Trade stats:
 
 Gas spent today: ${fmtEth(gasSpentToday)}
 Recent actions: ${recentActions.length > 0 ? recentActions.map((a) => `${a.type}: ${a.reason} (${a.success ? "OK" : "FAILED"})`).join("; ") : "none"}
+${aggQuote ? `
+Aggregator market data (CowSwap):
+  Mid price: ${aggQuote.midPrice.toFixed(6)} (asset1 per asset0)
+  Bid: ${aggQuote.bidPrice.toFixed(6)}, Ask: ${aggQuote.askPrice.toFixed(6)}
+  Spread: ${aggQuote.spread.toFixed(1)} bps` : `
+Aggregator market data: unavailable`}
 `.trim();
 }
 
