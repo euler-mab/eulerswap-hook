@@ -25,7 +25,7 @@ export const POOLS: PoolConfig[] = [
     eulerAccount: "0x2909bCc87c17d8Be263621bF087bC806BA313BFE",
     name: "USDC/WETH #1",
     description: "Dynamic fee hook, test pool",
-    deployBlock: 21800000n,
+    deployBlock: 24591724n,
   },
 ];
 
