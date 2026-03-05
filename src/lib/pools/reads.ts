@@ -99,11 +99,13 @@ export async function fetchPoolState(
   const oraclePrice = val(results[9], null) as bigint | null;
 
   // Compute marginal price using EulerSwap curve: pXxy = (px/py)(cx + (1-cx)(x0/x)²)
+  // On-chain priceX/priceY are (USD_price / 10^decimals) * 1e18, so normalise to
+  // human USD prices: px_human = priceX / 10^(18 - decimals)
   const r0 = Number(formatUnits(reserves[0], meta0.decimals));
   const x0 = Number(formatUnits(dynamicParams.equilibriumReserve0, meta0.decimals));
   const cx = Number(dynamicParams.concentrationX) / 1e18;
-  const px = Number(dynamicParams.priceX);
-  const py = Number(dynamicParams.priceY);
+  const px = Number(dynamicParams.priceX) / Math.pow(10, 18 - meta0.decimals);
+  const py = Number(dynamicParams.priceY) / Math.pow(10, 18 - meta1.decimals);
   let marginalPrice = 0;
   if (r0 > 0 && py > 0 && x0 > 0) {
     const ratio = x0 / r0;
