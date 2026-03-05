@@ -38,7 +38,9 @@ export default function PoolDetail({ pool }: { pool: PoolConfig }) {
       {/* Status bar */}
       <div className="flex items-center gap-3 text-xs text-gray-400">
         <span>Block #{state.blockNumber.toString()}</span>
-        <span>Updated {new Date(state.fetchedAt).toLocaleTimeString()}</span>
+        {state.blockTimestamp > 0 && (
+          <span>{new Date(state.blockTimestamp * 1000).toLocaleString()}</span>
+        )}
         <button onClick={refresh} className="text-gray-500 hover:text-gray-900 transition-colors cursor-pointer">
           Refresh
         </button>

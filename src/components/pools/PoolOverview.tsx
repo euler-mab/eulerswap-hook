@@ -4,7 +4,7 @@ import { useState } from "react";
 import { formatUnits } from "viem";
 import type { PoolConfig } from "@/lib/pools/config";
 import type { PoolState } from "@/lib/pools/types";
-import { fmtAmount, fmtFeeBps, fmtPrice, shortAddr } from "@/lib/pools/format";
+import { fmtAmount, fmtFeeBps, fmtPrice, shortAddr, timeAgo } from "@/lib/pools/format";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -95,8 +95,20 @@ export default function PoolOverview({ state, pool }: { state: PoolState; pool: 
         )}
       </Row>
 
-      {/* Fees */}
-      <Row label="Fees">
+      {/* Live fees from hook.getFee */}
+      {state.hookLiveFee0In !== undefined && (
+        <Row label="Current fee">
+          {fmtFeeBps(state.hookLiveFee0In)} ({state.asset0Symbol} in) / {fmtFeeBps(state.hookLiveFee1In!)} ({state.asset1Symbol} in)
+          {state.hookDecaySurcharge !== undefined && state.hookLastTradeTimestamp !== undefined && state.hookLastTradeTimestamp > 0 && (
+            <span className="text-gray-400 ml-1">
+              (last trade {timeAgo(state.hookLastTradeTimestamp)})
+            </span>
+          )}
+        </Row>
+      )}
+
+      {/* Pool base fees + hook config */}
+      <Row label="Fee config">
         {fmtFeeBps(state.fee0)} / {fmtFeeBps(state.fee1)}
         {state.hookBaseFee !== undefined && (
           <span className="text-gray-500 ml-1">

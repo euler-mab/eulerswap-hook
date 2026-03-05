@@ -79,6 +79,20 @@ export async function fetchPoolState(
     hasHook
       ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "oraclePrice" })
       : Promise.resolve(null),
+    // 10: hook live fee for asset0-in
+    hasHook
+      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getFee", args: [true, reserves[0], reserves[1], false] })
+      : Promise.resolve(null),
+    // 11: hook live fee for asset1-in
+    hasHook
+      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getFee", args: [false, reserves[0], reserves[1], false] })
+      : Promise.resolve(null),
+    // 12: hook decay params
+    hasHook
+      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getDecayParams" })
+      : Promise.resolve(null),
+    // 13: block timestamp
+    client.getBlock({ blockNumber: blockNumber }).then(b => b.timestamp),
   ]);
 
   const val = <T,>(r: PromiseSettledResult<T>, fallback: T): T =>
@@ -97,6 +111,11 @@ export async function fetchPoolState(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tradeStats = val(results[8], null) as any;
   const oraclePrice = val(results[9], null) as bigint | null;
+  const liveFee0In = val(results[10], null) as bigint | null;
+  const liveFee1In = val(results[11], null) as bigint | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const decayParams = val(results[12], null) as any;
+  const blockTimestamp = val(results[13], 0n) as bigint;
 
   // Compute marginal price using EulerSwap curve.
   // On-chain priceX/priceY are (USD_price / 10^decimals) * 1e18, so normalise to
@@ -156,12 +175,17 @@ export async function fetchPoolState(
     hookVolume1: tradeStats ? tradeStats[2] : undefined,
     hookLastBlock: tradeStats ? tradeStats[5] : undefined,
     hookOraclePrice: oraclePrice ?? undefined,
+    hookLiveFee0In: liveFee0In ?? undefined,
+    hookLiveFee1In: liveFee1In ?? undefined,
+    hookDecaySurcharge: decayParams ? decayParams[0] : undefined,
+    hookDecayPeriod: decayParams ? Number(decayParams[1]) : undefined,
+    hookLastTradeTimestamp: decayParams ? Number(decayParams[2]) : undefined,
     // Wallet
     agentEthBalance, agentToken0Balance, agentToken1Balance,
     // Vault positions
     vaultDeposit0, vaultDeposit1, vaultDebt0, vaultDebt1,
     // Meta
-    fetchedAt: Date.now(), blockNumber,
+    fetchedAt: Date.now(), blockNumber, blockTimestamp: Number(blockTimestamp),
   };
 }
 

@@ -207,6 +207,29 @@ export const hookAbi = [
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
+  {
+    name: "getFee",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "asset0IsInput", type: "bool" },
+      { name: "reserve0", type: "uint112" },
+      { name: "reserve1", type: "uint112" },
+      { name: "", type: "bool" },
+    ],
+    outputs: [{ name: "fee", type: "uint64" }],
+  },
+  {
+    name: "getDecayParams",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "_surcharge", type: "uint64" },
+      { name: "_period", type: "uint32" },
+      { name: "_lastTradeTimestamp", type: "uint256" },
+    ],
+  },
 ] as const;
 
 export const priceOracleAbi = [

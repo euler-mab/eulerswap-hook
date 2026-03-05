@@ -53,6 +53,13 @@ export interface PoolState {
   hookVolume1?: bigint;
   hookLastBlock?: bigint;
   hookOraclePrice?: bigint;
+  // Live fees from hook.getFee (computed at current block)
+  hookLiveFee0In?: bigint; // fee when asset0 is input
+  hookLiveFee1In?: bigint; // fee when asset1 is input
+  // Decay params
+  hookDecaySurcharge?: bigint;
+  hookDecayPeriod?: number;
+  hookLastTradeTimestamp?: number;
 
   // Agent wallet balances
   agentEthBalance: bigint;
@@ -68,6 +75,7 @@ export interface PoolState {
   // Metadata
   fetchedAt: number;
   blockNumber: bigint;
+  blockTimestamp: number;
 }
 
 /** Parsed Swap event log */
