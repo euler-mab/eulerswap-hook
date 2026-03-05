@@ -3,7 +3,7 @@
 import { formatUnits } from "viem";
 import type { PoolConfig } from "@/lib/pools/config";
 import type { PoolState } from "@/lib/pools/types";
-import { fmtAmount, fmtFeeBps, shortAddr } from "@/lib/pools/format";
+import { fmtAmount, fmtFeeBps, fmtPrice, shortAddr } from "@/lib/pools/format";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -50,9 +50,16 @@ export default function PoolOverview({ state, pool }: { state: PoolState; pool: 
         {tvl !== undefined && <span className="text-gray-500 ml-1">(~${tvl.toFixed(2)})</span>}
       </Row>
 
-      {/* Marginal price */}
+      {/* Marginal price — show in both directions */}
       <Row label="Marginal price">
-        {state.marginalPrice.toFixed(2)} {state.asset1Symbol}/{state.asset0Symbol}
+        {state.marginalPrice > 0 ? (
+          <>
+            {fmtPrice(1 / state.marginalPrice)} {state.asset0Symbol}/{state.asset1Symbol}
+            <span className="text-gray-400 ml-1">
+              ({fmtPrice(state.marginalPrice)} {state.asset1Symbol}/{state.asset0Symbol})
+            </span>
+          </>
+        ) : "—"}
       </Row>
 
       {/* Oracle price */}

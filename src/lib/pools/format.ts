@@ -25,6 +25,15 @@ export function fmtFeeBps(feeWad: bigint): string {
   return `${bps.toFixed(1)} bps`;
 }
 
+/** Smart-format a price value (handles both large and tiny numbers) */
+export function fmtPrice(price: number): string {
+  if (price === 0) return "0";
+  if (price >= 1000) return price.toFixed(2);
+  if (price >= 1) return price.toFixed(4);
+  if (price >= 0.0001) return price.toFixed(6);
+  return price.toExponential(3);
+}
+
 /** Format address to 0x1234...5678 */
 export function shortAddr(addr: string): string {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
