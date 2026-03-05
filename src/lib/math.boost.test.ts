@@ -210,6 +210,9 @@ describe("Boost integration: TS boost vs on-chain health", () => {
           fc.pre(CX >= 0n && CX < (1n << 64n));
           fc.pre(CY >= 0n && CY < (1n << 64n));
 
+          const RX = toWad(p.rx);
+          const RY = toWad(p.ry);
+
           const env = {
             ...process.env,
             X0: X0.toString(),
@@ -218,6 +221,8 @@ describe("Boost integration: TS boost vs on-chain health", () => {
             PY: PY.toString(),
             CX: CX.toString(),
             CY: CY.toString(),
+            RX: RX.toString(),
+            RY: RY.toString(),
           };
 
           try {
@@ -272,6 +277,9 @@ describe("Boost integration: TS boost vs on-chain health", () => {
           fc.pre(CX >= 0n && CX < (1n << 64n));
           fc.pre(CY >= 0n && CY < (1n << 64n));
 
+          const RX = toWad(p.rx);
+          const RY = toWad(p.ry);
+
           const env = {
             ...process.env,
             X0: X0.toString(),
@@ -280,6 +288,8 @@ describe("Boost integration: TS boost vs on-chain health", () => {
             PY: PY.toString(),
             CX: CX.toString(),
             CY: CY.toString(),
+            RX: RX.toString(),
+            RY: RY.toString(),
           };
 
           try {
