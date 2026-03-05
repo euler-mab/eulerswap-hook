@@ -97,6 +97,36 @@ Hardcoded in `config.ts`, not adjustable by Claude:
 
 Claude cannot pause/unpause the pool — only the rules engine (emergency) or the owner.
 
+## Claude Review Strategy
+
+The Claude review (`claude.ts`) sends a system message explaining the pool's fee mechanism and strategic principles, then a user message with current pool state. Claude responds with JSON recommendations.
+
+**System prompt includes:**
+- Fee formula: `fee = baseFee ± (mismatchScale × mismatch)`, clamped to `[minFee, maxFee]`
+- What each parameter controls (baseFee, minFee, maxFee, mismatchScale) with typical ranges
+- 6 strategic principles from DYNAMIC_FEES.md:
+  1. Profitability = fees − IL (fees linear, IL quadratic)
+  2. Undercut the market (baseFee ≈ market_spread/2 − ε)
+  3. Don't change what's working (low mismatch + volume = no action)
+  4. Concentration is a risk dial (higher = more efficiency but more IL)
+  5. Equilibrium recentering only for structural reasons (rules engine handles oracle drift)
+  6. Conservative by default (empty recommendations is valid)
+- Safety bounds from config.ts
+- Parameter encoding (WAD-scaled fees vs raw reserve amounts)
+
+**Context provided per review:**
+- Reserves, equilibrium, oracle/marginal price, mismatch, concentration
+- Hook fee params (baseFee, minFee, maxFee, mismatchScale, paused)
+- Trade stats (count, volume, last trade direction/size)
+- Gas spent today, recent actions
+- CowSwap aggregator quote (bid/ask/spread) when available
+
+**Allowed recommendation types:**
+- `setFeeParams`: update baseFee, minFee, maxFee, mismatchScale (all 4 required)
+- `reconfigure`: adjust concentration and/or equilibrium reserves
+
+**Safety validation** (`rules.isSafe()`): every recommendation is checked before execution. Forbidden fields (priceX, priceY, swapHook, etc.) are blocked, fee ordering enforced, equilibrium changes capped at 3x.
+
 ## Setup
 
 ```bash
