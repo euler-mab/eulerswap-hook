@@ -211,7 +211,7 @@ pool.reconfigure(newDynamicParams, newInitialState);
 ```solidity
 evc.call(pool, eulerAccount, 0, abi.encodeCall(IEulerSwap.reconfigure, (newDP, newIS)));
 ```
-Only the `swapHook` can call `reconfigure()` directly — and only from within the `afterSwap` callback (when the pool is unlocked). Direct calls from EOAs will revert with `EVC_NotAuthorized`.
+Only the `swapHook` can call `reconfigure()` directly — and only from within the `afterSwap` callback (when the pool is unlocked). Direct calls from EOAs without EVC routing will revert with `Unauthorized()`.
 
 This allows changing prices, concentration, fees, range, and hook — without redeploying. The hook's `afterSwap` callback can call `reconfigure()` to implement releverage.
 
@@ -717,7 +717,7 @@ Source: `contracts/evk-periphery/src/`
 
 | Lens | Key Functions |
 |------|---------------|
-| `VaultLens` | `getVaultInfoFull()` — complete vault state (balances, rates, LTVs, oracle, caps) |
+| `VaultLens` | `getVaultInfoStatic()`, `getVaultInfoDynamic()` — complete vault state (balances, rates, LTVs, oracle, caps) |
 | `AccountLens` | `getAccountInfo()`, `getAccountLiquidityInfo()`, `getTimeToLiquidation()` |
 | `OracleLens` | `getOracleInfo()` — oracle type detection, staleness checks |
 | `UtilsLens` | `getAPYs()`, `getControllerAssetPriceInfo()`, `tokenBalances()` |
