@@ -12,6 +12,14 @@ import { BPS, fmtToken } from "./types.js";
 
 const JOURNAL_DIR = join(import.meta.dirname ?? ".", "..", "journal");
 
+// Pool address prefix for journal files — set on startup to namespace
+// different pools (fork vs mainnet, multiple pools) into separate files.
+let poolPrefix = "";
+
+export function setPool(poolAddress: string): void {
+  poolPrefix = poolAddress.slice(0, 6).toLowerCase(); // e.g. "0x4311"
+}
+
 function ensureDir(): void {
   if (!existsSync(JOURNAL_DIR)) {
     mkdirSync(JOURNAL_DIR, { recursive: true });
@@ -23,7 +31,8 @@ function todayFile(): string {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
-  return join(JOURNAL_DIR, `${yyyy}-${mm}-${dd}.md`);
+  const suffix = poolPrefix ? `-${poolPrefix}` : "";
+  return join(JOURNAL_DIR, `${yyyy}-${mm}-${dd}${suffix}.md`);
 }
 
 function timestamp(): string {

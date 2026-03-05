@@ -9,6 +9,7 @@ import * as executor from "./executor.js";
 import * as claude from "./claude.js";
 import * as journal from "./journal.js";
 import * as metrics from "./metrics.js";
+import { getFundingRate } from "./funding.js";
 import { eulerSwapAbi, erc20Abi } from "./abi.js";
 import { fmtToken, fmtBps as fmtBpsUtil, type AssetDecimals } from "./types.js";
 
@@ -19,6 +20,7 @@ async function main() {
   const publicClient = createPublicClient({
     chain: mainnet,
     transport: http(config.rpcUrl),
+    cacheTime: 0,  // Disable response caching — agent needs fresh on-chain data every poll
   });
 
   const walletClient = createWalletClient({
@@ -51,6 +53,7 @@ async function main() {
   console.log(`  Poll: every ${config.pollInterval}s`);
   console.log(`  Claude review: every ${config.claudeReviewInterval}s`);
 
+  journal.setPool(config.poolAddress);
   journal.startup(config);
 
   // --- Main poll loop ---
@@ -131,8 +134,13 @@ async function main() {
       const gasToday = metrics.getGasSpentToday();
       const recentActions = metrics.getRecentActions();
 
-      // Aggregator quote for market context (non-blocking — null is OK)
-      const aggQuote = await oracle.getAggregatorQuote(publicClient, asset0, asset1);
+      // Aggregator quote + funding rate for market context (non-blocking — null is OK)
+      const [aggQuote, funding] = await Promise.all([
+        oracle.getAggregatorQuote(publicClient, asset0, asset1),
+        config.fundingSymbol
+          ? getFundingRate(config.fundingSymbol).catch(() => null)
+          : Promise.resolve(null),
+      ]);
 
       console.log("Running Claude review...");
       const review = await claude.review(
@@ -144,7 +152,8 @@ async function main() {
         gasToday,
         aggQuote,
         decimals,
-        vaultDebt
+        vaultDebt,
+        funding
       );
 
       metrics.recordReview(review);

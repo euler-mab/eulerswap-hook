@@ -11,6 +11,7 @@ import type {
   VaultDebtInfo,
 } from "./types.js";
 import type { AggregatorQuote } from "./oracle.js";
+import type { FundingSnapshot } from "./funding.js";
 import { WAD, BPS, fmtToken } from "./types.js";
 import { getTrendSummary, getMetrics } from "./metrics.js";
 
@@ -32,11 +33,12 @@ export async function review(
   gasSpentToday: bigint,
   aggQuote: AggregatorQuote | null = null,
   decimals?: AssetDecimals,
-  vaultDebt?: VaultDebtInfo
+  vaultDebt?: VaultDebtInfo,
+  funding?: FundingSnapshot | null,
 ): Promise<ClaudeReview> {
   const anthropic = getClient(config);
 
-  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals, vaultDebt);
+  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals, vaultDebt, funding);
 
   const systemPrompt = buildSystemPrompt(config, snapshot);
 
@@ -199,6 +201,31 @@ Max ${(Number(config.maxSwapPct) / 1e16).toFixed(0)}% of reserves per swap.
 
 **Choosing sellAsset**: Sell the EXCESS asset (reserves > equilibrium) to buy the DEPLETED.
 
+## Funding-Aware Fee Strategy
+
+When perp funding data is available, use it to orient your fee asymmetry for maximum revenue.
+
+**Core insight**: If funding is positive (longs pay shorts), shorting perps is profitable.
+We WANT the LP to accumulate the volatile asset (go long spot) so we can hedge with a
+profitable short perp. Therefore:
+- **Longs pay (positive funding)**: Lower fees for swaps that give us MORE of the volatile
+  asset (we go long spot). Higher fees for swaps that take the volatile asset away.
+  Our long spot + short perp = delta-neutral + funding income.
+- **Shorts pay (negative funding)**: Lower fees for swaps that REMOVE the volatile asset
+  (we go short spot). Higher fees for swaps that give us more of it.
+  Our short spot + long perp = delta-neutral + funding income.
+- **Neutral funding (|APR| < 1%)**: Ignore funding; use standard rebalancing logic.
+
+**Interaction with delta flattening**: Funding orientation takes PRIORITY over delta
+flattening when the funding rate is significant (|APR| > 5%). Between 1-5% APR, blend
+both signals — favor funding direction but don't ignore extreme imbalances.
+
+**Revenue math**: A 10% APR on $100K notional = $27/day. Compare this to fee income
+and borrow costs to decide how aggressively to orient toward the funding-profitable side.
+
+**In marketAnalysis**: Always note the current funding rate, direction, and whether your
+fee recommendations align with the funding-profitable direction.
+
 ## Response Format
 
 Respond with ONLY valid JSON:
@@ -248,7 +275,8 @@ function buildContext(
   gasSpentToday: bigint,
   aggQuote: AggregatorQuote | null,
   decimals?: AssetDecimals,
-  vaultDebt?: VaultDebtInfo
+  vaultDebt?: VaultDebtInfo,
+  funding?: FundingSnapshot | null,
 ): string {
   const fmtR0 = (v: bigint) => decimals ? fmtToken(v, decimals.dec0) : (Number(v) / 1e18).toFixed(6);
   const fmtR1 = (v: bigint) => decimals ? fmtToken(v, decimals.dec1) : (Number(v) / 1e18).toFixed(6);
@@ -347,6 +375,13 @@ ${aggQuote ? `
   Spread: ${aggQuote.spread.toFixed(1)} bps` : `
 ## Aggregator Market Data
   unavailable`}
+${funding ? `
+## Perp Funding Rate (${funding.symbol})
+  Direction: ${funding.direction} (${funding.apr > 0 ? "shorts earn" : funding.apr < 0 ? "longs earn" : "neutral"})
+  Annualized: ${funding.apr.toFixed(1)}% APR
+  Binance: ${funding.binanceApr !== null ? funding.binanceApr.toFixed(1) + "% APR" : "unavailable"}
+  Hyperliquid: ${funding.hyperliquidApr !== null ? funding.hyperliquidApr.toFixed(1) + "% APR" : "unavailable"}
+  Favorable LP delta: ${funding.apr > 0 ? "SHORT asset0 (let reserves drift to more asset1)" : funding.apr < 0 ? "LONG asset0 (let reserves drift to more asset0)" : "no preference"}` : ""}
 ${vaultDebt ? `
 ## Vault Debt & Utilization
   Borrow vault 0: ${vaultDebt.hasBorrowVault0 ? `debt=${fmtR0(vaultDebt.debt0)}, utilization=${fmtPct(vaultDebt.utilization0)}, borrowRate=${fmtApr(vaultDebt.borrowRate0)}, dailyCost=${fmtR0(vaultDebt.dailyCost0)}` : "disabled (no borrow vault)"}

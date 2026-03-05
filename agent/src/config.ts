@@ -46,5 +46,8 @@ export function loadConfig(): AgentConfig {
     // External swap bounds
     maxSwapPct: WAD / 10n, // 10% of reserves per swap
     swapSlippageBps: parseInt(optional("SWAP_SLIPPAGE_BPS", "50")), // 0.5% default
+
+    // Funding rate (volatile pairs only)
+    fundingSymbol: process.env["FUNDING_SYMBOL"] || undefined,
   };
 }

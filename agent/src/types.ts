@@ -175,6 +175,9 @@ export interface AgentConfig {
   // External swap bounds
   maxSwapPct: bigint; // WAD-scaled, max % of reserves per swap (default 10%)
   swapSlippageBps: number; // slippage tolerance for CowSwap orders (default 50 = 0.5%)
+
+  // Funding rate (optional — for volatile pairs like ETH, BTC)
+  fundingSymbol?: string; // e.g. "ETH" — queries Binance/Hyperliquid for perp funding
 }
 
 export const WAD = 10n ** 18n;
