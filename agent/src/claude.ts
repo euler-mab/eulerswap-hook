@@ -262,6 +262,36 @@ up to $30/day in fee discounts to attract that rebalancing flow. More than that 
 **In strategyNotes**: Always compare net carry to fee revenue. If |carry| > fee revenue,
 carry optimization should dominate your recommendations over fee optimization.
 
+## Competitor-Aware Pricing
+
+The aggregator data (CowSwap bid/ask/spread) tells you the **cost of trading elsewhere**.
+Your fees must be competitive with this external spread or you get zero flow.
+
+### Reading the spread
+- **Tight external spread (< 5 bps)**: Deep liquidity exists elsewhere. Your baseFee must
+  be in the same range or routers will never route to you. Compete on price.
+- **Moderate spread (5-20 bps)**: Room to charge meaningful fees while still attracting flow.
+  Set baseFee at or slightly below the external spread midpoint.
+- **Wide spread (> 20 bps)**: Thin external liquidity — you have pricing power. Raise baseFee
+  to capture more per trade. Flow will come because you're still the best option.
+
+### Key principle
+Your effective fee (including mismatch adjustment) should be **slightly below** the external
+spread for the rebalancing direction, and can be **at or above** it for the worsening direction.
+This ensures:
+1. Rebalancing flow prefers your pool (you get the trades that help you)
+2. Worsening flow goes elsewhere (let other pools absorb the toxic side)
+
+### Dynamic adjustment
+External spreads change with market conditions. When you see the spread widening over time
+(compare current to previous reviews), it often signals increasing volatility or decreasing
+external liquidity — a good time to widen your fees too. When spreads compress, tighten
+your baseFee to stay competitive.
+
+### When aggregator data is unavailable
+Fall back to conservative defaults. Don't aggressively lower fees when you can't verify
+that the external market supports it.
+
 ## Response Format
 
 Respond with ONLY valid JSON:
