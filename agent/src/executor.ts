@@ -32,6 +32,12 @@ export async function execute(
         equilibriumReserve1: action.params["equilibriumReserve1"]
           ? BigInt(action.params["equilibriumReserve1"] as string)
           : currentDParams.equilibriumReserve1,
+        priceX: action.params["priceX"]
+          ? BigInt(action.params["priceX"] as string)
+          : currentDParams.priceX,
+        priceY: action.params["priceY"]
+          ? BigInt(action.params["priceY"] as string)
+          : currentDParams.priceY,
         concentrationX: action.params["concentrationX"]
           ? BigInt(action.params["concentrationX"] as string)
           : currentDParams.concentrationX,

@@ -78,6 +78,11 @@ function checkPriceRecenter(snapshot: PoolSnapshot): RuleResult {
       params: {
         equilibriumReserve0: newEq0.toString(),
         equilibriumReserve1: newEq1.toString(),
+        // Update AMM curve prices to match current oracle.
+        // priceX/priceY are value-per-raw-unit (fixnum basis 1e18), derived by
+        // dividing the oracle's getQuote(WAD, asset, uoa) by WAD.
+        priceX: (snapshot.oraclePrice0 / WAD).toString(),
+        priceY: (snapshot.oraclePrice1 / WAD).toString(),
       },
     },
   };

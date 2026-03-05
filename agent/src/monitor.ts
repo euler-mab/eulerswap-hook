@@ -55,14 +55,16 @@ async function getVaultMeta(client: PublicClient, config: AgentConfig) {
   return cachedVaultMeta;
 }
 
-/** Read the real oracle price: asset1 per 1 WAD of asset0.
- *  Matches LPAgentHook._getOraclePrice() exactly. */
-async function readOraclePrice(
+/** Read oracle prices for both assets and the combined ratio.
+ *  price0/price1 are raw getQuote values; oraclePrice matches LPAgentHook._getOraclePrice(). */
+async function readOraclePrices(
   client: PublicClient,
   config: AgentConfig
-): Promise<bigint> {
+): Promise<{ oraclePrice: bigint; price0: bigint; price1: bigint }> {
   const meta = await getVaultMeta(client, config);
-  if (meta.oracleAddr === "0x0000000000000000000000000000000000000000") return 0n;
+  if (meta.oracleAddr === "0x0000000000000000000000000000000000000000") {
+    return { oraclePrice: 0n, price0: 0n, price1: 0n };
+  }
 
   const [price0, price1] = await Promise.all([
     client.readContract({
@@ -79,8 +81,8 @@ async function readOraclePrice(
     }),
   ]);
 
-  if (price1 === 0n) return 0n;
-  return (price0 * WAD) / price1;
+  const oraclePrice = price1 === 0n ? 0n : (price0 * WAD) / price1;
+  return { oraclePrice, price0, price1 };
 }
 
 export async function getPoolSnapshot(
@@ -88,7 +90,7 @@ export async function getPoolSnapshot(
   config: AgentConfig
 ): Promise<PoolSnapshot> {
   // Batch read on-chain state + real oracle price
-  const [reserves, dynamicParams, block, oraclePrice] = await Promise.all([
+  const [reserves, dynamicParams, block, oraclePrices] = await Promise.all([
     client.readContract({
       address: config.poolAddress,
       abi: eulerSwapAbi,
@@ -100,8 +102,9 @@ export async function getPoolSnapshot(
       functionName: "getDynamicParams",
     }),
     client.getBlock(),
-    readOraclePrice(client, config),
+    readOraclePrices(client, config),
   ]);
+  const { oraclePrice, price0: oraclePrice0, price1: oraclePrice1 } = oraclePrices;
 
   const [reserve0, reserve1] = reserves;
   const dParams = dynamicParams;
@@ -134,6 +137,8 @@ export async function getPoolSnapshot(
     fee0: dParams.fee0,
     fee1: dParams.fee1,
     oraclePrice,
+    oraclePrice0,
+    oraclePrice1,
     marginalPrice,
     mismatch,
   };

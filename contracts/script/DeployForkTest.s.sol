@@ -79,8 +79,11 @@ contract DeployForkTest is Script {
             equilibriumReserve1: uint112(WETH_AMOUNT),
             minReserve0: 0,
             minReserve1: 0,
-            priceX: uint80(1e18),
-            priceY: uint80(1e18),
+            // priceX/priceY = value per raw unit of each asset (fixnum basis 1e18).
+            // USDC (6 dec): 1 raw unit = 1e-6 USDC = $1e-6 → priceX = 1e-6 * 1e18 = 1e12
+            // WETH (18 dec): 1 raw unit = 1e-18 ETH = $2500e-18 → priceY = 2500e-18 * 1e18 = 2500
+            priceX: uint80(1e12),
+            priceY: uint80(2500),
             concentrationX: uint64(0.5e18),
             concentrationY: uint64(0.5e18),
             fee0: 0,

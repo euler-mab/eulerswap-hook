@@ -16,6 +16,8 @@ export interface PoolSnapshot {
   fee0: bigint;
   fee1: bigint;
   oraclePrice: bigint; // asset1 per asset0 (WAD)
+  oraclePrice0: bigint; // getQuote(WAD, asset0, unitOfAccount) — raw oracle value
+  oraclePrice1: bigint; // getQuote(WAD, asset1, unitOfAccount) — raw oracle value
   marginalPrice: bigint; // reserve1/reserve0 (WAD)
   mismatch: bigint; // |oracle - marginal| / oracle (WAD)
 }
