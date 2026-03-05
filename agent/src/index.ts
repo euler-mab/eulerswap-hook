@@ -1,7 +1,7 @@
 import { createPublicClient, createWalletClient, http, type Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { mainnet } from "viem/chains";
-import { loadConfig } from "./config.js";
+import { loadConfig, loadArbConfig } from "./config.js";
 import * as monitor from "./monitor.js";
 import * as oracle from "./oracle.js";
 import * as rules from "./rules.js";
@@ -10,11 +10,13 @@ import * as claude from "./claude.js";
 import * as journal from "./journal.js";
 import * as metrics from "./metrics.js";
 import { getFundingRate } from "./funding.js";
+import * as arb from "./arb.js";
 import { eulerSwapAbi, erc20Abi } from "./abi.js";
-import { fmtToken, fmtBps as fmtBpsUtil, type AssetDecimals } from "./types.js";
+import { fmtToken, fmtBps as fmtBpsUtil, fmtEth, type AssetDecimals } from "./types.js";
 
 async function main() {
   const config = loadConfig();
+  const arbConfig = loadArbConfig();
   const account = privateKeyToAccount(config.privateKey);
 
   const publicClient = createPublicClient({
@@ -217,9 +219,68 @@ async function main() {
     }
   };
 
+  // --- Arb loop (every block, ~12s) ---
+  const arbLoop = async () => {
+    if (!arbConfig.enabled) return;
+    try {
+      // Rough ETH price from oracle (asset1 is WETH in USDC/WETH pools)
+      const ethPriceUsd = decimals.dec0 === 6 ? 2500 : 1; // heuristic; overridden by oracle below
+      let ethPrice = ethPriceUsd;
+      try {
+        const aggQuote = await oracle.getAggregatorQuote(publicClient, asset0, asset1);
+        if (aggQuote && aggQuote.midPrice > 0) {
+          // midPrice = asset1 per asset0. For USDC/WETH: ~0.0004 (1 USDC = 0.0004 WETH)
+          // ETH price = 1 / midPrice
+          ethPrice = decimals.dec0 === 6 ? 1 / aggQuote.midPrice : aggQuote.midPrice;
+        }
+      } catch { /* use fallback */ }
+
+      const gasToday = metrics.getGasSpentToday();
+      if (gasToday >= config.dailyGasBudget) return;
+
+      const opp = await arb.checkArbOpportunity(
+        publicClient,
+        config,
+        arbConfig,
+        asset0,
+        asset1,
+        decimals,
+        ethPrice,
+      );
+
+      if (opp) {
+        console.log(`Arb opportunity: ${arb.formatOpportunity(opp, decimals)}`);
+        const result = await arb.executeArb(opp, walletClient, publicClient, config, arbConfig);
+        journal.arbResult({
+          direction: opp.direction,
+          profit: fmtToken(opp.profit, opp.direction === "B" ? decimals.dec1 : decimals.dec0),
+          profitUsd: opp.profitUsd,
+          txHash: result.txHash,
+          success: result.success,
+          gasUsed: fmtEth(result.gasUsed),
+        });
+        console.log(`Arb ${result.success ? "OK" : "FAILED"}: tx=${result.txHash} gas=${fmtEth(result.gasUsed)} ETH`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      journal.error(`Arb error: ${msg}`);
+      // Don't spam console for expected "no opportunity" errors
+      if (!msg.includes("Not profitable")) {
+        console.error(`Arb error: ${msg}`);
+      }
+    }
+  };
+
   // Start loops
   setInterval(pollLoop, config.pollInterval * 1000);
   setInterval(claudeLoop, config.claudeReviewInterval * 1000);
+  if (arbConfig.enabled) {
+    setInterval(arbLoop, 12_000); // ~1 block
+    console.log(`  Arb bot: enabled (contract=${arbConfig.arbitrageurAddress})`);
+    console.log(`  Arb min profit: $${arbConfig.minProfitUsd}, max trade: $${arbConfig.maxTradeUsd}`);
+  } else {
+    console.log("  Arb bot: disabled (set ARB_ENABLED=true to enable)");
+  }
 
   // Run first poll immediately
   await pollLoop();

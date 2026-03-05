@@ -1,6 +1,8 @@
 import "dotenv/config";
 import type { AgentConfig } from "./types.js";
+import type { ArbConfig } from "./arb.js";
 import { parseEther } from "viem";
+import type { Address } from "viem";
 import { WAD, BPS } from "./types.js";
 
 /** Return a copy of config safe for logging/serialization (secrets redacted) */
@@ -49,5 +51,16 @@ export function loadConfig(): AgentConfig {
 
     // Funding rate (volatile pairs only)
     fundingSymbol: process.env["FUNDING_SYMBOL"] || undefined,
+  };
+}
+
+export function loadArbConfig(): ArbConfig {
+  const enabled = process.env["ARB_ENABLED"] === "true";
+  return {
+    enabled,
+    arbitrageurAddress: (process.env["ARBITRAGEUR_ADDRESS"] ?? "0x0000000000000000000000000000000000000000") as Address,
+    minProfitUsd: parseFloat(process.env["ARB_MIN_PROFIT_USD"] ?? "0.25"),
+    maxTradeUsd: parseFloat(process.env["ARB_MAX_TRADE_USD"] ?? "50"),
+    gasGwei: parseFloat(process.env["ARB_GAS_GWEI"] ?? "30"),
   };
 }

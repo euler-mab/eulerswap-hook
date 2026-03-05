@@ -129,6 +129,27 @@ export function vaultInfo(vaultDebt: VaultDebtInfo, decimals?: AssetDecimals): v
   append("");
 }
 
+export function arbResult(result: {
+  direction: string;
+  profit: string;
+  profitUsd: number;
+  txHash?: string;
+  success: boolean;
+  gasUsed?: string;
+  reason?: string;
+}): void {
+  append(`## ${timestamp()} — Arb ${result.success ? "Executed" : "Failed"}`);
+  append(`- Direction: ${result.direction}`);
+  if (result.success) {
+    append(`- Profit: ${result.profit} ($${result.profitUsd.toFixed(2)})`);
+    append(`- Tx: \`${result.txHash}\``);
+    append(`- Gas: ${result.gasUsed} ETH`);
+  } else {
+    append(`- Reason: ${result.reason}`);
+  }
+  append("");
+}
+
 export function error(msg: string): void {
   append(`## ${timestamp()} — Error`);
   append(`- ${msg}`);

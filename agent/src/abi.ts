@@ -70,6 +70,30 @@ export const eulerSwapAbi = [
     ],
   },
   {
+    name: "computeQuote",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "tokenIn", type: "address" },
+      { name: "tokenOut", type: "address" },
+      { name: "amount", type: "uint256" },
+      { name: "exactIn", type: "bool" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "swap",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "amount0Out", type: "uint256" },
+      { name: "amount1Out", type: "uint256" },
+      { name: "to", type: "address" },
+      { name: "data", type: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
     name: "reconfigure",
     type: "function",
     stateMutability: "nonpayable",
@@ -323,6 +347,70 @@ export const hookAbi = [
       { name: "_surcharge", type: "uint64" },
       { name: "_period", type: "uint32" },
       { name: "_lastTradeTimestamp", type: "uint256" },
+    ],
+  },
+] as const;
+
+// Arbitrageur contract ABI
+export const arbitrageurAbi = [
+  {
+    name: "execute",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "pool", type: "address" },
+      { name: "amount0Out", type: "uint256" },
+      { name: "amount1Out", type: "uint256" },
+      { name: "amountRequired", type: "uint256" },
+      { name: "uniPoolFee", type: "uint24" },
+      { name: "minProfit", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    name: "withdrawAll",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "token", type: "address" },
+      { name: "to", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    name: "owner",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+] as const;
+
+// Uniswap V3 QuoterV2 — quoteExactInputSingle is NOT a view fn (uses revert trick)
+export const quoterV2Abi = [
+  {
+    name: "quoteExactInputSingle",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "params",
+        type: "tuple",
+        components: [
+          { name: "tokenIn", type: "address" },
+          { name: "tokenOut", type: "address" },
+          { name: "amountIn", type: "uint256" },
+          { name: "fee", type: "uint24" },
+          { name: "sqrtPriceLimitX96", type: "uint160" },
+        ],
+      },
+    ],
+    outputs: [
+      { name: "amountOut", type: "uint256" },
+      { name: "sqrtPriceX96After", type: "uint160" },
+      { name: "initializedTicksCrossed", type: "uint32" },
+      { name: "gasEstimate", type: "uint256" },
     ],
   },
 ] as const;
