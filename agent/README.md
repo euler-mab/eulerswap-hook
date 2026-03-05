@@ -36,7 +36,8 @@ Layers 1+2 are in `contracts/src/LPAgentHook.sol`. Layer 3 is this directory.
 | `monitor.ts` | Reads on-chain state (reserves, params, oracle price, vault debt/utilization) |
 | `oracle.ts` | CowSwap aggregator quotes — bid/ask/spread for market context |
 | `rules.ts` | Rule engine: emergency pause, price recentering, interest rebalancing, gas budget, rate limiting |
-| `executor.ts` | Submits txs — reconfigure routes through EVC, hook params are direct |
+| `executor.ts` | Submits txs — reconfigure routes through EVC, hook params direct, CowSwap swaps |
+| `cowswap.ts` | CowSwap order flow: quote, EIP-712 sign, submit, poll for fill |
 | `claude.ts` | Hourly Claude API review with structured prompt/response |
 | `journal.ts` | Daily markdown files in `journal/` |
 | `metrics.ts` | In-memory P&L, gas, action history (last 1000 entries) |
@@ -114,7 +115,23 @@ When the pool has leverage (borrow vaults), sustained one-directional flow can s
 
 The rule reads vault state via `monitor.getVaultDebtInfo()`: pool debt, vault utilization, borrow rates, and daily interest cost. It adjusts `setFeeParams` to make the rebalancing direction cheap and the worsening direction expensive, encouraging arbers to restore balance.
 
-Claude also receives vault debt data in its review context and can recommend further action (concentration reduction, equilibrium shift) per the strategy in [REBALANCING_STRATEGY.md](./REBALANCING_STRATEGY.md).
+Claude also receives vault debt data in its review context and can recommend further action (concentration reduction, equilibrium shift, or external swap) per the strategy in [REBALANCING_STRATEGY.md](./REBALANCING_STRATEGY.md).
+
+## External Swap (Last Resort)
+
+When fee adjustments aren't rebalancing fast enough, Claude can recommend an `externalSwap` — the agent withdraws the excess asset from its supply vault, swaps it on CowSwap for the depleted asset, and deposits the proceeds back.
+
+**Flow** (5 on-chain txs + 1 off-chain order):
+1. Withdraw sell tokens from supply vault via EVC
+2. Approve CowSwap GPv2VaultRelayer
+3. Get CowSwap quote, validate against `minBuyAmount`
+4. Sign order (EIP-712) and submit to CowSwap API
+5. Poll for fill (up to 5 min timeout)
+6. Deposit received tokens into the other supply vault
+
+**Recovery**: if the quote fails or order expires unfilled, tokens are automatically deposited back into the original vault.
+
+**Safety bounds**: swap size is capped at `maxSwapPct` (default 10%) of the sell-side reserve. Slippage is controlled by `swapSlippageBps` (default 50 = 0.5%).
 
 ## Claude Review Strategy
 
@@ -143,8 +160,9 @@ The Claude review (`claude.ts`) sends a system message explaining the pool's fee
 **Allowed recommendation types:**
 - `setFeeParams`: update baseFee, minFee, maxFee, mismatchScale (all 4 required)
 - `reconfigure`: adjust concentration and/or equilibrium reserves
+- `externalSwap`: sell excess asset on CowSwap, deposit depleted asset back (last resort)
 
-**Safety validation** (`rules.isSafe()`): every recommendation is checked before execution. Forbidden fields (priceX, priceY, swapHook, etc.) are blocked, fee ordering enforced, equilibrium changes capped at 3x.
+**Safety validation** (`rules.isSafe()`): every recommendation is checked before execution. Forbidden fields (priceX, priceY, swapHook, etc.) are blocked, fee ordering enforced, equilibrium changes capped at 3x, swap size capped at configurable % of reserves.
 
 ## Setup
 

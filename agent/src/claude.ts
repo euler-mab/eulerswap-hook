@@ -165,13 +165,31 @@ and additive. When reserves are imbalanced:
 fast enough, recommend reducing concentrationX/concentrationY. This makes the curve
 more convex, naturally limiting further borrowing. Trade-off: less capital efficiency.
 
+## External Swap (Last Resort)
+
+When fee adjustments and concentration changes aren't rebalancing fast enough, you can
+recommend an **externalSwap** — the agent will withdraw the excess asset from the supply
+vault, swap it on CowSwap for the depleted asset, and deposit back.
+
+**When to use**: Only when ALL of these are true:
+1. Vault utilization is critical (>90%) and rising
+2. Fee asymmetry has been active for multiple review cycles with no improvement
+3. The daily interest cost exceeds the expected swap cost (gas + slippage)
+4. You have high confidence (≥0.8) in the direction
+
+**Risks**: External swaps cost gas (4-5 transactions), have slippage, and temporarily
+reduce the pool's reserves. Use conservatively — max ${(Number(config.maxSwapPct) / 1e16).toFixed(0)}% of reserves per swap.
+
+**Choosing sellAsset**: Sell the EXCESS asset (the one with reserves above equilibrium)
+to buy the DEPLETED asset. Check reserves vs equilibrium to determine which side.
+
 ## Response Format
 
 Respond with ONLY valid JSON:
 {
   "recommendations": [
     {
-      "type": "setFeeParams" | "reconfigure",
+      "type": "setFeeParams" | "reconfigure" | "externalSwap",
       "params": { ... },
       "reasoning": "...",
       "confidence": 0.0-1.0
@@ -196,7 +214,14 @@ All values are strings of integers (no decimals, no floats).
   concentrationX, concentrationY: WAD-scaled. 0.40 = "${(40n * WAD / 100n).toString()}"
   equilibriumReserve0, equilibriumReserve1: RAW on-chain token amounts (NOT WAD-scaled).
     Current values: eq0=${snapshot.equilibriumReserve0.toString()}, eq1=${snapshot.equilibriumReserve1.toString()}
-  Do NOT set priceX, priceY, swapHook, fee0, fee1, or expiration.`;
+  Do NOT set priceX, priceY, swapHook, fee0, fee1, or expiration.
+
+**externalSwap** (all 3 required):
+  sellAsset: "0" or "1" — which pool asset to sell
+  sellAmount: RAW token amount to sell (NOT WAD-scaled)
+  minBuyAmount: minimum acceptable buy amount (slippage protection)
+    Reserve0=${snapshot.reserve0.toString()}, Reserve1=${snapshot.reserve1.toString()}
+    Max per swap: ${(Number(config.maxSwapPct) / 1e16).toFixed(0)}% of the sell-side reserve`;
 }
 
 function buildContext(

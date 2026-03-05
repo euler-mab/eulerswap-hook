@@ -3,7 +3,6 @@ import type {
   PoolSnapshot,
   HookFeeParams,
   VaultDebtInfo,
-  Action,
   RuleResult,
   ClaudeRecommendation,
 } from "./types.js";
@@ -351,6 +350,31 @@ export function isSafe(
 
   if (rec.type === "setPaused") {
     return { safe: false, reason: "Claude cannot pause/unpause — only rules engine or owner" };
+  }
+
+  if (rec.type === "externalSwap") {
+    const sellAsset = rec.params["sellAsset"] as string;
+    const sellAmount = rec.params["sellAmount"] ? BigInt(rec.params["sellAmount"] as string) : 0n;
+    const minBuyAmount = rec.params["minBuyAmount"] ? BigInt(rec.params["minBuyAmount"] as string) : 0n;
+
+    if (sellAsset !== "0" && sellAsset !== "1") {
+      return { safe: false, reason: `sellAsset must be "0" or "1", got "${sellAsset}"` };
+    }
+    if (sellAmount <= 0n) {
+      return { safe: false, reason: "sellAmount must be positive" };
+    }
+    if (minBuyAmount <= 0n) {
+      return { safe: false, reason: "minBuyAmount must be positive" };
+    }
+
+    // Cap swap size at maxSwapPct of the relevant reserve
+    if (snapshot) {
+      const reserve = sellAsset === "0" ? snapshot.reserve0 : snapshot.reserve1;
+      const maxAmount = reserve * config.maxSwapPct / WAD;
+      if (sellAmount > maxAmount) {
+        return { safe: false, reason: `sellAmount ${sellAmount} exceeds ${(Number(config.maxSwapPct) / 1e16).toFixed(0)}% of reserve (max ${maxAmount})` };
+      }
+    }
   }
 
   return { safe: true, reason: "within bounds" };

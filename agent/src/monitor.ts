@@ -21,7 +21,7 @@ let cachedVaultMeta: {
 } | null = null;
 
 /** Read and cache immutable vault/oracle addresses from pool's static params */
-async function getVaultMeta(client: PublicClient, config: AgentConfig) {
+export async function getVaultMeta(client: PublicClient, config: AgentConfig) {
   if (cachedVaultMeta) return cachedVaultMeta;
 
   const staticParams = await client.readContract({

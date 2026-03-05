@@ -42,5 +42,9 @@ export function loadConfig(): AgentConfig {
     minConcentration: WAD / 100n, // 0.01
     maxConcentration: 95n * WAD / 100n, // 0.95
     maxReconfigsPerHour: 12,
+
+    // External swap bounds
+    maxSwapPct: WAD / 10n, // 10% of reserves per swap
+    swapSlippageBps: parseInt(optional("SWAP_SLIPPAGE_BPS", "50")), // 0.5% default
   };
 }

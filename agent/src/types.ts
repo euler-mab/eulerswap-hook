@@ -88,7 +88,8 @@ export interface VaultDebtInfo {
 export type ActionType =
   | "reconfigure"
   | "setFeeParams"
-  | "setPaused";
+  | "setPaused"
+  | "externalSwap";
 
 export interface Action {
   type: ActionType;
@@ -163,6 +164,10 @@ export interface AgentConfig {
   minConcentration: bigint; // WAD
   maxConcentration: bigint; // WAD
   maxReconfigsPerHour: number;
+
+  // External swap bounds
+  maxSwapPct: bigint; // WAD-scaled, max % of reserves per swap (default 10%)
+  swapSlippageBps: number; // slippage tolerance for CowSwap orders (default 50 = 0.5%)
 }
 
 export const WAD = 10n ** 18n;
