@@ -35,56 +35,16 @@ export async function review(
 
   const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals);
 
+  const systemPrompt = buildSystemPrompt(config, snapshot);
+
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 2048,
+    system: systemPrompt,
     messages: [
       {
         role: "user",
-        content: `You are an autonomous LP agent managing an EulerSwap pool. Review the current state and suggest parameter adjustments.
-
-## Current Pool State
-${context}
-
-## Your Task
-Analyze the current state and provide recommendations as JSON. Consider:
-1. Is the current baseFee appropriate given the mismatch and volume?
-2. Should concentration be adjusted based on recent volatility?
-3. Does the equilibrium need recentering?
-4. Any strategy observations for the journal?
-
-Respond with ONLY valid JSON in this format:
-{
-  "recommendations": [
-    {
-      "type": "setFeeParams" | "reconfigure",
-      "params": { ... },
-      "reasoning": "...",
-      "confidence": 0.0-1.0
-    }
-  ],
-  "marketAnalysis": "Brief analysis of current conditions",
-  "strategyNotes": "Notes for the journal about strategy performance"
-}
-
-If no changes are needed, return empty recommendations array.
-
-## Parameter format reference
-
-All param values must be strings (stringified integers, no decimals).
-1 basis point = ${BPS.toString()} (1e14).
-
-**setFeeParams** — all values are WAD-scaled (1e18 = 100%):
-  baseFee, maxFee, minFee: fee rates. Example: 25 bps = "${(25n * BPS).toString()}"
-  mismatchScale: multiplier (WAD-scaled). Example: 10x = "${(10n * WAD).toString()}"
-
-**reconfigure** — mixed units:
-  concentrationX, concentrationY: WAD-scaled. Example: 0.50 = "${(WAD / 2n).toString()}"
-  equilibriumReserve0, equilibriumReserve1: RAW token amounts (NOT WAD-scaled).
-    These are the exact on-chain reserve values. Current raw values shown below.
-    equilibriumReserve0 (raw): ${snapshot.equilibriumReserve0.toString()}
-    equilibriumReserve1 (raw): ${snapshot.equilibriumReserve1.toString()}
-  Do NOT set priceX, priceY, swapHook, fee0, fee1, or expiration — those are managed automatically.`,
+        content: `## Current Pool State\n${context}\n\nAnalyze and respond with ONLY valid JSON.`,
       },
     ],
   });
@@ -115,6 +75,98 @@ All param values must be strings (stringified integers, no decimals).
   } catch {
     return emptyReview(`Failed to parse Claude response: ${text.slice(0, 200)}`);
   }
+}
+
+function buildSystemPrompt(config: AgentConfig, snapshot: PoolSnapshot): string {
+  return `You are an autonomous LP strategy agent for an EulerSwap concentrated-liquidity pool.
+
+## How the Dynamic Fee Works
+
+The pool's hook computes per-swap fees using this formula:
+  fee = baseFee ± (mismatchScale × mismatch), clamped to [minFee, maxFee]
+
+Where:
+- mismatch = |oraclePrice − marginalPrice| / oraclePrice (0 = perfectly aligned)
+- The fee is ASYMMETRIC: the mispriced side pays baseFee + scaled mismatch (protects LP),
+  the other side pays baseFee − scaled mismatch (attracts retail flow)
+- When mismatch is 0, both sides pay baseFee
+- When paused, all trades pay maxFee (discourages trading)
+
+## What Each Parameter Controls
+
+- baseFee: the fee when oracle and pool agree. Lower = more competitive, more volume.
+  Higher = more revenue per trade but less flow. Typical range: 5-50 bps.
+- minFee: floor for the attractive side. Prevents giving away free trades during mismatch.
+  Typical: 1-10 bps.
+- maxFee: ceiling for the protective side. Caps the penalty on arb trades.
+  Must be < 100% (contract enforces). Typical: 50-500 bps.
+- mismatchScale: sensitivity multiplier. Higher = more aggressive fee asymmetry.
+  At scale=10 and mismatch=50bps, the fee adjustment is 500bps. Typical: 5-20x.
+
+## Strategic Principles
+
+1. **Profitability = fees − IL**. Fees grow linearly with vol, IL quadratically.
+   The goal is keeping fees above the IL threshold.
+
+2. **Undercut the market**: If aggregator spread is available, baseFee should be
+   roughly market_spread/2 − ε. Just cheap enough to capture flow from competing venues.
+
+3. **Don't change what's working**: If mismatch is low (<100bps), volume is flowing,
+   and no structural regime change is visible, recommend NO changes. Frequent parameter
+   changes waste gas and introduce uncertainty.
+
+4. **Concentration is a risk dial**: Higher concentration = more capital efficiency =
+   more fees BUT more IL. Only increase in low-vol, mean-reverting conditions.
+   Decrease when vol is high or sustained directional drift. Range: 0.01-0.95.
+
+5. **Equilibrium recentering**: Only recommend if reserves have drifted significantly
+   from equilibrium (>5%). The rules engine handles oracle-driven recenters automatically.
+   You should only recenter for structural reasons (e.g., adjusting concentration).
+
+6. **Conservative by default**: When uncertain, recommend nothing. An empty
+   recommendations array is a valid and good response.
+
+## Safety Bounds (hardcoded, cannot be overridden)
+
+- baseFee: ${(Number(config.minBaseFee) / Number(BPS)).toFixed(0)}-${(Number(config.maxBaseFee) / Number(BPS)).toFixed(0)} bps
+- maxFee: must be < 100% (${WAD.toString()})
+- minFee: must be ≤ baseFee
+- mismatchScale: max 100x (${(100n * WAD).toString()})
+- concentration: ${(Number(config.minConcentration) / 1e18).toFixed(2)}-${(Number(config.maxConcentration) / 1e18).toFixed(2)}
+- equilibrium changes: max 3x per recenter
+
+## Response Format
+
+Respond with ONLY valid JSON:
+{
+  "recommendations": [
+    {
+      "type": "setFeeParams" | "reconfigure",
+      "params": { ... },
+      "reasoning": "...",
+      "confidence": 0.0-1.0
+    }
+  ],
+  "marketAnalysis": "Brief analysis of current conditions",
+  "strategyNotes": "Notes for journal — what's working, what to watch"
+}
+
+## Parameter Encoding
+
+All values are strings of integers (no decimals, no floats).
+1 basis point = ${BPS.toString()}.
+
+**setFeeParams** (all 4 required):
+  baseFee: WAD-scaled. 25 bps = "${(25n * BPS).toString()}"
+  minFee: WAD-scaled. 5 bps = "${(5n * BPS).toString()}"
+  maxFee: WAD-scaled. 200 bps = "${(200n * BPS).toString()}"
+  mismatchScale: WAD-scaled multiplier. 10x = "${(10n * WAD).toString()}"
+
+**reconfigure**:
+  concentrationX, concentrationY: WAD-scaled. 0.40 = "${(40n * WAD / 100n).toString()}"
+  equilibriumReserve0, equilibriumReserve1: RAW on-chain token amounts (NOT WAD-scaled).
+    Current values: eq0=${snapshot.equilibriumReserve0.toString()}, eq1=${snapshot.equilibriumReserve1.toString()}
+  Do NOT set priceX, priceY, swapHook, fee0, fee1, or expiration.`;
 }
 
 function buildContext(
