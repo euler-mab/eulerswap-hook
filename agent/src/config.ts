@@ -19,6 +19,8 @@ export function loadConfig(): AgentConfig {
     privateKey: required("PRIVATE_KEY") as `0x${string}`,
     poolAddress: required("POOL_ADDRESS") as `0x${string}`,
     hookAddress: required("HOOK_ADDRESS") as `0x${string}`,
+    evcAddress: required("EVC_ADDRESS") as `0x${string}`,
+    eulerAccount: required("EULER_ACCOUNT") as `0x${string}`,
     anthropicApiKey: required("ANTHROPIC_API_KEY"),
     flashbotsRpcUrl: process.env["FLASHBOTS_RPC_URL"],
     pollInterval: parseInt(optional("POLL_INTERVAL", "30")),

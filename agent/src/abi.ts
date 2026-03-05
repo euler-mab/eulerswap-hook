@@ -106,6 +106,21 @@ export const eulerSwapAbi = [
   },
 ] as const;
 
+export const evcAbi = [
+  {
+    name: "call",
+    type: "function",
+    stateMutability: "payable",
+    inputs: [
+      { name: "targetContract", type: "address" },
+      { name: "onBehalfOfAccount", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "data", type: "bytes" },
+    ],
+    outputs: [{ name: "", type: "bytes" }],
+  },
+] as const;
+
 export const hookAbi = [
   {
     name: "getTradeStats",

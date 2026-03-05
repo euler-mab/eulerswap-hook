@@ -103,6 +103,8 @@ export interface AgentConfig {
   privateKey: `0x${string}`;
   poolAddress: Address;
   hookAddress: Address;
+  evcAddress: Address;
+  eulerAccount: Address; // the pool owner's EVC account
   anthropicApiKey: string;
   flashbotsRpcUrl?: string;
   pollInterval: number; // seconds

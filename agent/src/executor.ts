@@ -1,6 +1,7 @@
 import type { WalletClient, PublicClient, Hash } from "viem";
+import { encodeFunctionData } from "viem";
 import type { AgentConfig, Action, ExecutedAction } from "./types.js";
-import { eulerSwapAbi, hookAbi } from "./abi.js";
+import { eulerSwapAbi, evcAbi, hookAbi } from "./abi.js";
 import { recordReconfig } from "./rules.js";
 
 export async function execute(
@@ -44,11 +45,18 @@ export async function execute(
         reserve1: newDParams.equilibriumReserve1,
       };
 
-      txHash = await walletClient.writeContract({
-        address: config.poolAddress,
+      // Must route through EVC — direct calls revert with EVC_NotAuthorized
+      const reconfigureData = encodeFunctionData({
         abi: eulerSwapAbi,
         functionName: "reconfigure",
         args: [newDParams, initialState],
+      });
+
+      txHash = await walletClient.writeContract({
+        address: config.evcAddress,
+        abi: evcAbi,
+        functionName: "call",
+        args: [config.poolAddress, config.eulerAccount, 0n, reconfigureData],
         account,
         chain: walletClient.chain,
       });
