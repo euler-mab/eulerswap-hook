@@ -29,9 +29,11 @@ export async function getPoolSnapshot(
   const marginalPrice =
     reserve0 > 0n ? (reserve1 * WAD) / reserve0 : 0n;
 
-  // Oracle price: priceX / priceY (these are the pool's curve price params)
-  // For the actual oracle price, we'd need to call the hook's internal oracle
-  // For now, use priceX/priceY as proxy (they reflect the configured oracle price)
+  // Equilibrium price from pool params: priceX / priceY.
+  // Note: the hook reads the real Euler oracle on-chain (in getFee). This is
+  // the pool's configured price ratio, which may lag the oracle if the pool
+  // hasn't been recentered recently. For true oracle price, query the vault's
+  // oracle directly or use the aggregator module (oracle.ts).
   const oraclePrice =
     dParams.priceY > 0n ? (dParams.priceX * WAD) / dParams.priceY : 0n;
 

@@ -65,17 +65,9 @@ contract LPAgentHookTest is EulerSwapTestBase {
         uint64 feeAsset0In = hook.getFee(true, r0, r1, false); // selling asset0 (cheap side)
         uint64 feeAsset1In = hook.getFee(false, r0, r1, false); // buying asset0 (expensive side)
 
-        // When oracle > marginal, buying asset0 (asset1 in) should be cheaper (attract retail)
-        // and selling asset0 (asset0 in) should be more expensive (block arb)... wait.
-        // Actually: poolUnderpriced0=true means:
-        //   asset0IsInput=true → chargeHigh=false (pool overvalues what they're getting) → LOW fee
-        //   asset0IsInput=false → chargeHigh=true (pool undervalues what they're giving) → HIGH fee
-        // Wait, let me re-read the code:
-        // poolUnderpriced0=true, asset0IsInput=true → chargeHigh = (true && !true) = false → LOW
-        // poolUnderpriced0=true, asset0IsInput=false → chargeHigh = (true && !false) = true → HIGH
-
-        // So: asset0 input (selling asset0 to pool) → LOW fee (pool is getting cheap asset0)
-        //     asset1 input (buying asset0 from pool) → HIGH fee (pool is giving away underpriced asset0)
+        // oracle > marginal → pool underprices asset0 (poolUnderpriced0=true):
+        //   asset0 input → LOW fee  (pool receives the cheap asset — welcome flow)
+        //   asset1 input → HIGH fee (pool gives away underpriced asset0 — adverse flow)
         assertTrue(feeAsset1In > feeAsset0In, "should charge more to buy underpriced asset0");
         assertTrue(feeAsset1In > BASE_FEE, "high side should exceed base fee");
     }
