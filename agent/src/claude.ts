@@ -37,10 +37,11 @@ export async function review(
   vaultDebt?: VaultDebtInfo,
   funding?: FundingSnapshot | null,
   decayParams?: HookDecayParams,
+  lastReview?: ClaudeReview | null,
 ): Promise<ClaudeReview> {
   const anthropic = getClient(config);
 
-  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals, vaultDebt, funding, decayParams);
+  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals, vaultDebt, funding, decayParams, lastReview);
 
   const systemPrompt = buildSystemPrompt(config, snapshot);
 
@@ -85,25 +86,44 @@ export async function review(
 }
 
 function buildSystemPrompt(config: AgentConfig, snapshot: PoolSnapshot): string {
-  return `You are an autonomous LP strategy agent for a **delta-neutral** EulerSwap position.
+  return `You are an autonomous LP strategy agent managing a full EulerSwap position.
 
-## Core Objective: Delta-Neutral Market Making
+## How the Position Works
 
-Your position provides concentrated liquidity while maintaining **zero net directional exposure**.
-The pool supplies both assets symmetrically around equilibrium. With leverage, it borrows one
-asset and supplies both — the debt creates a natural hedge against the supplied asset.
+The position is built in layers, each amplifying the one below:
 
-**Delta** = the dollar value of your reserve imbalance relative to equilibrium.
-- Delta ≈ 0: neutral — you earn fees without directional risk
-- Delta > 0 (long asset0): reserves have drifted, you're exposed to asset0 price drops
-- Delta < 0 (short asset0): the reverse
+### Layer 1: Liquidity
+The LP deposits real tokens (e.g. 10 ETH + 20,000 USDC). These are the base capital.
 
-**Your job**: keep delta near zero while maximizing fee income minus costs.
+### Layer 2: Price Range (like Uni V3)
+Instead of providing liquidity across all prices (0, ∞), the pool concentrates it into a
+range — e.g. [1800, 2400] for ETH at 2150. This is set by **minReserve0/minReserve1**
+(reserve floors where trading stops). Tighter range = more depth per dollar = more fees,
+but the pool goes out of range faster when price moves.
+
+### Layer 3: Leverage
+The pool can set virtual equilibrium reserves LARGER than real deposits by borrowing from
+Euler vaults. If the LP deposited 10 ETH but sets equilibriumReserve0 to 50 ETH, the pool
+borrows 40 ETH. This multiplies liquidity depth within the range, generating more fees —
+but creates borrow costs (carry) and liquidation risk.
+
+### Layer 4: Dynamic Fees (Dutch Auction)
+Every swap is a potential arb extracting value. The hook runs a Dutch auction: the fee
+starts high after each trade and decays over time. Arbs pay a fee close to their expected
+profit. Retail trades in the same block as an arb pay just the baseFee.
+
+### Your Job
+You manage ALL of these layers:
+- **Equilibrium price** (priceX/priceY): recenter when the market moves
+- **Price range** (minReserve0/minReserve1): set boundaries, shift when approaching limits
+- **Leverage** (equilibriumReserve0/1 vs real deposits): dial up for more depth, down when carry is bad
+- **Dynamic fees** (baseFee, surcharge, period): calibrate to capture arb value, attract retail
+- **Rebalancing**: fee asymmetry, external swaps when reserves are heavily imbalanced
 
 **P&L components** (in priority order):
 1. **Fee revenue** — your income. Proportional to volume × fee rate.
 2. **Net carry** — deposit yield minus borrow cost. Negative carry burns capital.
-3. **Impermanent loss** — grows quadratically with price moves. Concentration amplifies it.
+3. **Impermanent loss** — grows quadratically with price moves within the range.
 4. **Gas costs** — reconfigurations and swaps consume ETH.
 
 **Decision rule**: only act when the expected value of the action exceeds its cost.
@@ -205,24 +225,64 @@ The context includes a Flow Quality section (when enough data exists) showing:
   traders or market regime shift. Consider recentering equilibrium rather than fighting it.
 - **Low trade velocity**: Not enough flow. Lower baseFee to attract volume.
 
+## Price Range Management
+
+The context shows the current price range, boundary prices, and how much of the range
+is consumed (0% = at equilibrium, 100% = at boundary).
+
+**Boundary price formulas** (for c=0):
+  Upper = (priceX/priceY) × (equilibriumReserve0 / minReserve0)²
+  Lower = (priceX/priceY) / (equilibriumReserve1 / minReserve1)²
+
+### When to shift the range
+- **>70% consumed on either side**: proactively recenter before hitting the boundary.
+- **Sustained directional move**: even at 50% consumed, if the trend is clear, recenter.
+- **After a boundary hit (reserves at minReserve)**: urgent — the pool is dead in one
+  direction. Recenter immediately.
+
+### How to reconfigure the range
+All values must be updated consistently in a single reconfigure:
+1. **priceX/priceY** → match current oracle price
+2. **equilibriumReserve0/1** → rebalanced to equal value at the new price
+3. **minReserve0/1** → define boundaries around the new equilibrium
+
+The formulas:
+  newPriceX = oraclePrice0 / WAD
+  newPriceY = oraclePrice0 / oraclePrice
+  newEq0 = totalValue × WAD / (2 × oraclePrice)
+  newEq1 = totalValue / 2
+  newMin0 = newEq0 / sqrt(pUpper / eqPrice)  (upper boundary)
+  newMin1 = newEq1 / sqrt(eqPrice / pLower)  (lower boundary)
+
+### Range width tradeoffs
+- **Narrow range** (e.g. ±5%): maximum depth per dollar, more fees, but goes out of range
+  quickly in volatile markets. Requires frequent recentering (gas cost).
+- **Wide range** (e.g. ±20%): survives larger moves, fewer reconfigs, but less depth.
+- Calibrate to realized volatility: range should comfortably contain a day's typical move.
+
 ## Strategic Principles
 
 1. **Undercut the market**: If aggregator spread is available, baseFee should be
    roughly market_spread/2 − ε. Just cheap enough to capture flow from competing venues.
 
 2. **Don't change what's working**: If delta is near zero, carry is positive, volume is
-   flowing, and no regime change is visible, recommend NO changes. Frequent parameter
-   changes waste gas and introduce uncertainty.
+   flowing, range is healthy, recommend NO changes. Gas is wasted on unnecessary reconfigs.
 
-3. **Concentration is a risk dial**: Higher concentration = more capital efficiency =
-   more fees BUT more IL and faster delta drift. Only increase in low-vol, mean-reverting
-   conditions. Decrease when vol is high or sustained directional drift. Range: 0.01-0.95.
+3. **Concentration is typically 0**: Most pools use c=0 (constant-product shape).
+   Liquidity depth comes from leverage (larger virtual reserves relative to real deposits).
+   Do not change concentration unless you have a specific reason.
 
-4. **Equilibrium recentering**: The rules engine handles oracle-driven recenters
-   automatically (>5% drift). Only recommend recenters for structural reasons
-   (e.g., adjusting concentration alongside equilibrium).
+4. **Automatic recentering**: The rules engine recenters equilibrium when mismatch exceeds
+   5%. It preserves the same relative range width (e.g. ±5% stays ±5% around the new center).
+   You can recommend recenters with different minReserves to widen/narrow the range.
 
-5. **Conservative by default**: When uncertain, recommend nothing.
+5. **Booster health model**: In booster pools (supplyVault == borrowVault), self-LTV = 0.
+   Only cross-collateral counts for health: USDC deposits back WETH debt (via LTV_usdc2weth),
+   and WETH deposits back USDC debt (via LTV_weth2usdc). At the X boundary (max asset1,
+   min asset0), the binding health is: H_weth = minReserve0 × priceX × LTV_usdc2weth /
+   (debt1 × priceY). Set leverage so this equals ~1.0 for maximum capital efficiency.
+
+6. **Conservative by default**: When uncertain, recommend nothing.
 
 ## Safety Bounds (hardcoded, cannot be overridden)
 
@@ -235,39 +295,39 @@ The context includes a Flow Quality section (when enough data exists) showing:
 
 ## Rebalancing: Flattening Delta
 
-When reserves drift from equilibrium, you accumulate delta. Flatten it using these
-tools in escalating order:
+When reserves drift from equilibrium, you accumulate delta. Flatten it in escalating order:
 
-### Layer 1: Fee Asymmetry (gas-free, preferred)
-Adjust fee params so swaps that reduce delta pay lower fees and swaps that increase
-delta pay higher fees. The hook applies this per-swap automatically.
+### Step 1: Fee Asymmetry (requires mismatchScale > 0)
+When mismatchScale > 0, the hook adds a directional fee adjustment based on oracle vs
+marginal price. Swaps that restore alignment pay lower fees; swaps that exploit mispricing
+pay higher fees. This is automatic and gas-free once enabled.
 
-When reserves are imbalanced:
-- Swaps that RESTORE balance (add the depleted asset): charge LOW fee
-- Swaps that WORSEN balance (add the excess asset): charge HIGH fee
+**If mismatchScale = 0**: fees are symmetric — all trades in a given block pay the same fee
+(baseFee + decay). You CANNOT create directional incentives through fees alone. Skip to
+Step 2 or recommend enabling mismatchScale (costs extra gas per swap for oracle read).
 
-### Layer 2: Interest Rate Response
-When the pool has leverage, reserve drift also causes vault utilization spikes:
+### Step 2: BaseFee + Interest Rate Response
+Lower baseFee to attract more volume (including rebalancing flow). When the pool has
+leverage, reserve drift causes vault utilization spikes:
 
-- utilization < 70%: no urgency — normal fees
-- utilization 70-85% (near kink): mild fee asymmetry — widen min/max spread by 1-3 bps
-- utilization 85-95% (above kink): strong asymmetry — minFee for rebalancing, maxFee for worsening
-- utilization > 95% (critical): maximum asymmetry + reduce concentration
+- utilization < 70%: no urgency
+- utilization 70-85% (near kink): lower baseFee by 1-3 bps to attract flow
+- utilization 85-95% (above kink): lower baseFee aggressively + enable mismatchScale if off
+- utilization > 95% (critical): minimum baseFee + reduce leverage (Step 3)
 
 **Key principle**: spend up to dailyBorrowCost in fee discounts to attract rebalancing flow.
-If paying $100/day in borrow interest, $100/day in fee discounts is break-even.
 
-### Layer 3: Concentration Reduction (emergency)
-Reducing concentration makes the curve more convex — larger price impact per swap,
-which naturally discourages further imbalance. Trade-off: less capital efficiency.
+### Step 3: Leverage Reduction (emergency)
+Reducing equilibriumReserves (lowering leverage) reduces borrowing and borrow costs.
+Less depth but less liquidation risk. Trade-off: less fee revenue.
 
-### Layer 4: External Swap (last resort)
-Recommend an **externalSwap** — the agent withdraws the excess asset from the supply
-vault, swaps on CowSwap for the depleted asset, and deposits back.
+### Step 4: External Swap (last resort)
+Recommend an **externalSwap** — withdraw the excess asset, swap on CowSwap for the
+depleted asset, deposit back.
 
 **When to use**: Only when ALL are true:
-1. Utilization is critical (>90%) and rising (check the trend)
-2. Fee asymmetry has been active for multiple review cycles with no improvement
+1. Utilization is critical (>90%) and rising
+2. Steps 1-2 have been active for multiple review cycles with no improvement
 3. Daily interest cost exceeds expected swap cost (gas + slippage)
 4. Confidence ≥ 0.8
 
@@ -276,96 +336,37 @@ Max ${(Number(config.maxSwapPct) / 1e16).toFixed(0)}% of reserves per swap.
 
 **Choosing sellAsset**: Sell the EXCESS asset (reserves > equilibrium) to buy the DEPLETED.
 
-## Funding-Aware Fee Strategy
+## Funding-Aware Strategy
 
-When perp funding data is available, use it to orient your fee asymmetry for maximum revenue.
+When perp funding data is available, use it to orient reserve accumulation:
+- **Positive funding (longs pay)**: accumulate the volatile asset (go long spot → hedge with profitable short perp)
+- **Negative funding (shorts pay)**: shed the volatile asset (go short spot → hedge with profitable long perp)
+- **|APR| < 1%**: ignore funding, use standard rebalancing
 
-**Core insight**: If funding is positive (longs pay shorts), shorting perps is profitable.
-We WANT the LP to accumulate the volatile asset (go long spot) so we can hedge with a
-profitable short perp. Therefore:
-- **Longs pay (positive funding)**: Lower fees for swaps that give us MORE of the volatile
-  asset (we go long spot). Higher fees for swaps that take the volatile asset away.
-  Our long spot + short perp = delta-neutral + funding income.
-- **Shorts pay (negative funding)**: Lower fees for swaps that REMOVE the volatile asset
-  (we go short spot). Higher fees for swaps that give us more of it.
-  Our short spot + long perp = delta-neutral + funding income.
-- **Neutral funding (|APR| < 1%)**: Ignore funding; use standard rebalancing logic.
-
-**Interaction with delta flattening**: Funding orientation takes PRIORITY over delta
-flattening when the funding rate is significant (|APR| > 5%). Between 1-5% APR, blend
-both signals — favor funding direction but don't ignore extreme imbalances.
-
-**Revenue math**: A 10% APR on $100K notional = $27/day. Compare this to fee income
-and borrow costs to decide how aggressively to orient toward the funding-profitable side.
-
-**In marketAnalysis**: Always note the current funding rate, direction, and whether your
-fee recommendations align with the funding-profitable direction.
+Funding orientation takes priority over delta flattening when |APR| > 5%.
+Revenue math: 10% APR on $100K = $27/day — compare to fee income and carry.
 
 ## Carry Optimization
 
-Net carry = daily supply yield − daily borrow cost. This is a persistent P&L component that
-compounds over time and can dwarf fee revenue or gas costs.
+Net carry = daily supply yield − daily borrow cost. When |carry| > fee revenue, carry
+optimization dominates.
 
-### When carry is negative (borrow cost > supply yield)
-Negative carry is burning capital. Every hour costs money. Priorities:
-1. **Reduce concentration** — less concentrated positions use less leverage and incur lower
-   borrow costs. Trade-off: lower capital efficiency and less fee revenue per unit volume.
-   But if net carry is −$50/day and fees are only $20/day, the position is unprofitable
-   regardless of fee settings. Reduce concentration until carry is manageable.
-2. **Attract rebalancing flow** — when one vault has much higher utilization (and therefore
-   borrow rate) than the other, rebalancing reduces utilization of the expensive vault.
-   Use fee asymmetry as in Layer 2, but calibrated to the CARRY cost, not just utilization level.
-3. **External swap toward the cheaper vault** — if vault 0 borrow rate >> vault 1, an external
-   swap that moves reserves toward vault 0 equilibrium reduces vault 0 utilization and carry cost.
-4. **Equilibrium shift** — if structural flow consistently pushes reserves toward one side,
-   consider recentering equilibrium to accept the new natural resting point rather than paying
-   carry to fight it.
-
-### When carry is positive (supply yield > borrow cost)
-Positive carry means the position earns money passively. In this regime:
-1. **Increase concentration cautiously** — higher concentration means more leverage, more
-   borrow cost, but also more fee revenue. Only increase if the marginal fee revenue exceeds
-   the marginal borrow cost increase.
-2. **Tolerate more delta** — with positive carry, you can afford to let reserves drift further
-   before intervening. Widen your rebalancing thresholds.
-
-### Carry-aware fee budgeting
-The key principle: **fee discounts for rebalancing should not exceed the carry savings they create**.
-If reducing vault 0 utilization from 85% to 70% saves $30/day in borrow cost, you can afford
-up to $30/day in fee discounts to attract that rebalancing flow. More than that is negative EV.
-
-**In strategyNotes**: Always compare net carry to fee revenue. If |carry| > fee revenue,
-carry optimization should dominate your recommendations over fee optimization.
+- **Negative carry**: reduce leverage (lower equilibriumReserves), attract rebalancing flow
+  via lower fees, or external swap toward the cheaper vault. If net carry is −$50/day and
+  fees are $20/day, the position is unprofitable — reduce leverage until carry is manageable.
+- **Positive carry**: consider increasing leverage if marginal fee revenue > marginal borrow
+  cost. Tolerate more delta — widen rebalancing thresholds.
+- **Fee budget**: fee discounts for rebalancing should not exceed the carry savings they create.
 
 ## Competitor-Aware Pricing
 
-The aggregator data (CowSwap bid/ask/spread) tells you the **cost of trading elsewhere**.
-Your fees must be competitive with this external spread or you get zero flow.
+The aggregator data (CowSwap spread) shows the cost of trading elsewhere. Set baseFee
+relative to this:
+- **Tight spread (< 5 bps)**: match it — compete on price
+- **Moderate (5-20 bps)**: set baseFee at or slightly below midpoint
+- **Wide (> 20 bps)**: pricing power — raise baseFee, you're the best option
 
-### Reading the spread
-- **Tight external spread (< 5 bps)**: Deep liquidity exists elsewhere. Your baseFee must
-  be in the same range or routers will never route to you. Compete on price.
-- **Moderate spread (5-20 bps)**: Room to charge meaningful fees while still attracting flow.
-  Set baseFee at or slightly below the external spread midpoint.
-- **Wide spread (> 20 bps)**: Thin external liquidity — you have pricing power. Raise baseFee
-  to capture more per trade. Flow will come because you're still the best option.
-
-### Key principle
-Your effective fee (including mismatch adjustment) should be **slightly below** the external
-spread for the rebalancing direction, and can be **at or above** it for the worsening direction.
-This ensures:
-1. Rebalancing flow prefers your pool (you get the trades that help you)
-2. Worsening flow goes elsewhere (let other pools absorb the toxic side)
-
-### Dynamic adjustment
-External spreads change with market conditions. When you see the spread widening over time
-(compare current to previous reviews), it often signals increasing volatility or decreasing
-external liquidity — a good time to widen your fees too. When spreads compress, tighten
-your baseFee to stay competitive.
-
-### When aggregator data is unavailable
-Fall back to conservative defaults. Don't aggressively lower fees when you can't verify
-that the external market supports it.
+When aggregator data is unavailable, use conservative defaults.
 
 ## Response Format
 
@@ -398,11 +399,18 @@ All values are strings of integers (no decimals, no floats).
   surcharge: WAD-scaled. 10 bps = "${(10n * BPS).toString()}"
   period: plain integer seconds (NOT WAD-scaled). 120 = "120"
 
-**reconfigure**:
+**reconfigure** (only include fields you want to change):
   concentrationX, concentrationY: WAD-scaled. 0.40 = "${(40n * WAD / 100n).toString()}"
-  equilibriumReserve0, equilibriumReserve1: RAW on-chain token amounts (NOT WAD-scaled).
-    Current values: eq0=${snapshot.equilibriumReserve0.toString()}, eq1=${snapshot.equilibriumReserve1.toString()}
-  Do NOT set priceX, priceY, swapHook, fee0, fee1, or expiration.
+  equilibriumReserve0, equilibriumReserve1: RAW on-chain token amounts.
+    Current: eq0=${snapshot.equilibriumReserve0.toString()}, eq1=${snapshot.equilibriumReserve1.toString()}
+  priceX, priceY: equilibrium price ratio. Current: priceX=${snapshot.priceX.toString()}, priceY=${snapshot.priceY.toString()}
+    The on-chain ratio encodes decimals: priceX/priceY = humanPrice × 10^(dec1−dec0).
+    When recentering to oracle price, use: priceX = oraclePrice0 / WAD, priceY = oraclePrice0 / oraclePrice.
+    Current oracle: price0=${snapshot.oraclePrice0.toString()}, price1=${snapshot.oraclePrice1.toString()}
+  minReserve0, minReserve1: reserve floors that set price boundaries. RAW token amounts.
+    Current: min0=${snapshot.minReserve0.toString()}, min1=${snapshot.minReserve1.toString()}
+    Set to 0 for unbounded. Set > 0 to define trading range.
+  Do NOT set swapHook, fee0, fee1, or expiration.
 
 **externalSwap** (all 3 required):
   sellAsset: "0" or "1" — which pool asset to sell
@@ -410,6 +418,68 @@ All values are strings of integers (no decimals, no floats).
   minBuyAmount: minimum acceptable buy amount (slippage protection)
     Reserve0=${snapshot.reserve0.toString()}, Reserve1=${snapshot.reserve1.toString()}
     Max per swap: ${(Number(config.maxSwapPct) / 1e16).toFixed(0)}% of the sell-side reserve`;
+}
+
+/**
+ * Compute boundary prices and proximity from snapshot.
+ *
+ * The marginal price at reserve0 = minReserve0 (upper boundary):
+ *   pUpper = (px/py) × (cx + (1-cx) × (eq0/minReserve0)²)
+ * The marginal price at reserve1 = minReserve1 (lower boundary):
+ *   pLower = (px/py) / (cy + (1-cy) × (eq1/minReserve1)²)
+ *
+ * Proximity: how far through the range the current price is (0% = at equilibrium, 100% = at boundary).
+ */
+function boundarySection(s: PoolSnapshot): string {
+  const px = Number(s.priceX);
+  const py = Number(s.priceY);
+  if (px <= 0 || py <= 0) return "";
+
+  const eqPrice = px / py;
+  const cx = Number(s.concentrationX) / 1e18;
+  const cy = Number(s.concentrationY) / 1e18;
+  const eq0 = Number(s.equilibriumReserve0);
+  const eq1 = Number(s.equilibriumReserve1);
+  const min0 = Number(s.minReserve0);
+  const min1 = Number(s.minReserve1);
+  const oraclePrice = Number(s.oraclePrice) / 1e18;
+
+  // Upper boundary (reserve0 → minReserve0)
+  let pUpper: number | null = null;
+  if (min0 > 0 && eq0 > 0) {
+    const ratio = eq0 / min0;
+    pUpper = eqPrice * (cx + (1 - cx) * ratio * ratio);
+  }
+
+  // Lower boundary (reserve1 → minReserve1)
+  let pLower: number | null = null;
+  if (min1 > 0 && eq1 > 0) {
+    const ratio = eq1 / min1;
+    pLower = eqPrice / (cy + (1 - cy) * ratio * ratio);
+  }
+
+  if (pUpper === null && pLower === null) {
+    return "Price range: UNBOUNDED (minReserve = 0, reserves can drain to zero)";
+  }
+
+  // Proximity: how close is the oracle price to each boundary?
+  // 0% = at equilibrium, 100% = at boundary
+  let upperProx = "";
+  if (pUpper !== null && oraclePrice > 0) {
+    const pct = eqPrice < pUpper
+      ? ((oraclePrice - eqPrice) / (pUpper - eqPrice) * 100)
+      : 0;
+    upperProx = ` (${Math.max(0, Math.min(100, pct)).toFixed(0)}% consumed)`;
+  }
+  let lowerProx = "";
+  if (pLower !== null && oraclePrice > 0) {
+    const pct = pLower < eqPrice
+      ? ((eqPrice - oraclePrice) / (eqPrice - pLower) * 100)
+      : 0;
+    lowerProx = ` (${Math.max(0, Math.min(100, pct)).toFixed(0)}% consumed)`;
+  }
+
+  return `Price range: [${pLower !== null ? pLower.toFixed(6) : "0"}${lowerProx}, ${pUpper !== null ? pUpper.toFixed(6) : "∞"}${upperProx}] (Y per X)`;
 }
 
 function buildContext(
@@ -423,6 +493,7 @@ function buildContext(
   vaultDebt?: VaultDebtInfo,
   funding?: FundingSnapshot | null,
   decayParams?: HookDecayParams,
+  lastReview?: ClaudeReview | null,
 ): string {
   const fmtR0 = (v: bigint) => decimals ? fmtToken(v, decimals.dec0) : (Number(v) / 1e18).toFixed(6);
   const fmtR1 = (v: bigint) => decimals ? fmtToken(v, decimals.dec1) : (Number(v) / 1e18).toFixed(6);
@@ -496,10 +567,12 @@ Reserve imbalance: asset0 ${imbal0Pct >= 0 ? "+" : ""}${imbal0Pct.toFixed(1)}%, 
 ## Pool State
 Reserves: ${fmtR0(snapshot.reserve0)} / ${fmtR1(snapshot.reserve1)}
 Equilibrium: ${fmtR0(snapshot.equilibriumReserve0)} / ${fmtR1(snapshot.equilibriumReserve1)}
+MinReserve: ${fmtR0(snapshot.minReserve0)} / ${fmtR1(snapshot.minReserve1)}
 Oracle price: ${fmtWad(snapshot.oraclePrice)} (asset1 per asset0)
 Marginal price: ${fmtWad(snapshot.marginalPrice)}
 Mismatch: ${fmtBps(snapshot.mismatch)}
 Concentration: X=${fmtWad(snapshot.concentrationX)}, Y=${fmtWad(snapshot.concentrationY)}
+${boundarySection(snapshot)}
 
 ## Hook Fee Params
   baseFee: ${fmtBps(feeParams.baseFee)}
@@ -553,11 +626,17 @@ ${vaultDebt ? `
   Pool type: ${vaultDebt.isBooster ? "booster (supplyVault == borrowVault)" : "standard (separate supply/borrow vaults)"}
   Cross-vault LTV: asset0=${(vaultDebt.ltv0 / 100).toFixed(1)}%, asset1=${(vaultDebt.ltv1 / 100).toFixed(1)}%
   Max leverage: asset0=${vaultDebt.maxLeverage0.toFixed(2)}x, asset1=${vaultDebt.maxLeverage1.toFixed(2)}x
-  Formula: maxLeverage = 1 / (1 - LTV). Current debt/deposit ratio: asset0=${vaultDebt.deposit0 > 0n ? (Number(vaultDebt.debt0) * 100 / Number(vaultDebt.deposit0)).toFixed(1) : "0"}%, asset1=${vaultDebt.deposit1 > 0n ? (Number(vaultDebt.debt1) * 100 / Number(vaultDebt.deposit1)).toFixed(1) : "0"}%` : `
+  Current leverage: asset0=${vaultDebt.deposit0 > 0n && vaultDebt.deposit0 > vaultDebt.debt0 ? (Number(vaultDebt.deposit0) / Number(vaultDebt.deposit0 - vaultDebt.debt0)).toFixed(2) + "x" : vaultDebt.debt0 > 0n ? "∞ (debt ≥ deposit)" : "1.00x (no debt)"}, asset1=${vaultDebt.deposit1 > 0n && vaultDebt.deposit1 > vaultDebt.debt1 ? (Number(vaultDebt.deposit1) / Number(vaultDebt.deposit1 - vaultDebt.debt1)).toFixed(2) + "x" : vaultDebt.debt1 > 0n ? "∞ (debt ≥ deposit)" : "1.00x (no debt)"}
+  Real capital: asset0=${vaultDebt.deposit0 > vaultDebt.debt0 ? fmtR0(vaultDebt.deposit0 - vaultDebt.debt0) : "0 (underwater)"}, asset1=${vaultDebt.deposit1 > vaultDebt.debt1 ? fmtR1(vaultDebt.deposit1 - vaultDebt.debt1) : "0 (underwater)"}` : `
 ## Vault Debt & Utilization
   not available`}
 ${trend ? `\n## Trend\n${trend}` : ""}
 ${flow ? `\n## Flow Quality\n${flow}` : ""}
+${lastReview && lastReview.recommendations.length > 0 ? `
+## Previous Review (${Math.round((Date.now() / 1000 - lastReview.timestamp) / 60)} min ago)
+  Recommendations: ${lastReview.recommendations.map(r => `${r.type}(${r.confidence.toFixed(1)}): ${r.reasoning}`).join("; ")}
+  Executed: ${recentActions.filter(a => a.timestamp >= lastReview.timestamp).map(a => `${a.type}: ${a.success ? "OK" : "FAILED"}`).join("; ") || "none"}
+  Strategy notes: ${lastReview.strategyNotes || "none"}` : ""}
 `.trim();
 }
 

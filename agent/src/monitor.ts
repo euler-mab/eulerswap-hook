@@ -153,6 +153,8 @@ export async function getPoolSnapshot(
     reserve1,
     equilibriumReserve0: dParams.equilibriumReserve0,
     equilibriumReserve1: dParams.equilibriumReserve1,
+    minReserve0: dParams.minReserve0,
+    minReserve1: dParams.minReserve1,
     priceX: dParams.priceX,
     priceY: dParams.priceY,
     concentrationX: dParams.concentrationX,

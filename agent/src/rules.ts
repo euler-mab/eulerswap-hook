@@ -133,6 +133,33 @@ function checkPriceRecenter(
   const newPriceX = snapshot.oraclePrice0 / WAD;
   const newPriceY = snapshot.oraclePrice0 / refPrice;
 
+  // Recompute price boundaries based on the same percentage range width.
+  // Instead of preserving the eq/min ratio (which can drift the absolute range),
+  // compute the current range width as a price ratio, then re-apply it around
+  // the new equilibrium price. This maintains e.g. ±5% range consistently.
+  //
+  // For c=0: pUpper/eqPrice = (eq0/min0)², so rangeRatio = (eq0/min0)²
+  // For c>0: pUpper/eqPrice = cx + (1-cx)*(eq0/min0)²
+  // We preserve this rangeRatio and compute new min from new eq.
+  const reconfigParams: Record<string, string> = {
+    equilibriumReserve0: newEq0.toString(),
+    equilibriumReserve1: newEq1.toString(),
+    priceX: newPriceX.toString(),
+    priceY: newPriceY.toString(),
+  };
+
+  if (snapshot.minReserve0 > 0n && snapshot.equilibriumReserve0 > 0n) {
+    // Compute the old eq/min ratio and apply it to the new equilibrium.
+    // This preserves the same percentage range width around the new center.
+    // ratio = oldEq0 / oldMin0 → newMin0 = newEq0 / ratio = newEq0 * oldMin0 / oldEq0
+    const newMin0 = newEq0 * snapshot.minReserve0 / snapshot.equilibriumReserve0;
+    reconfigParams["minReserve0"] = newMin0.toString();
+  }
+  if (snapshot.minReserve1 > 0n && snapshot.equilibriumReserve1 > 0n) {
+    const newMin1 = newEq1 * snapshot.minReserve1 / snapshot.equilibriumReserve1;
+    reconfigParams["minReserve1"] = newMin1.toString();
+  }
+
   return {
     name: "priceRecenter",
     triggered: true,
@@ -140,12 +167,7 @@ function checkPriceRecenter(
     action: {
       type: "reconfigure",
       reason: `Recenter equilibrium to match ${priceSource} price`,
-      params: {
-        equilibriumReserve0: newEq0.toString(),
-        equilibriumReserve1: newEq1.toString(),
-        priceX: newPriceX.toString(),
-        priceY: newPriceY.toString(),
-      },
+      params: reconfigParams,
     },
   };
 }
@@ -344,8 +366,8 @@ export function isSafe(
   }
 
   if (rec.type === "reconfigure") {
-    // Reject forbidden fields — Claude must not set these
-    const FORBIDDEN_FIELDS = ["priceX", "priceY", "swapHook", "fee0", "fee1", "expiration", "swapHookedOperations", "minReserve0", "minReserve1"];
+    // Reject truly immutable fields — Claude must not set these
+    const FORBIDDEN_FIELDS = ["swapHook", "fee0", "fee1", "expiration", "swapHookedOperations"];
     for (const field of FORBIDDEN_FIELDS) {
       if (rec.params[field] !== undefined) {
         return { safe: false, reason: `Claude cannot set ${field} — managed automatically` };
@@ -356,6 +378,8 @@ export function isSafe(
     const cy = BigInt(rec.params["concentrationY"] as string || "0");
     const eq0 = rec.params["equilibriumReserve0"] ? BigInt(rec.params["equilibriumReserve0"] as string) : null;
     const eq1 = rec.params["equilibriumReserve1"] ? BigInt(rec.params["equilibriumReserve1"] as string) : null;
+    const min0 = rec.params["minReserve0"] ? BigInt(rec.params["minReserve0"] as string) : null;
+    const min1 = rec.params["minReserve1"] ? BigInt(rec.params["minReserve1"] as string) : null;
 
     if (cx > 0n && (cx < config.minConcentration || cx > config.maxConcentration)) {
       return { safe: false, reason: `concentrationX ${cx} outside bounds [${config.minConcentration}, ${config.maxConcentration}]` };
@@ -370,6 +394,23 @@ export function isSafe(
     }
     if (eq1 !== null && eq1 <= 0n) {
       return { safe: false, reason: "equilibriumReserve1 must be positive" };
+    }
+
+    // minReserve must be < equilibrium (or they shrink the trading range to zero)
+    if (min0 !== null && min0 < 0n) {
+      return { safe: false, reason: "minReserve0 must be non-negative" };
+    }
+    if (min1 !== null && min1 < 0n) {
+      return { safe: false, reason: "minReserve1 must be non-negative" };
+    }
+    // Validate minReserve < equilibrium (use proposed eq if provided, else current)
+    const effectiveEq0 = eq0 ?? snapshot?.equilibriumReserve0 ?? 0n;
+    const effectiveEq1 = eq1 ?? snapshot?.equilibriumReserve1 ?? 0n;
+    if (min0 !== null && min0 > 0n && effectiveEq0 > 0n && min0 >= effectiveEq0) {
+      return { safe: false, reason: `minReserve0 (${min0}) must be < equilibriumReserve0 (${effectiveEq0})` };
+    }
+    if (min1 !== null && min1 > 0n && effectiveEq1 > 0n && min1 >= effectiveEq1) {
+      return { safe: false, reason: `minReserve1 (${min1}) must be < equilibriumReserve1 (${effectiveEq1})` };
     }
 
     // Cap equilibrium changes at MAX_RECENTER_CHANGE× relative to current values

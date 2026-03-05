@@ -154,6 +154,10 @@ async function main() {
           : Promise.resolve(null),
       ]);
 
+      // Get last review for feedback loop
+      const allReviews = metrics.getMetrics().reviews;
+      const lastReview = allReviews.length > 0 ? allReviews[allReviews.length - 1]! : null;
+
       console.log("Running Claude review...");
       const review = await claude.review(
         config,
@@ -167,6 +171,7 @@ async function main() {
         vaultDebt,
         funding,
         decayParams,
+        lastReview,
       );
 
       metrics.recordReview(review);

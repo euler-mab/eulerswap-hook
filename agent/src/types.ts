@@ -14,6 +14,13 @@ export interface PoolSnapshot {
   equilibriumReserve0: bigint;
   equilibriumReserve1: bigint;
 
+  // Min reserves — reserve floors that enforce price boundaries (raw token units)
+  // When reserve0 hits minReserve0, the pool stops selling asset0 (upper price boundary).
+  // When reserve1 hits minReserve1, the pool stops selling asset1 (lower price boundary).
+  // 0 = no boundary (reserves can drain to near-zero).
+  minReserve0: bigint;
+  minReserve1: bigint;
+
   // AMM curve price parameters (value per 1 raw unit, fixnum basis 1e18).
   // Used by CurveLib to compute swap outputs: amountOut ≈ amountIn * priceX / priceY.
   // For USDC (6 dec): priceX = 1e-6 * 1e18 = 1e12.
