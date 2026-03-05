@@ -146,6 +146,7 @@ export interface AgentMetrics {
   totalGasSpent: bigint; // in wei
   totalReconfigures: number;
   snapshots: PoolSnapshot[];
+  statsHistory: HookStats[]; // parallel array — statsHistory[i] was read alongside snapshots[i]
   actions: ExecutedAction[];
   reviews: ClaudeReview[];
 }

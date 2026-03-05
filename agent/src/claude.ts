@@ -13,7 +13,7 @@ import type {
 import type { AggregatorQuote } from "./oracle.js";
 import type { FundingSnapshot } from "./funding.js";
 import { WAD, BPS, fmtToken } from "./types.js";
-import { getTrendSummary, getMetrics } from "./metrics.js";
+import { getTrendSummary, getFlowSummary, getMetrics } from "./metrics.js";
 
 let client: Anthropic | null = null;
 
@@ -129,6 +129,47 @@ Where:
   Must be < 100% (contract enforces). Typical: 50-500 bps.
 - mismatchScale: sensitivity multiplier. Higher = more aggressive fee asymmetry.
   At scale=10 and mismatch=50bps, the fee adjustment is 500bps. Typical: 5-20x.
+
+## MEV Protection & Flow Quality
+
+The dynamic fee IS the primary MEV protection mechanism. Understanding how:
+
+### How the fee protects against arb (already built-in)
+When the oracle price moves but the pool hasn't been traded yet:
+1. Mismatch jumps (oracle ≠ marginal price)
+2. The arb side (trading into the stale price) pays baseFee + mismatchScale × mismatch
+3. After the arb restores alignment, mismatch drops → fee drops back to baseFee
+4. Retail trades that follow pay near-baseFee
+
+This is economically equivalent to "start high and decay" — the fee is high when the pool
+is stale (arb opportunity exists) and low when aligned (safe for retail). The "decay" happens
+naturally as trades resolve the mismatch, not via a timer.
+
+### Tuning the arb tax
+- **mismatchScale** controls how aggressively you tax arb. Higher = more arb revenue but
+  risk discouraging even the first aligning trade (pool stays stale longer).
+- **maxFee** caps the arb tax. Set too low → arbs extract value beyond what you charge.
+  Set too high → arbs skip your pool entirely, you stay misaligned.
+- **Sweet spot**: maxFee should approximate the typical oracle move size. If the oracle
+  moves 50 bps between blocks on average, maxFee ≈ 50-100 bps captures most arb PnL.
+
+### Reading the Flow Quality data
+The context includes a Flow Quality section (when enough data exists) showing:
+- **Arb-like intervals**: polls where trades resolved mismatch. High % = most volume is arb.
+- **Retail-like intervals**: polls where trades created/maintained mismatch.
+- **Arb volume share**: what fraction of volume is likely arb.
+- **Directional runs**: consecutive same-direction trading = structural/informed flow.
+
+### Strategy implications
+- **High arb % (>70%)**: Your baseFee may be too low — you're attracting arb but not retail.
+  Consider raising baseFee slightly. Alternatively, mismatchScale may be too low (arbs
+  are trading through cheaply).
+- **High retail % (>50%)**: Good — the pool is attracting organic flow. Keep fees competitive.
+- **High directional runs**: Structural flow in one direction. This isn't arb — it's informed
+  traders or market regime shift. Fee asymmetry won't stop it. Consider recentering
+  equilibrium to accept the new direction rather than fighting it.
+- **Low trade velocity**: Not enough flow. Lower baseFee to attract volume, or the pool
+  isn't competitive at this size/pair.
 
 ## Strategic Principles
 
@@ -406,6 +447,7 @@ function buildContext(
 
   // --- Trend summary ---
   const trend = getTrendSummary();
+  const flow = getFlowSummary();
 
   return `
 ## Position Delta
@@ -457,6 +499,7 @@ ${vaultDebt ? `
 ## Vault Debt & Utilization
   not available`}
 ${trend ? `\n## Trend\n${trend}` : ""}
+${flow ? `\n## Flow Quality\n${flow}` : ""}
 `.trim();
 }
 

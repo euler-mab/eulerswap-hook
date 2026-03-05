@@ -68,7 +68,7 @@ async function main() {
         oracle.getAggregatorQuote(publicClient, asset0, asset1).catch(() => null),
       ]);
 
-      metrics.recordSnapshot(snapshot);
+      metrics.recordSnapshot(snapshot, stats);
 
       // Evaluate rules (CowSwap mid-price used for recentering decisions)
       const gasToday = metrics.getGasSpentToday();
