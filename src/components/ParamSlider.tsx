@@ -34,7 +34,7 @@ export default function ParamSlider({ label, value, min, max, step, onChange, lo
 
   return (
     <div className="flex items-center gap-2">
-      <span className="w-10 text-zinc-500 shrink-0 flex items-center"><Tex>{label}</Tex></span>
+      <span className="w-10 text-gray-500 shrink-0 flex items-center"><Tex>{label}</Tex></span>
       <input
         type="range"
         min={log ? 0 : min}
@@ -42,7 +42,7 @@ export default function ParamSlider({ label, value, min, max, step, onChange, lo
         step={log ? 0.001 : step}
         value={sliderValue}
         onChange={handleSlider}
-        className="flex-1 h-1 accent-zinc-400 cursor-pointer"
+        className="flex-1 h-1 accent-blue-500 cursor-pointer"
       />
       <input
         type="number"
@@ -54,9 +54,9 @@ export default function ParamSlider({ label, value, min, max, step, onChange, lo
           const v = parseFloat(e.target.value);
           if (!isNaN(v)) onChange(Math.min(max, Math.max(min, v)));
         }}
-        className="w-16 bg-transparent border border-zinc-800 rounded px-1.5 py-0.5 text-xs font-mono text-zinc-300 text-right focus:outline-none focus:border-zinc-600"
+        className="w-16 bg-transparent border border-gray-300 rounded px-1.5 py-0.5 text-sm font-mono text-gray-700 text-right focus:outline-none focus:border-blue-500"
       />
-      {suffix && <span className="text-[9px] text-zinc-600 text-right shrink-0 whitespace-nowrap">{suffix}</span>}
+      {suffix && <span className="text-[11px] text-gray-400 text-right shrink-0 whitespace-nowrap">{suffix}</span>}
     </div>
   );
 }

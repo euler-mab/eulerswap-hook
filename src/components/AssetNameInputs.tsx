@@ -26,9 +26,9 @@ export default function AssetNameInputs({ labels, onChange, onApplyPreset }: Pro
     onChange({ ...labels, [key]: e.target.value });
 
   const inputCls =
-    "w-14 bg-transparent border border-zinc-800 rounded px-1.5 py-0.5 " +
-    "text-xs font-mono text-zinc-300 text-center " +
-    "focus:outline-none focus:border-zinc-600 placeholder:text-zinc-700";
+    "w-14 bg-transparent border border-gray-300 rounded px-1.5 py-0.5 " +
+    "text-sm font-mono text-gray-700 text-center " +
+    "focus:outline-none focus:border-blue-500 placeholder:text-gray-400";
 
   const applyPreset = (p: { x: string; y: string; z: string }) => {
     const pxUsd = tokenPrice(p.x);
@@ -48,7 +48,7 @@ export default function AssetNameInputs({ labels, onChange, onApplyPreset }: Pro
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-3 text-[10px] text-zinc-600">
+      <div className="flex items-center gap-3 text-xs text-gray-400">
         <label className="flex items-center gap-1">
           X <input className={inputCls} value={labels.x} onChange={set("x")} placeholder="X" />
         </label>
@@ -59,7 +59,7 @@ export default function AssetNameInputs({ labels, onChange, onApplyPreset }: Pro
           Z <input className={inputCls} value={labels.z} onChange={set("z")} placeholder="Z" />
         </label>
         <label className="flex items-center gap-1">
-          <span className="text-zinc-500">$</span>
+          <span className="text-gray-500">$</span>
           <input className={inputCls} value={labels.num} onChange={set("num")} placeholder="USD" />
         </label>
       </div>
@@ -68,7 +68,7 @@ export default function AssetNameInputs({ labels, onChange, onApplyPreset }: Pro
           <button
             key={`${p.x}/${p.y}`}
             onClick={() => applyPreset(p)}
-            className="px-1.5 py-0.5 rounded text-[9px] text-zinc-600 hover:text-zinc-300 border border-zinc-800/40 hover:border-zinc-700 transition-colors"
+            className="px-1.5 py-0.5 rounded text-[11px] text-gray-400 hover:text-gray-900 border border-gray-100 hover:border-gray-400 transition-colors"
           >
             {p.x}/{p.y}
           </button>

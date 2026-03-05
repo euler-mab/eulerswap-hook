@@ -63,10 +63,10 @@ export default function StrategySection(props: Props) {
           <button
             key={key}
             onClick={() => selectPreset(key)}
-            className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
               preset === key
-                ? "bg-zinc-700 text-zinc-100"
-                : "bg-zinc-900 text-zinc-500 hover:text-zinc-300 border border-zinc-800"
+                ? "bg-gray-900 text-white"
+                : "bg-white text-gray-500 hover:text-gray-900 border border-gray-300"
             }`}
           >
             {PRESETS[key].label}
@@ -74,10 +74,10 @@ export default function StrategySection(props: Props) {
         ))}
         <button
           onClick={() => selectPreset("custom")}
-          className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+          className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
             preset === "custom"
-              ? "bg-zinc-700 text-zinc-100"
-              : "bg-zinc-900 text-zinc-500 hover:text-zinc-300 border border-zinc-800"
+              ? "bg-gray-900 text-white"
+              : "bg-white text-gray-500 hover:text-gray-900 border border-gray-300"
           }`}
         >
           Custom
@@ -85,12 +85,12 @@ export default function StrategySection(props: Props) {
       </div>
 
       {preset !== "custom" && (
-        <p className="text-xs text-zinc-500">{PRESETS[preset].description}</p>
+        <p className="text-sm text-gray-500">{PRESETS[preset].description}</p>
       )}
 
       {/* Equilibrium price */}
       <div className="space-y-1">
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400">
           Equilibrium price (Y per X)
         </h3>
         <div className="flex items-center gap-2">
@@ -98,48 +98,48 @@ export default function StrategySection(props: Props) {
             type="number"
             value={equilibriumPrice || ""}
             onChange={(e) => props.onEquilibriumPrice(Math.max(0.0001, Number(e.target.value)))}
-            className="bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 font-mono focus:outline-none focus:border-zinc-600 max-w-[180px]"
+            className="bg-white border border-gray-300 rounded px-3 py-2 text-sm text-gray-900 font-mono focus:outline-none focus:border-blue-500 max-w-[180px]"
           />
           {Math.abs(equilibriumPrice - oraclePrice) > 0.001 && (
             <button
               onClick={() => props.onEquilibriumPrice(oraclePrice)}
-              className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
+              className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
             >
               reset to oracle ({fmtUsd(oraclePrice)})
             </button>
           )}
         </div>
-        <p className="text-[10px] text-zinc-600">
+        <p className="text-xs text-gray-400">
           The price at which the position is centered. Oracle: {fmtUsd(oraclePrice)}
         </p>
       </div>
 
       {/* Price range */}
       <div className="space-y-3">
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400">
           Price range (Y per X)
         </h3>
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
           <div>
-            <label className="text-[10px] text-zinc-600 mb-1 block">Lower bound</label>
+            <label className="text-xs text-gray-400 mb-1 block">Lower bound</label>
             <input
               type="number"
               value={priceMin || ""}
               onChange={(e) => editPriceMin(Math.max(0.01, Number(e.target.value)))}
-              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 font-mono focus:outline-none focus:border-zinc-600"
+              className="w-full bg-white border border-gray-300 rounded px-3 py-2 text-sm text-gray-900 font-mono focus:outline-none focus:border-blue-500"
             />
           </div>
           <div className="text-center pt-4">
-            <div className="text-[10px] text-zinc-600">current</div>
-            <div className="text-xs text-zinc-400 font-mono">{fmtUsd(currentPrice)}</div>
+            <div className="text-xs text-gray-400">current</div>
+            <div className="text-sm text-gray-700 font-mono">{fmtUsd(currentPrice)}</div>
           </div>
           <div>
-            <label className="text-[10px] text-zinc-600 mb-1 block">Upper bound</label>
+            <label className="text-xs text-gray-400 mb-1 block">Upper bound</label>
             <input
               type="number"
               value={priceMax || ""}
               onChange={(e) => editPriceMax(Math.max(0.01, Number(e.target.value)))}
-              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 font-mono focus:outline-none focus:border-zinc-600"
+              className="w-full bg-white border border-gray-300 rounded px-3 py-2 text-sm text-gray-900 font-mono focus:outline-none focus:border-blue-500"
             />
           </div>
         </div>
@@ -150,14 +150,14 @@ export default function StrategySection(props: Props) {
 
       {/* Concentration */}
       <div className="space-y-2">
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400">
           Concentration
         </h3>
 
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1">
-            <span className="text-[10px] text-zinc-600">X side (cx)</span>
-            <span className="text-xs text-zinc-500 font-mono block">
+            <span className="text-xs text-gray-400">X side (cx)</span>
+            <span className="text-sm text-gray-500 font-mono block">
               {(concentration * 100).toFixed(0)}% — {effX}
             </span>
             <ParamSlider
@@ -170,8 +170,8 @@ export default function StrategySection(props: Props) {
             />
           </div>
           <div className="space-y-1">
-            <span className="text-[10px] text-zinc-600">Y side (cy)</span>
-            <span className="text-xs text-zinc-500 font-mono block">
+            <span className="text-xs text-gray-400">Y side (cy)</span>
+            <span className="text-sm text-gray-500 font-mono block">
               {(concentrationY * 100).toFixed(0)}% — {effY}
             </span>
             <ParamSlider
@@ -195,13 +195,13 @@ function PriceBar({ min, max, current }: { min: number; max: number; current: nu
   // Position current price as % within the range
   const pct = Math.max(0, Math.min(100, ((current - min) / (max - min)) * 100));
   return (
-    <div className="relative h-2 bg-zinc-800 rounded-full overflow-hidden">
+    <div className="relative h-2 bg-gray-100 rounded-full overflow-hidden">
       <div
         className="absolute inset-y-0 bg-blue-500/30 rounded-full"
         style={{ left: "0%", right: "0%" }}
       />
       <div
-        className="absolute top-0 bottom-0 w-0.5 bg-zinc-400"
+        className="absolute top-0 bottom-0 w-0.5 bg-gray-500"
         style={{ left: `${pct}%` }}
       />
     </div>

@@ -20,12 +20,12 @@ export default function PoolDetail({ pool }: { pool: PoolConfig }) {
   }, [swaps, state]);
 
   if (stateLoading && !state) {
-    return <div className="text-zinc-600 animate-pulse text-sm">Loading pool state...</div>;
+    return <div className="text-gray-400 animate-pulse text-sm">Loading pool state...</div>;
   }
 
   if (stateError && !state) {
     return (
-      <div className="rounded-lg border border-red-800/60 bg-red-950/30 px-4 py-3 text-xs text-red-400">
+      <div className="rounded-lg border border-red-800/60 bg-red-950/30 px-4 py-3 text-sm text-red-600">
         {stateError}
       </div>
     );
@@ -36,10 +36,10 @@ export default function PoolDetail({ pool }: { pool: PoolConfig }) {
   return (
     <div className="space-y-6">
       {/* Status bar */}
-      <div className="flex items-center gap-3 text-[10px] text-zinc-600">
+      <div className="flex items-center gap-3 text-xs text-gray-400">
         <span>Block #{state.blockNumber.toString()}</span>
         <span>Updated {new Date(state.fetchedAt).toLocaleTimeString()}</span>
-        <button onClick={refresh} className="text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer">
+        <button onClick={refresh} className="text-gray-500 hover:text-gray-900 transition-colors cursor-pointer">
           Refresh
         </button>
         {stateLoading && <span className="animate-pulse">updating...</span>}
@@ -54,7 +54,7 @@ export default function PoolDetail({ pool }: { pool: PoolConfig }) {
       {(pricePoints.length > 0 || historyLoading) && (
         <SectionCard title="Charts" defaultOpen>
           {historyLoading ? (
-            <div className="text-xs text-zinc-600 animate-pulse">Loading swap history...</div>
+            <div className="text-sm text-gray-400 animate-pulse">Loading swap history...</div>
           ) : (
             <PoolCharts pricePoints={pricePoints} state={state} />
           )}
@@ -64,9 +64,9 @@ export default function PoolDetail({ pool }: { pool: PoolConfig }) {
       {/* Trade Activity */}
       <SectionCard title="Recent Trades" defaultOpen badge={swaps.length > 0 ? `${swaps.length}` : undefined}>
         {historyLoading ? (
-          <div className="text-xs text-zinc-600 animate-pulse">Loading...</div>
+          <div className="text-sm text-gray-400 animate-pulse">Loading...</div>
         ) : swaps.length === 0 ? (
-          <div className="text-xs text-zinc-600">No swaps found since block {pool.deployBlock.toString()}</div>
+          <div className="text-sm text-gray-400">No swaps found since block {pool.deployBlock.toString()}</div>
         ) : (
           <SwapTable
             swaps={swaps}

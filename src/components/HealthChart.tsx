@@ -13,16 +13,16 @@ interface Props {
   labelY?: string;
 }
 
-const AXIS = { stroke: "#444", tick: { fill: "#666", fontSize: 11 }, tickLine: false };
-const GRID = { strokeDasharray: "3 3", stroke: "#222" };
+const AXIS = { stroke: "#d1d5db", tick: { fill: "#6b7280", fontSize: 12 }, tickLine: false };
+const GRID = { strokeDasharray: "3 3", stroke: "#e5e7eb" };
 const TIP = {
-  contentStyle: { backgroundColor: "#18181b", border: "1px solid #333", borderRadius: 6, fontSize: 12 },
-  labelStyle: { color: "#999" },
+  contentStyle: { backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 13 },
+  labelStyle: { color: "#6b7280" },
 };
 
 function Legend({ items }: { items: { color: string; label: React.ReactNode; key?: string }[] }) {
   return (
-    <div className="flex flex-wrap gap-4 px-2 pt-1 text-[11px] text-zinc-600">
+    <div className="flex flex-wrap gap-4 px-2 pt-1 text-xs text-gray-400">
       {items.map((it, i) => (
         <span key={it.key ?? i} className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full" style={{ backgroundColor: it.color }} />
@@ -34,7 +34,7 @@ function Legend({ items }: { items: { color: string; label: React.ReactNode; key
 }
 
 function NoDebtHint() {
-  return <p className="text-xs text-zinc-600 mt-2 px-2">Set x_d, y_d, or z_d &gt; 0 to see debt and health curves.</p>;
+  return <p className="text-xs text-gray-400 mt-2 px-2">Set x_d, y_d, or z_d &gt; 0 to see debt and health curves.</p>;
 }
 
 export default function HealthChart({ params, labelX, labelY }: Props) {
@@ -49,11 +49,11 @@ export default function HealthChart({ params, labelX, labelY }: Props) {
   return (
     <div className="space-y-8">
       {/* --- X SIDE --- */}
-      <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">{symX} side — price moves down</h2>
+      <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-500">{symX} side — price moves down</h2>
 
       <section>
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Collateral (X side)</h3>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">Collateral (X side)</h3>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={xPoints} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -72,8 +72,8 @@ export default function HealthChart({ params, labelX, labelY }: Props) {
       </section>
 
       <section>
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Debt (X side)</h3>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">Debt (X side)</h3>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={xPoints} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -95,8 +95,8 @@ export default function HealthChart({ params, labelX, labelY }: Props) {
       </section>
 
       <section>
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Health score (X side)</h3>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">Health score (X side)</h3>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={xPoints} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -116,8 +116,8 @@ export default function HealthChart({ params, labelX, labelY }: Props) {
       </section>
 
       <section>
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">NAV (X side)</h3>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">NAV (X side)</h3>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={xPoints} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -135,12 +135,12 @@ export default function HealthChart({ params, labelX, labelY }: Props) {
       </section>
 
       {/* --- Y SIDE --- */}
-      <hr className="border-zinc-800" />
-      <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">{symY} side — price moves up</h2>
+      <hr className="border-gray-300" />
+      <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-500">{symY} side — price moves up</h2>
 
       <section>
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Collateral (Y side)</h3>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">Collateral (Y side)</h3>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={yPoints} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -159,8 +159,8 @@ export default function HealthChart({ params, labelX, labelY }: Props) {
       </section>
 
       <section>
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Debt (Y side)</h3>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">Debt (Y side)</h3>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={yPoints} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -182,8 +182,8 @@ export default function HealthChart({ params, labelX, labelY }: Props) {
       </section>
 
       <section>
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Health score (Y side)</h3>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">Health score (Y side)</h3>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={yPoints} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -203,8 +203,8 @@ export default function HealthChart({ params, labelX, labelY }: Props) {
       </section>
 
       <section>
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">NAV (Y side)</h3>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">NAV (Y side)</h3>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={yPoints} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />

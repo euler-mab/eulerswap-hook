@@ -28,10 +28,10 @@ interface Props {
 
 function HealthBadge({ value }: { value: number }) {
   const color = !isFinite(value) || value >= 2
-    ? "text-emerald-400"
+    ? "text-emerald-600"
     : value >= 1.1
       ? "text-amber-400"
-      : "text-red-400";
+      : "text-red-600";
   const label = !isFinite(value) ? "∞ (no debt)" : value.toFixed(2);
   return <span className={`font-mono text-sm ${color}`}>{label}</span>;
 }
@@ -62,16 +62,16 @@ export default function LeverageSection(props: Props) {
           type="checkbox"
           checked={enabled}
           onChange={(e) => props.onToggle(e.target.checked)}
-          className="w-4 h-4 rounded border-zinc-700 bg-zinc-900 text-blue-500 focus:ring-0 focus:ring-offset-0"
+          className="w-4 h-4 rounded border-gray-400 bg-white text-blue-500 focus:ring-0 focus:ring-offset-0"
         />
-        <span className="text-sm text-zinc-300">Enable leverage (borrow against position)</span>
+        <span className="text-sm text-gray-700">Enable leverage (borrow against position)</span>
       </label>
 
       {enabled && (
         <>
           {/* Debt asset picker */}
           <div className="space-y-2">
-            <label className="text-[10px] text-zinc-600 uppercase tracking-wider">
+            <label className="text-xs text-gray-400 uppercase tracking-wider">
               Debt asset
             </label>
             <div className="flex gap-2">
@@ -79,10 +79,10 @@ export default function LeverageSection(props: Props) {
                 <button
                   key={a}
                   onClick={() => props.onDebtAsset(a)}
-                  className={`px-3 py-1 rounded text-xs font-mono transition-colors ${
+                  className={`px-3 py-1 rounded text-sm font-mono transition-colors ${
                     debtAsset === a
-                      ? "bg-zinc-700 text-zinc-100"
-                      : "bg-zinc-900 text-zinc-500 hover:text-zinc-300 border border-zinc-800"
+                      ? "bg-gray-900 text-white"
+                      : "bg-white text-gray-500 hover:text-gray-900 border border-gray-300"
                   }`}
                 >
                   {assetLabel(a)}
@@ -94,13 +94,13 @@ export default function LeverageSection(props: Props) {
           {/* Z token selector (when Z debt or Z deposit is relevant) */}
           {debtAsset === "z" && (
             <div className="space-y-1">
-              <label className="text-[10px] text-zinc-600 uppercase tracking-wider">
+              <label className="text-xs text-gray-400 uppercase tracking-wider">
                 Token Z (exogenous asset)
               </label>
               <select
                 value={tokenZ}
                 onChange={(e) => props.onTokenZ(e.target.value)}
-                className="bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 font-mono focus:outline-none focus:border-zinc-600 max-w-xs"
+                className="bg-white border border-gray-300 rounded px-3 py-2 text-sm text-gray-900 font-mono focus:outline-none focus:border-blue-500 max-w-xs"
               >
                 {TOKENS.filter((t) => t.symbol !== tokenX && t.symbol !== tokenY).map((t) => (
                   <option key={t.symbol} value={t.symbol}>
@@ -113,7 +113,7 @@ export default function LeverageSection(props: Props) {
 
           {/* Debt amount */}
           <div className="space-y-1">
-            <label className="text-[10px] text-zinc-600 uppercase tracking-wider">
+            <label className="text-xs text-gray-400 uppercase tracking-wider">
               Borrow amount ({assetLabel(debtAsset)})
             </label>
             <input
@@ -121,13 +121,13 @@ export default function LeverageSection(props: Props) {
               value={debtAmount || ""}
               onChange={(e) => props.onDebtAmount(Math.max(0, Number(e.target.value)))}
               placeholder="0"
-              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 font-mono focus:outline-none focus:border-zinc-600 max-w-xs"
+              className="w-full bg-white border border-gray-300 rounded px-3 py-2 text-sm text-gray-900 font-mono focus:outline-none focus:border-blue-500 max-w-xs"
             />
           </div>
 
           {/* Z deposit (non-traded collateral) */}
           <div className="space-y-1">
-            <label className="text-[10px] text-zinc-600 uppercase tracking-wider">
+            <label className="text-xs text-gray-400 uppercase tracking-wider">
               {tokenZ} deposit (non-traded collateral)
             </label>
             <input
@@ -135,34 +135,34 @@ export default function LeverageSection(props: Props) {
               value={depositZ || ""}
               onChange={(e) => props.onDepositZ(Math.max(0, Number(e.target.value)))}
               placeholder="0"
-              className="w-full bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-100 font-mono focus:outline-none focus:border-zinc-600 max-w-xs"
+              className="w-full bg-white border border-gray-300 rounded px-3 py-2 text-sm text-gray-900 font-mono focus:outline-none focus:border-blue-500 max-w-xs"
             />
-            <p className="text-[10px] text-zinc-600">
+            <p className="text-xs text-gray-400">
               Extra collateral backing your position (not traded on the AMM curve)
             </p>
           </div>
 
           {/* Health & liquidation */}
           {health && (
-            <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-4 space-y-3">
+            <div className="rounded-lg border border-gray-200 bg-white shadow-sm p-4 space-y-3">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <div className="text-[10px] text-zinc-600 uppercase tracking-wider">Health (X side at eq.)</div>
+                  <div className="text-xs text-gray-400 uppercase tracking-wider">Health (X side at eq.)</div>
                   <HealthBadge value={health.hX} />
                 </div>
                 <div>
-                  <div className="text-[10px] text-zinc-600 uppercase tracking-wider">Health (Y side at eq.)</div>
+                  <div className="text-xs text-gray-400 uppercase tracking-wider">Health (Y side at eq.)</div>
                   <HealthBadge value={health.hY} />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4 text-xs text-zinc-500">
+              <div className="grid grid-cols-2 gap-4 text-sm text-gray-500">
                 <div>
-                  <span className="text-zinc-600">Upper boundary: </span>
-                  <span className="font-mono text-zinc-400">{fmtUsd(health.pXb)}</span>
+                  <span className="text-gray-400">Upper boundary: </span>
+                  <span className="font-mono text-gray-700">{fmtUsd(health.pXb)}</span>
                 </div>
                 <div>
-                  <span className="text-zinc-600">Lower boundary: </span>
-                  <span className="font-mono text-zinc-400">{fmtUsd(health.pYb)}</span>
+                  <span className="text-gray-400">Lower boundary: </span>
+                  <span className="font-mono text-gray-700">{fmtUsd(health.pYb)}</span>
                 </div>
               </div>
             </div>

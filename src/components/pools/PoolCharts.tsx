@@ -8,16 +8,16 @@ import type { PricePoint } from "@/lib/pools/types";
 import type { PoolState } from "@/lib/pools/types";
 import { downsample } from "@/lib/pools/format";
 
-const AXIS = { stroke: "#444", tick: { fill: "#666", fontSize: 11 }, tickLine: false };
-const GRID = { strokeDasharray: "3 3", stroke: "#222" };
+const AXIS = { stroke: "#d1d5db", tick: { fill: "#6b7280", fontSize: 12 }, tickLine: false };
+const GRID = { strokeDasharray: "3 3", stroke: "#e5e7eb" };
 const TIP = {
-  contentStyle: { backgroundColor: "#18181b", border: "1px solid #333", borderRadius: 6, fontSize: 12 },
-  labelStyle: { color: "#999" },
+  contentStyle: { backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 13 },
+  labelStyle: { color: "#6b7280" },
 };
 
 function Legend({ items }: { items: { color: string; label: string }[] }) {
   return (
-    <div className="flex flex-wrap gap-4 px-2 pt-1 text-[11px] text-zinc-600">
+    <div className="flex flex-wrap gap-4 px-2 pt-1 text-xs text-gray-400">
       {items.map((it) => (
         <span key={it.label} className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full" style={{ backgroundColor: it.color }} />
@@ -54,7 +54,7 @@ export default function PoolCharts({ pricePoints, state }: Props) {
   const data = useMemo(() => downsample(pricePoints, 2000), [pricePoints]);
 
   if (data.length < 2) {
-    return <div className="text-xs text-zinc-600">Not enough data points for charts</div>;
+    return <div className="text-xs text-gray-400">Not enough data points for charts</div>;
   }
 
   const useTimestamp = data[0].timestamp > 0;
@@ -73,7 +73,7 @@ export default function PoolCharts({ pricePoints, state }: Props) {
             key={key}
             onClick={() => setTab(key)}
             className={`px-3 py-1 text-xs rounded transition-colors cursor-pointer ${
-              tab === key ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+              tab === key ? "bg-gray-900 text-white" : "text-gray-500 hover:text-gray-900"
             }`}
           >
             {label}
@@ -84,10 +84,10 @@ export default function PoolCharts({ pricePoints, state }: Props) {
       {/* Price chart */}
       {tab === "price" && (
         <section>
-          <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">
+          <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">
             Marginal Price ({state.asset1Symbol}/{state.asset0Symbol})
           </h3>
-          <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+          <div className="rounded-lg border border-gray-200 bg-white p-3">
             <ResponsiveContainer width="100%" height={280}>
               <LineChart data={data}>
                 <CartesianGrid {...GRID} />
@@ -105,10 +105,10 @@ export default function PoolCharts({ pricePoints, state }: Props) {
       {/* Fees chart */}
       {tab === "fees" && (
         <section>
-          <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">
+          <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">
             Cumulative Fees
           </h3>
-          <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+          <div className="rounded-lg border border-gray-200 bg-white p-3">
             <ResponsiveContainer width="100%" height={280}>
               <LineChart data={data}>
                 <CartesianGrid {...GRID} />
@@ -131,10 +131,10 @@ export default function PoolCharts({ pricePoints, state }: Props) {
       {/* Reserves chart */}
       {tab === "reserves" && (
         <section>
-          <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">
+          <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">
             Pool Reserves
           </h3>
-          <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+          <div className="rounded-lg border border-gray-200 bg-white p-3">
             <ResponsiveContainer width="100%" height={280}>
               <LineChart data={data}>
                 <CartesianGrid {...GRID} />

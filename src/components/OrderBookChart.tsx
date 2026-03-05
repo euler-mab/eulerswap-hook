@@ -43,17 +43,17 @@ interface Props {
   defaultNumeraire?: Numeraire;
 }
 
-const AXIS = { stroke: "#444", tick: { fill: "#666", fontSize: 11 }, tickLine: false };
-const GRID = { strokeDasharray: "3 3", stroke: "#222" };
+const AXIS = { stroke: "#d1d5db", tick: { fill: "#6b7280", fontSize: 12 }, tickLine: false };
+const GRID = { strokeDasharray: "3 3", stroke: "#e5e7eb" };
 const TIP = {
-  contentStyle: { backgroundColor: "#18181b", border: "1px solid #333", borderRadius: 6, fontSize: 12 },
-  labelStyle: { color: "#999" },
+  contentStyle: { backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 13 },
+  labelStyle: { color: "#6b7280" },
   formatter: (val: number | undefined) => val?.toFixed(4) ?? "",
 };
 
 function Legend({ items }: { items: { color: string; label: React.ReactNode; key?: string; dashed?: boolean }[] }) {
   return (
-    <div className="flex flex-wrap gap-4 px-2 pt-1 text-[11px] text-zinc-600">
+    <div className="flex flex-wrap gap-4 px-2 pt-1 text-xs text-gray-400">
       {items.map((it, i) => (
         <span key={it.key ?? i} className="flex items-center gap-1.5">
           <span
@@ -87,15 +87,15 @@ function CDTooltip({ active, payload, symX, symY, symZ }: CDTooltipProps) {
   const fmt = (v: number | undefined) => v != null ? v.toFixed(4) : "—";
   const hasZ = (d.colZ ?? 0) > 0 || (d.debtZ ?? 0) > 0;
   return (
-    <div style={{ backgroundColor: "#18181b", border: "1px solid #333", borderRadius: 6, fontSize: 12, padding: "8px 12px" }}>
-      <div style={{ color: "#999", marginBottom: 4 }}>price: {d.price?.toFixed(2)}</div>
+    <div style={{ backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 13, padding: "8px 12px" }}>
+      <div style={{ color: "#6b7280", marginBottom: 4 }}>price: {d.price?.toFixed(2)}</div>
       <div style={{ color: "#34d399" }}>Collateral: {fmt(d.collateral)}</div>
-      <div style={{ color: "#555", fontSize: 11, paddingLeft: 8 }}>
+      <div style={{ color: "#9ca3af", fontSize: 12, paddingLeft: 8 }}>
         {symX}: {fmt(d.colX)} · {symY}: {fmt(d.colY)}{hasZ && <> · {symZ}: {fmt(d.colZ)}</>}
       </div>
       <div style={{ color: "#f87171" }}>Debt: {fmt(d.debt)}</div>
       {((d.debtX ?? 0) > 0 || (d.debtY ?? 0) > 0 || (d.debtZ ?? 0) > 0) && (
-        <div style={{ color: "#555", fontSize: 11, paddingLeft: 8 }}>
+        <div style={{ color: "#9ca3af", fontSize: 12, paddingLeft: 8 }}>
           {symX}: {fmt(d.debtX)} · {symY}: {fmt(d.debtY)}{hasZ && <> · {symZ}: {fmt(d.debtZ)}</>}
         </div>
       )}
@@ -367,7 +367,7 @@ export default function OrderBookChart({ params, labelX, labelY, labelZ, labelNu
     <div className="space-y-8">
       {/* Numeraire toggle — shared across all charts */}
       <div className="flex items-baseline justify-between">
-        <h2 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600">
+        <h2 className="text-xs font-medium uppercase tracking-widest text-gray-400">
           Position analytics {numLabel && <span className="normal-case">({numLabel})</span>}
         </h2>
         <div className="flex gap-1">
@@ -375,10 +375,10 @@ export default function OrderBookChart({ params, labelX, labelY, labelZ, labelNu
             <button
               key={n}
               onClick={() => setNumeraire(n)}
-              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+              className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
                 numeraire === n
-                  ? "bg-zinc-700 text-zinc-100"
-                  : "text-zinc-600 hover:text-zinc-400"
+                  ? "bg-gray-900 text-white"
+                  : "text-gray-400 hover:text-gray-600"
               }`}
             >
               {n === "raw" ? "raw" : n === "x" ? symX : n === "y" ? symY : symNum}
@@ -389,10 +389,10 @@ export default function OrderBookChart({ params, labelX, labelY, labelZ, labelNu
 
       {/* Collateral & Debt vs Price */}
       <section>
-        <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">
+        <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">
           Collateral &amp; debt vs price
         </h3>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={360}>
             <ComposedChart data={data.cdData} margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -534,7 +534,7 @@ export default function OrderBookChart({ params, labelX, labelY, labelZ, labelNu
             ] : []),
           ]} />
           {!data.hasDebt && (
-            <p className="text-[10px] text-zinc-600 mt-1 px-1">
+            <p className="text-xs text-gray-400 mt-1 px-1">
               No debt — enable leverage to see health curve.
             </p>
           )}
@@ -544,7 +544,7 @@ export default function OrderBookChart({ params, labelX, labelY, labelZ, labelNu
       {/* AMM curve views — tabbed */}
       <section>
         <div className="flex items-baseline gap-4 mb-3">
-          <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600">AMM curve</h3>
+          <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400">AMM curve</h3>
           <div className="flex gap-1">
             {([
               ["depth", "Depth"],
@@ -554,10 +554,10 @@ export default function OrderBookChart({ params, labelX, labelY, labelZ, labelNu
               <button
                 key={tab}
                 onClick={() => setCurveTab(tab)}
-                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
                   curveTab === tab
-                    ? "bg-zinc-700 text-zinc-100"
-                    : "text-zinc-600 hover:text-zinc-400"
+                    ? "bg-gray-900 text-white"
+                    : "text-gray-400 hover:text-gray-600"
                 }`}
               >
                 {label}
@@ -566,7 +566,7 @@ export default function OrderBookChart({ params, labelX, labelY, labelZ, labelNu
           </div>
         </div>
 
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           {curveTab === "depth" && (
             <>
               <ResponsiveContainer width="100%" height={260}>

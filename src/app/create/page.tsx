@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useMemo, useCallback } from "react";
-import Link from "next/link";
 import { validateParams } from "@/lib/math";
 import { getToken } from "@/lib/tokens";
 import { PRESETS, rxToPrice, ryToPrice } from "@/lib/presets";
@@ -64,22 +63,11 @@ export default function CreatePage() {
   const oraclePrice = getToken(form.tokenX).price / getToken(form.tokenY).price;
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      <div className="max-w-3xl mx-auto px-6 py-10 space-y-8">
-        {/* Header */}
-        <header className="flex items-baseline justify-between">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">Create Position</h1>
-            <p className="text-sm text-zinc-500 mt-0.5">Configure your EulerSwap LP</p>
-          </div>
-          <Link href="/" className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors">
-            ← Explorer
-          </Link>
-        </header>
-
+    <div className="min-h-screen">
+      <div className="max-w-3xl mx-auto px-8 py-10 space-y-8">
         {/* 1. Pair & Deposit */}
         <section>
-          <h2 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-4">
+          <h2 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-4">
             Pair &amp; deposit
           </h2>
           <TokenPairDeposit
@@ -115,7 +103,7 @@ export default function CreatePage() {
 
         {/* Warnings */}
         {warnings.length > 0 && (
-          <div className="rounded-lg border border-amber-800/60 bg-amber-950/30 px-4 py-3 text-xs text-amber-300 space-y-1">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 space-y-1">
             {warnings.map((w) => (
               <p key={w}>{w}</p>
             ))}
@@ -172,11 +160,11 @@ export default function CreatePage() {
         <div className="pt-4 pb-10">
           <button
             disabled
-            className="w-full py-3 rounded-lg bg-blue-600/50 text-sm font-medium text-blue-200 cursor-not-allowed"
+            className="w-full py-3 rounded-lg bg-blue-100 text-sm font-medium text-blue-400 cursor-not-allowed"
           >
             Deploy Position (coming soon)
           </button>
-          <p className="text-[10px] text-zinc-600 text-center mt-2">
+          <p className="text-xs text-gray-400 text-center mt-2">
             Wallet connection and on-chain deployment not yet implemented.
           </p>
         </div>

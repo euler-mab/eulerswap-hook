@@ -24,9 +24,9 @@ export default function SwapTable({ swaps, asset0Decimals, asset1Decimals, asset
   return (
     <div>
       <div className="overflow-x-auto">
-        <table className="w-full text-xs">
+        <table className="w-full text-sm">
           <thead>
-            <tr className="text-[10px] text-zinc-600 uppercase tracking-wider">
+            <tr className="text-xs text-gray-400 uppercase tracking-wider">
               <th className="text-left pb-2">Time</th>
               <th className="text-left pb-2">Direction</th>
               <th className="text-right pb-2">In</th>
@@ -35,39 +35,39 @@ export default function SwapTable({ swaps, asset0Decimals, asset1Decimals, asset
               <th className="text-right pb-2">Block</th>
             </tr>
           </thead>
-          <tbody className="text-zinc-400">
+          <tbody className="text-gray-500">
             {visible.map((s, i) => {
               const isBuy = s.amount0In > 0n; // asset0 in → buying asset1
               return (
-                <tr key={`${s.transactionHash}-${s.logIndex}`} className="border-t border-zinc-800/40">
-                  <td className="py-1.5">
+                <tr key={`${s.transactionHash}-${s.logIndex}`} className="border-t border-gray-100">
+                  <td className="py-2.5">
                     {s.timestamp ? timeAgo(s.timestamp) : `#${s.blockNumber.toString()}`}
                   </td>
-                  <td className="py-1.5">
-                    <span className={isBuy ? "text-emerald-400" : "text-red-400"}>
+                  <td className="py-2.5">
+                    <span className={isBuy ? "text-emerald-700" : "text-red-600"}>
                       {isBuy ? `→ ${asset1Symbol}` : `→ ${asset0Symbol}`}
                     </span>
                   </td>
-                  <td className="py-1.5 text-right font-mono">
+                  <td className="py-2.5 text-right font-mono">
                     {isBuy
                       ? `${fmtAmount(s.amount0In, asset0Decimals)} ${asset0Symbol}`
                       : `${fmtAmount(s.amount1In, asset1Decimals)} ${asset1Symbol}`}
                   </td>
-                  <td className="py-1.5 text-right font-mono">
+                  <td className="py-2.5 text-right font-mono">
                     {isBuy
                       ? `${fmtAmount(s.amount1Out, asset1Decimals)} ${asset1Symbol}`
                       : `${fmtAmount(s.amount0Out, asset0Decimals)} ${asset0Symbol}`}
                   </td>
-                  <td className="py-1.5 text-right font-mono text-zinc-500">
+                  <td className="py-2.5 text-right font-mono text-gray-500">
                     {s.fee0 > 0n && `${fmtAmount(s.fee0, asset0Decimals)}`}
                     {s.fee1 > 0n && `${fmtAmount(s.fee1, asset1Decimals)}`}
                   </td>
-                  <td className="py-1.5 text-right">
+                  <td className="py-2.5 text-right">
                     <a
                       href={`https://etherscan.io/tx/${s.transactionHash}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-zinc-500 hover:text-zinc-300 transition-colors font-mono text-[10px]"
+                      className="text-gray-500 hover:text-gray-900 transition-colors font-mono text-xs"
                     >
                       {s.blockNumber.toString()}
                     </a>
@@ -82,7 +82,7 @@ export default function SwapTable({ swaps, asset0Decimals, asset1Decimals, asset
       {!showAll && sorted.length > PAGE_SIZE && (
         <button
           onClick={() => setShowAll(true)}
-          className="mt-3 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+          className="mt-3 text-xs text-gray-500 hover:text-gray-900 transition-colors cursor-pointer"
         >
           Show all {sorted.length} trades
         </button>

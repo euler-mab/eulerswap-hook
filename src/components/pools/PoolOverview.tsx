@@ -8,16 +8,16 @@ import { fmtAmount, fmtFeeBps, shortAddr } from "@/lib/pools/format";
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <>
-      <span className="text-zinc-500">{label}</span>
-      <span className="text-zinc-300">{children}</span>
+      <span className="text-gray-500">{label}</span>
+      <span className="text-gray-700">{children}</span>
     </>
   );
 }
 
 function Badge({ ok, label }: { ok: boolean; label: string }) {
   return (
-    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-      ok ? "bg-emerald-900/40 text-emerald-400" : "bg-red-900/40 text-red-400"
+    <span className={`text-xs px-1.5 py-0.5 rounded ${
+      ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
     }`}>
       {label}
     </span>
@@ -42,12 +42,12 @@ export default function PoolOverview({ state, pool }: { state: PoolState; pool: 
   const agentT1 = Number(formatUnits(state.agentToken1Balance, state.asset1Decimals));
 
   return (
-    <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-1.5 text-xs">
+    <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-2.5 text-sm">
       {/* Reserves */}
       <Row label="Reserves">
         {fmtAmount(state.reserve0, state.asset0Decimals)} {state.asset0Symbol} +{" "}
         {fmtAmount(state.reserve1, state.asset1Decimals)} {state.asset1Symbol}
-        {tvl !== undefined && <span className="text-zinc-500 ml-1">(~${tvl.toFixed(2)})</span>}
+        {tvl !== undefined && <span className="text-gray-500 ml-1">(~${tvl.toFixed(2)})</span>}
       </Row>
 
       {/* Marginal price */}
@@ -67,7 +67,7 @@ export default function PoolOverview({ state, pool }: { state: PoolState; pool: 
         {state.hookPaused !== undefined ? (
           <Badge ok={!state.hookPaused} label={state.hookPaused ? "paused" : "active"} />
         ) : (
-          <span className="text-zinc-600">none</span>
+          <span className="text-gray-400">none</span>
         )}
       </Row>
 
@@ -75,7 +75,7 @@ export default function PoolOverview({ state, pool }: { state: PoolState; pool: 
       <Row label="Fees">
         {fmtFeeBps(state.fee0)} / {fmtFeeBps(state.fee1)}
         {state.hookBaseFee !== undefined && (
-          <span className="text-zinc-500 ml-1">
+          <span className="text-gray-500 ml-1">
             (hook: {fmtFeeBps(state.hookBaseFee)} base, {fmtFeeBps(state.hookMinFee!)} min, {fmtFeeBps(state.hookMaxFee!)} max)
           </span>
         )}
@@ -86,7 +86,7 @@ export default function PoolOverview({ state, pool }: { state: PoolState; pool: 
         <Row label="Trades">
           {state.hookTradeCount.toString()} swaps
           {state.hookVolume0 !== undefined && (
-            <span className="text-zinc-500 ml-1">
+            <span className="text-gray-500 ml-1">
               (vol: {fmtAmount(state.hookVolume0, state.asset0Decimals)} {state.asset0Symbol} +{" "}
               {fmtAmount(state.hookVolume1!, state.asset1Decimals)} {state.asset1Symbol})
             </span>
@@ -125,7 +125,7 @@ export default function PoolOverview({ state, pool }: { state: PoolState; pool: 
           href={`https://etherscan.io/address/${pool.address}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-mono text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+          className="font-mono text-xs text-gray-500 hover:text-gray-900 transition-colors"
         >
           {shortAddr(pool.address)} &nearr;
         </a>

@@ -16,33 +16,26 @@ function PoolsContent() {
     : null;
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      <div className="max-w-6xl mx-auto px-6 py-8">
-        {/* Header */}
-        <header className="flex items-baseline justify-between mb-8">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">Pool Monitor</h1>
-            <p className="text-sm text-zinc-500 mt-0.5">
-              {pool ? pool.name : "Live EulerSwap pool dashboard"}
-            </p>
-          </div>
-          <div className="flex gap-3">
-            {pool && (
-              <Link href="/pools" className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors">
-                &larr; All Pools
-              </Link>
-            )}
-            <Link href="/" className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors">
-              Explorer
+    <div className="min-h-screen">
+      <div className="max-w-6xl mx-auto px-8 py-8">
+        {/* Sub-header for detail view */}
+        {pool && (
+          <div className="flex items-baseline justify-between mb-6">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">{pool.name}</h2>
+              {pool.description && <p className="text-sm text-gray-500 mt-0.5">{pool.description}</p>}
+            </div>
+            <Link href="/pools" className="text-sm text-gray-500 hover:text-gray-700 transition-colors">
+              &larr; All Pools
             </Link>
           </div>
-        </header>
+        )}
 
         {/* Content */}
         {pool ? (
           <PoolDetail pool={pool} />
         ) : selectedAddr ? (
-          <div className="rounded-lg border border-red-800/60 bg-red-950/30 px-4 py-3 text-xs text-red-400">
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             Pool not found: {selectedAddr}
           </div>
         ) : (
@@ -55,7 +48,7 @@ function PoolsContent() {
 
 export default function PoolsPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
+    <Suspense fallback={<div className="min-h-screen bg-gray-50" />}>
       <PoolsContent />
     </Suspense>
   );

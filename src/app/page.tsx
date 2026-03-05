@@ -25,19 +25,14 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex">
+    <div className="min-h-screen flex">
       {/* Left panel — parameters */}
-      <aside className="w-[540px] shrink-0 h-screen sticky top-0 overflow-y-auto border-r border-zinc-800/60 px-6 pt-8 pb-12 space-y-8">
-        <header>
-          <h1 className="text-xl font-semibold tracking-tight">EulerSwap</h1>
-          <p className="text-sm text-zinc-500 mt-0.5">AMM curve explorer</p>
-        </header>
-
+      <aside className="w-[540px] shrink-0 h-screen sticky top-0 overflow-y-auto border-r border-gray-200 bg-white px-6 pt-8 pb-12 space-y-8">
         <AssetNameInputs labels={labels} onChange={setLabels} onApplyPreset={applyPreset} />
         <ParamControls params={params} onChange={setParams} labels={labels} />
 
         {warnings.length > 0 && (
-          <div className="rounded-lg border border-amber-800/60 bg-amber-950/30 px-4 py-3 text-xs text-amber-300 space-y-1">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 space-y-1">
             {warnings.map((w) => (
               <p key={w}>{w}</p>
             ))}
@@ -46,7 +41,7 @@ export default function Home() {
       </aside>
 
       {/* Right panel — charts */}
-      <main className="flex-1 min-w-0 max-w-4xl px-6 py-8 space-y-6">
+      <main className="flex-1 min-w-0 max-w-4xl px-8 py-8 space-y-6">
         <div className="flex gap-1">
           {([
             ["orderbook", "Order Book"],
@@ -58,10 +53,10 @@ export default function Home() {
             <button
               key={tab}
               onClick={() => setChartTab(tab)}
-              className={`px-3 py-1 rounded text-[11px] font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded text-xs font-medium transition-colors cursor-pointer ${
                 chartTab === tab
-                  ? "bg-zinc-700 text-zinc-100"
-                  : "text-zinc-500 hover:text-zinc-300"
+                  ? "bg-gray-900 text-white"
+                  : "text-gray-500 hover:text-gray-900"
               }`}
             >
               {label}

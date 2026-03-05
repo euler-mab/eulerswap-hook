@@ -32,13 +32,13 @@ function VaultInput({
 }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs text-zinc-500 w-16 shrink-0 font-mono">{label}</span>
+      <span className="text-sm text-gray-500 w-16 shrink-0 font-mono">{label}</span>
       <input
         type="number"
         value={value || ""}
         onChange={(e) => onChange(Math.max(0, Number(e.target.value)))}
         placeholder="0"
-        className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-xs text-zinc-100 font-mono focus:outline-none focus:border-zinc-600"
+        className="flex-1 bg-white border border-gray-300 rounded px-2.5 py-1.5 text-sm text-gray-900 font-mono focus:outline-none focus:border-blue-500"
       />
     </div>
   );
@@ -93,7 +93,7 @@ export default function ExistingPositions(props: Props) {
 
   return (
     <div className="space-y-4">
-      <p className="text-xs text-zinc-500">
+      <p className="text-sm text-gray-500">
         If you have existing deposits or debts in Euler lending vaults, enter them here.
         They affect your position&apos;s health factor and net asset value.
       </p>
@@ -101,7 +101,7 @@ export default function ExistingPositions(props: Props) {
       <div className="grid grid-cols-2 gap-6">
         {/* Deposits */}
         <div className="space-y-2">
-          <label className="text-[10px] text-zinc-600 uppercase tracking-wider">
+          <label className="text-xs text-gray-400 uppercase tracking-wider">
             Vault deposits
           </label>
           <VaultInput label={props.tokenX} value={form.vaultDepositX} onChange={props.onVaultDepositX} />
@@ -111,7 +111,7 @@ export default function ExistingPositions(props: Props) {
 
         {/* Debts */}
         <div className="space-y-2">
-          <label className="text-[10px] text-zinc-600 uppercase tracking-wider">
+          <label className="text-xs text-gray-400 uppercase tracking-wider">
             Vault debts
           </label>
           <VaultInput label={props.tokenX} value={form.vaultDebtX} onChange={props.onVaultDebtX} />
@@ -122,30 +122,30 @@ export default function ExistingPositions(props: Props) {
 
       {/* Impact panel */}
       {impact && (
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-4 space-y-3">
-          <h4 className="text-[10px] text-zinc-600 uppercase tracking-wider">
+        <div className="rounded-lg border border-gray-200 bg-white shadow-sm p-4 space-y-3">
+          <h4 className="text-xs text-gray-400 uppercase tracking-wider">
             Impact on position
           </h4>
-          <div className="grid grid-cols-2 gap-4 text-xs">
+          <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <span className="text-zinc-600">Health X (with vault): </span>
-              <span className="font-mono text-zinc-300">{fmtH(impact.hXWith)}</span>
-              <span className="text-zinc-600"> (without: {fmtH(impact.hXWithout)})</span>
+              <span className="text-gray-400">Health X (with vault): </span>
+              <span className="font-mono text-gray-700">{fmtH(impact.hXWith)}</span>
+              <span className="text-gray-400"> (without: {fmtH(impact.hXWithout)})</span>
             </div>
             <div>
-              <span className="text-zinc-600">Health Y (with vault): </span>
-              <span className="font-mono text-zinc-300">{fmtH(impact.hYWith)}</span>
-              <span className="text-zinc-600"> (without: {fmtH(impact.hYWithout)})</span>
+              <span className="text-gray-400">Health Y (with vault): </span>
+              <span className="font-mono text-gray-700">{fmtH(impact.hYWith)}</span>
+              <span className="text-gray-400"> (without: {fmtH(impact.hYWithout)})</span>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4 text-xs">
+          <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <span className="text-zinc-600">Deposit value: </span>
-              <span className="font-mono text-emerald-400">+{fmtUsd(impact.depositValue)}</span>
+              <span className="text-gray-400">Deposit value: </span>
+              <span className="font-mono text-emerald-600">+{fmtUsd(impact.depositValue)}</span>
             </div>
             <div>
-              <span className="text-zinc-600">Debt value: </span>
-              <span className="font-mono text-red-400">−{fmtUsd(impact.debtValue)}</span>
+              <span className="text-gray-400">Debt value: </span>
+              <span className="font-mono text-red-600">−{fmtUsd(impact.debtValue)}</span>
             </div>
           </div>
         </div>

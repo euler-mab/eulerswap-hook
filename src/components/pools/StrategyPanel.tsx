@@ -6,8 +6,8 @@ import { fmtAmount, fmtFeeBps, shortAddr } from "@/lib/pools/format";
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <>
-      <span className="text-zinc-500">{label}</span>
-      <span className="text-zinc-300">{children}</span>
+      <span className="text-gray-500">{label}</span>
+      <span className="text-gray-700">{children}</span>
     </>
   );
 }
@@ -20,10 +20,10 @@ export default function StrategyPanel({ state }: { state: PoolState }) {
     <div className="space-y-6">
       {/* Current params */}
       <div>
-        <h4 className="text-[10px] font-medium uppercase tracking-wider text-zinc-600 mb-2">
+        <h4 className="text-xs font-medium uppercase tracking-wider text-gray-400 mb-2">
           Dynamic Params
         </h4>
-        <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-1.5 text-xs">
+        <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-2.5 text-sm">
           <Row label="Equilibrium reserves">
             {fmtAmount(state.equilibriumReserve0, state.asset0Decimals)} {state.asset0Symbol} +{" "}
             {fmtAmount(state.equilibriumReserve1, state.asset1Decimals)} {state.asset1Symbol}
@@ -54,7 +54,7 @@ export default function StrategyPanel({ state }: { state: PoolState }) {
                   href={`https://etherscan.io/address/${state.swapHook}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="font-mono text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+                  className="font-mono text-xs text-gray-500 hover:text-gray-900 transition-colors"
                 >
                   {shortAddr(state.swapHook)} &nearr;
                 </a>
@@ -66,16 +66,16 @@ export default function StrategyPanel({ state }: { state: PoolState }) {
       {/* Hook params */}
       {state.hookBaseFee !== undefined && (
         <div>
-          <h4 className="text-[10px] font-medium uppercase tracking-wider text-zinc-600 mb-2">
+          <h4 className="text-xs font-medium uppercase tracking-wider text-gray-400 mb-2">
             Hook Fee Params
           </h4>
-          <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-1.5 text-xs">
+          <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-2.5 text-sm">
             <Row label="Base fee">{fmtFeeBps(state.hookBaseFee)}</Row>
             <Row label="Min fee">{fmtFeeBps(state.hookMinFee!)}</Row>
             <Row label="Max fee">{fmtFeeBps(state.hookMaxFee!)}</Row>
             <Row label="Mismatch scale">{state.hookMismatchScale!.toString()}</Row>
             <Row label="Paused">
-              <span className={state.hookPaused ? "text-red-400" : "text-emerald-400"}>
+              <span className={state.hookPaused ? "text-red-600" : "text-emerald-700"}>
                 {state.hookPaused ? "yes" : "no"}
               </span>
             </Row>
@@ -85,30 +85,30 @@ export default function StrategyPanel({ state }: { state: PoolState }) {
 
       {/* Static params */}
       <div>
-        <h4 className="text-[10px] font-medium uppercase tracking-wider text-zinc-600 mb-2">
+        <h4 className="text-xs font-medium uppercase tracking-wider text-gray-400 mb-2">
           Static Params
         </h4>
-        <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-1.5 text-xs">
+        <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-2.5 text-sm">
           <Row label="Euler account">
-            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.eulerAccount)}</span>
+            <span className="font-mono text-xs text-gray-500">{shortAddr(state.eulerAccount)}</span>
           </Row>
           <Row label="Supply vault 0">
-            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.supplyVault0)}</span>
+            <span className="font-mono text-xs text-gray-500">{shortAddr(state.supplyVault0)}</span>
           </Row>
           <Row label="Supply vault 1">
-            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.supplyVault1)}</span>
+            <span className="font-mono text-xs text-gray-500">{shortAddr(state.supplyVault1)}</span>
           </Row>
           <Row label="Borrow vault 0">
-            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.borrowVault0)}</span>
+            <span className="font-mono text-xs text-gray-500">{shortAddr(state.borrowVault0)}</span>
           </Row>
           <Row label="Borrow vault 1">
-            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.borrowVault1)}</span>
+            <span className="font-mono text-xs text-gray-500">{shortAddr(state.borrowVault1)}</span>
           </Row>
           <Row label="Fee recipient">
-            <span className="font-mono text-[10px] text-zinc-500">{shortAddr(state.feeRecipient)}</span>
+            <span className="font-mono text-xs text-gray-500">{shortAddr(state.feeRecipient)}</span>
           </Row>
           <Row label="Installed">
-            <span className={state.isInstalled ? "text-emerald-400" : "text-red-400"}>
+            <span className={state.isInstalled ? "text-emerald-700" : "text-red-600"}>
               {state.isInstalled ? "yes" : "no"}
             </span>
           </Row>

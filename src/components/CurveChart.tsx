@@ -19,18 +19,18 @@ interface Props {
   labelY?: string;
 }
 
-const AXIS = { stroke: "#444", tick: { fill: "#666", fontSize: 11 }, tickLine: false };
-const GRID = { strokeDasharray: "3 3", stroke: "#222" };
+const AXIS = { stroke: "#d1d5db", tick: { fill: "#6b7280", fontSize: 12 }, tickLine: false };
+const GRID = { strokeDasharray: "3 3", stroke: "#e5e7eb" };
 const TIP = {
-  contentStyle: { backgroundColor: "#18181b", border: "1px solid #333", borderRadius: 6, fontSize: 12 },
-  labelStyle: { color: "#999" },
+  contentStyle: { backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 13 },
+  labelStyle: { color: "#6b7280" },
   formatter: (val: number | undefined) => val?.toFixed(2) ?? "",
 };
 const line = (color: string) => ({ stroke: color, strokeWidth: 1.5 });
 
 function Legend({ items }: { items: { color: string; label: React.ReactNode; key?: string }[] }) {
   return (
-    <div className="flex flex-wrap gap-4 px-2 pt-1 text-[11px] text-zinc-600">
+    <div className="flex flex-wrap gap-4 px-2 pt-1 text-xs text-gray-400">
       {items.map((it, i) => (
         <span key={it.key ?? i} className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full" style={{ backgroundColor: it.color }} />
@@ -109,8 +109,8 @@ export default function CurveChart({ params, labelX, labelY }: Props) {
     <div className="space-y-8">
       {/* Boosted reserve curves */}
       <section>
-        <h2 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">AMM curves — boosted reserves</h2>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h2 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">AMM curves — boosted reserves</h2>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={360}>
             <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -142,8 +142,8 @@ export default function CurveChart({ params, labelX, labelY }: Props) {
 
       {/* Real reserve curves */}
       <section>
-        <h2 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">AMM curves — real reserves</h2>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h2 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">AMM curves — real reserves</h2>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={360}>
             <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -165,8 +165,8 @@ export default function CurveChart({ params, labelX, labelY }: Props) {
 
       {/* Shifted curves */}
       <section>
-        <h2 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Shifted curves — boosted</h2>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h2 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">Shifted curves — boosted</h2>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={300}>
             <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -189,8 +189,8 @@ export default function CurveChart({ params, labelX, labelY }: Props) {
       </section>
 
       <section>
-        <h2 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Shifted curves — real</h2>
-        <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3">
+        <h2 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">Shifted curves — real</h2>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
           <ResponsiveContainer width="100%" height={300}>
             <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 8 }}>
               <CartesianGrid {...GRID} />
@@ -214,15 +214,15 @@ export default function CurveChart({ params, labelX, labelY }: Props) {
 
       {/* Computed values */}
       <section>
-        <h2 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600 mb-3">Computed values</h2>
-        <div className="grid grid-cols-2 gap-x-10 gap-y-1 text-xs text-zinc-400">
-          <span className="text-zinc-600">Boost</span>
+        <h2 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">Computed values</h2>
+        <div className="grid grid-cols-2 gap-x-10 gap-y-1 text-xs text-gray-500">
+          <span className="text-gray-400">Boost</span>
           <span />
           <span><Tex>{"b_{XC}"}</Tex> = {fmt(data.bXC)}</span>
           <span><Tex>{"b_{YC}"}</Tex> = {fmt(data.bYC)}</span>
           <span><Tex>{"b_{XL}"}</Tex> = {fmt(data.bXL)}</span>
           <span><Tex>{"b_{YL}"}</Tex> = {fmt(data.bYL)}</span>
-          <span className="text-zinc-600 mt-1">Boosted reserves</span>
+          <span className="text-gray-400 mt-1">Boosted reserves</span>
           <span />
           <span><Tex>x_0</Tex> = {fmt(data.x0)}</span>
           <span><Tex>y_0</Tex> = {fmt(data.y0)}</span>
@@ -230,7 +230,7 @@ export default function CurveChart({ params, labelX, labelY }: Props) {
           <span><Tex>{"y_b(y_0)"}</Tex> = {fmt(data.ybB)}</span>
           <span>range = ({fmt(data.x0 - data.xbB)}, {fmt(data.y0 - data.ybB)})</span>
           <span />
-          <span className="text-zinc-600 mt-1">Real reserves</span>
+          <span className="text-gray-400 mt-1">Real reserves</span>
           <span />
           <span><Tex>x_r</Tex> = {fmt(params.xr)}</span>
           <span><Tex>y_r</Tex> = {fmt(params.yr)}</span>
@@ -238,7 +238,7 @@ export default function CurveChart({ params, labelX, labelY }: Props) {
           <span><Tex>{"y_b(y_r)"}</Tex> = {fmt(data.ybR)}</span>
           <span>range = ({fmt(params.xr - data.xbR)}, {fmt(params.yr - data.ybR)})</span>
           <span />
-          <span className="text-zinc-600 mt-1">Boundary prices</span>
+          <span className="text-gray-400 mt-1">Boundary prices</span>
           <span />
           <span><Tex>{"p_{Xb}"}</Tex> = {fmt(data.pXb)}</span>
           <span><Tex>{"p_{Yb}"}</Tex> = {fmt(data.pYb)}</span>

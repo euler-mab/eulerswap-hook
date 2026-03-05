@@ -13,8 +13,8 @@ interface Props {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="space-y-1.5 pb-4 border-b border-zinc-800/40">
-      <h3 className="text-[11px] font-medium uppercase tracking-widest text-zinc-600">{title}</h3>
+    <div className="space-y-1.5 pb-4 border-b border-gray-100">
+      <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400">{title}</h3>
       {children}
     </div>
   );
@@ -33,7 +33,7 @@ function NumHint({ value, unit }: { value: number; unit: string }) {
     : value >= 1e3 ? `${(value / 1e3).toFixed(1)}k`
     : value >= 1 ? value.toFixed(1)
     : value.toFixed(2);
-  return <span className="text-[9px] text-zinc-600 tabular-nums">≈ {s} {unit}</span>;
+  return <span className="text-[11px] text-gray-400 tabular-nums">≈ {s} {unit}</span>;
 }
 
 export default function ParamControls({ params, onChange, labels }: Props) {
@@ -102,10 +102,10 @@ export default function ParamControls({ params, onChange, labels }: Props) {
             <button
               key={m}
               onClick={() => setDebtMode(m)}
-              className={`px-2.5 py-0.5 rounded text-[11px] transition-colors ${
+              className={`px-2.5 py-0.5 rounded text-xs transition-colors ${
                 mode === m
-                  ? "bg-zinc-700 text-zinc-100"
-                  : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                  ? "bg-gray-900 text-white"
+                  : "bg-white text-gray-500 hover:text-gray-900"
               }`}
             >
               {m === "xy" ? "X,Y debt" : "Z debt"}

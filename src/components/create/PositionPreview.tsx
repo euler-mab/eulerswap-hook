@@ -16,10 +16,10 @@ interface Props {
 
 function Metric({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 px-3 py-2.5">
-      <div className="text-[10px] text-zinc-600 uppercase tracking-wider">{label}</div>
-      <div className="text-sm text-zinc-200 font-mono mt-0.5">{value}</div>
-      {sub && <div className="text-[10px] text-zinc-500 mt-0.5">{sub}</div>}
+    <div className="rounded-lg border border-gray-200 bg-white shadow-sm px-3 py-2.5">
+      <div className="text-xs text-gray-400 uppercase tracking-wider">{label}</div>
+      <div className="text-sm text-gray-900 font-mono mt-0.5">{value}</div>
+      {sub && <div className="text-xs text-gray-500 mt-0.5">{sub}</div>}
     </div>
   );
 }
@@ -44,7 +44,7 @@ export default function PositionPreview({ params, tokenX, tokenY }: Props) {
 
   if (!metrics) {
     return (
-      <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-6 text-center text-sm text-zinc-500">
+      <div className="rounded-lg border border-gray-200 bg-white shadow-sm p-6 text-center text-sm text-gray-500">
         Enter deposits and strategy parameters to see a preview.
       </div>
     );
