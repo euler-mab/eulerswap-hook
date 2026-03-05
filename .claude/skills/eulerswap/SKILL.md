@@ -399,12 +399,12 @@ The EVC is the security middleware that enables cross-vault atomic operations.
 
 ### Sub-Account System
 
-Each address has 256 sub-accounts sharing the same owner (first 19 bytes):
+Each address has 256 sub-accounts sharing the same owner (first 19 bytes). Sub-accounts are computed via XOR with the account ID:
 ```
-Owner:           0x1234...7890
-Sub-account 0:   0x1234...7800  (main)
-Sub-account 1:   0x1234...7801
-Sub-account 255: 0x1234...78ff
+Owner prefix:    0x1234...78  (19 bytes)
+Sub-account 0:   0x1234...78 XOR 0x00 = 0x1234...7800  (main)
+Sub-account 1:   0x1234...78 XOR 0x01 = 0x1234...7801
+Sub-account 255: 0x1234...78 XOR 0xff = 0x1234...78ff
 ```
 
 ### Core Operations
@@ -552,8 +552,14 @@ Resolution order: direct mapping → ERC4626 vault recursion → fallback oracle
 | `ChronicleOracle` | Push | Chronicle (ex-Maker) feeds |
 | `LidoOracle` | On-chain | stETH ↔ wstETH exchange rate |
 | `PendleOracle` | On-chain | Pendle PT TWAP |
+| `PendleUniversalOracle` | On-chain | Pendle PT + LP tokens |
 | `CrossAdapter` | Composite | Chain two oracles: X/Z = (X/Y) × (Y/Z) |
 | `FixedRateOracle` | Static | Constant exchange rate |
+| `RateProviderOracle` | On-chain | Balancer rate providers (`getRate()`) |
+| `IdleTranchesOracle` | On-chain | Idle tranches via CDO `virtualPrice()` |
+| `OndoOracle` | On-chain | Ondo RWA tokens |
+| `ChainlinkInfrequentOracle` | Push | Like Chainlink but for infrequently-updated feeds |
+| `LidoFundamentalOracle` | On-chain | wETH ↔ wstETH (1:1 ETH/stETH assumption) |
 
 ### Using Oracles in Hooks
 
@@ -604,8 +610,8 @@ struct SwapParams {
 
 Trusted post-swap validation:
 ```solidity
-verifier.verifyAmountMinAndSkim(vault, account, amountMin, deadline);
-verifier.verifyDebtMax(vault, account, amountMax, deadline);
+verifier.verifyAmountMinAndSkim(vault, receiver, amountMin, deadline);
+verifier.verifyDebtMax(vault, receiver, amountMax, deadline);
 ```
 
 ### Typical Swap Transaction (EVC Batch)
@@ -617,7 +623,7 @@ evc.batch([
     // 2. Execute swap + deposit result
     { target: swapper, data: multicall([swap(...), deposit(...)]) },
     // 3. Verify slippage
-    { target: verifier, data: verifyAmountMinAndSkim(vault, account, minOut, deadline) }
+    { target: verifier, data: verifyAmountMinAndSkim(vault, receiver, minOut, deadline) }
 ]);
 ```
 
