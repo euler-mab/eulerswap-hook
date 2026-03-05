@@ -239,9 +239,16 @@ export async function getVaultDebtInfo(
     client.readContract({ address: meta.supplyVault1, abi: evaultAbi, functionName: "totalAssets" }),
   ]);
 
-  const [deposit0, deposit1] = await Promise.all([
+  const [deposit0, deposit1, ltvRaw0, ltvRaw1] = await Promise.all([
     client.readContract({ address: meta.supplyVault0, abi: evaultAbi, functionName: "convertToAssets", args: [shares0 as bigint] }),
     client.readContract({ address: meta.supplyVault1, abi: evaultAbi, functionName: "convertToAssets", args: [shares1 as bigint] }),
+    // Cross-vault LTV: how much can borrow from vault0 using vault1 as collateral (and vice versa)
+    hasBorrow0
+      ? client.readContract({ address: meta.borrowVault0, abi: evaultAbi, functionName: "LTVBorrow", args: [meta.supplyVault1] }).catch(() => 0)
+      : Promise.resolve(0),
+    hasBorrow1
+      ? client.readContract({ address: meta.borrowVault1, abi: evaultAbi, functionName: "LTVBorrow", args: [meta.supplyVault0] }).catch(() => 0)
+      : Promise.resolve(0),
   ]);
 
   const utilization0 = (totalAssets0 as bigint) > 0n
@@ -267,6 +274,12 @@ export async function getVaultDebtInfo(
   const dailyYield0 = (deposit0 as bigint) * (supplyRate0 as bigint) * supplyUtil0 * SECONDS_PER_DAY / (RAY * WAD);
   const dailyYield1 = (deposit1 as bigint) * (supplyRate1 as bigint) * supplyUtil1 * SECONDS_PER_DAY / (RAY * WAD);
 
+  const ltv0 = Number(ltvRaw0);
+  const ltv1 = Number(ltvRaw1);
+  const maxLeverage0 = ltv0 > 0 && ltv0 < 10000 ? 1 / (1 - ltv0 / 10000) : 0;
+  const maxLeverage1 = ltv1 > 0 && ltv1 < 10000 ? 1 / (1 - ltv1 / 10000) : 0;
+  const isBooster = meta.supplyVault0 === meta.borrowVault0 && meta.supplyVault1 === meta.borrowVault1;
+
   return {
     debt0: debt0 as bigint,
     debt1: debt1 as bigint,
@@ -286,6 +299,11 @@ export async function getVaultDebtInfo(
     supplyUtilization1: supplyUtil1,
     dailyYield0,
     dailyYield1,
+    ltv0,
+    ltv1,
+    maxLeverage0,
+    maxLeverage1,
+    isBooster,
   };
 }
 

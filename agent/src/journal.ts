@@ -7,6 +7,7 @@ import type {
   ClaudeReview,
   RuleResult,
   AssetDecimals,
+  VaultDebtInfo,
 } from "./types.js";
 import { BPS, fmtToken } from "./types.js";
 
@@ -113,6 +114,18 @@ export function claudeReview(review: ClaudeReview): void {
   if (review.strategyNotes) {
     append(`**Notes**: ${review.strategyNotes}`);
   }
+  append("");
+}
+
+export function vaultInfo(vaultDebt: VaultDebtInfo, decimals?: AssetDecimals): void {
+  const fmtR0 = (v: bigint) => decimals ? fmtToken(v, decimals.dec0) : fmtWad(v);
+  const fmtR1 = (v: bigint) => decimals ? fmtToken(v, decimals.dec1) : fmtWad(v);
+  append(`## ${timestamp()} — Vault Info`);
+  append(`- Type: ${vaultDebt.isBooster ? "booster" : "standard"}`);
+  append(`- Deposits: ${fmtR0(vaultDebt.deposit0)} / ${fmtR1(vaultDebt.deposit1)}`);
+  append(`- Debt: ${fmtR0(vaultDebt.debt0)} / ${fmtR1(vaultDebt.debt1)}`);
+  append(`- Cross-vault LTV: asset0=${(vaultDebt.ltv0 / 100).toFixed(1)}%, asset1=${(vaultDebt.ltv1 / 100).toFixed(1)}%`);
+  append(`- Max leverage: asset0=${vaultDebt.maxLeverage0.toFixed(2)}x, asset1=${vaultDebt.maxLeverage1.toFixed(2)}x`);
   append("");
 }
 

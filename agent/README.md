@@ -33,7 +33,7 @@ Layers 1+2 are in `contracts/src/LPAgentHook.sol`. Layer 3 is this directory.
 |--------|---------|
 | `index.ts` | Main loop: poll every 30s, Claude review every 1h |
 | `config.ts` | Loads env vars, defines safety bounds |
-| `monitor.ts` | Reads on-chain state (reserves, params, oracle price, vault debt/utilization) |
+| `monitor.ts` | Reads on-chain state (reserves, params, oracle price, vault debt/utilization, cross-vault LTV) |
 | `oracle.ts` | CowSwap aggregator quotes — bid/ask/spread for market context |
 | `rules.ts` | Rule engine: emergency pause, price recentering, interest rebalancing, gas budget, rate limiting |
 | `executor.ts` | Submits txs — reconfigure routes through EVC, hook params direct, CowSwap swaps |
@@ -117,6 +117,27 @@ When the pool has leverage (borrow vaults), sustained one-directional flow can s
 The rule reads vault state via `monitor.getVaultDebtInfo()`: pool debt, vault utilization, borrow rates, and daily interest cost. It adjusts `setFeeParams` to make the rebalancing direction cheap and the worsening direction expensive, encouraging arbers to restore balance.
 
 Claude also receives vault debt data in its review context and can recommend further action (concentration reduction, equilibrium shift, or external swap) per the strategy in [REBALANCING_STRATEGY.md](./REBALANCING_STRATEGY.md).
+
+## Leverage & LTV Awareness
+
+The agent reads cross-vault LTV at startup and every poll cycle via `vault.LTVBorrow(collateralVault)`, and computes maximum leverage:
+
+```
+maxLeverage = 1 / (1 - LTV)
+```
+
+For example, at 84% LTV → 6.25x max leverage; at 85% LTV → 6.67x.
+
+**Booster detection**: When `supplyVault == borrowVault` for both assets, the pool is a "booster" — swaps automatically create leverage by borrowing from one vault and depositing into the other. The agent logs this at startup and includes it in Claude review context.
+
+**What the agent tracks**:
+- `ltv0`: `borrowVault0.LTVBorrow(supplyVault1)` — max borrowing of asset0 against asset1 collateral
+- `ltv1`: `borrowVault1.LTVBorrow(supplyVault0)` — max borrowing of asset1 against asset0 collateral
+- `maxLeverage0/1`: derived from LTV
+- `isBooster`: whether supply and borrow vaults are the same
+- Current debt/deposit ratio per asset (how close to max leverage)
+
+This data appears in the Claude review context under "Leverage & LTV" and is logged to the journal at startup.
 
 ## External Swap (Last Resort)
 

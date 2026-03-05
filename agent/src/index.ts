@@ -56,6 +56,17 @@ async function main() {
   journal.setPool(config.poolAddress);
   journal.startup(config);
 
+  // Log vault info (LTV, leverage) at startup
+  try {
+    const vaultDebt = await monitor.getVaultDebtInfo(publicClient, config);
+    journal.vaultInfo(vaultDebt, decimals);
+    console.log(`  Type: ${vaultDebt.isBooster ? "booster" : "standard"}`);
+    console.log(`  LTV: asset0=${(vaultDebt.ltv0 / 100).toFixed(1)}%, asset1=${(vaultDebt.ltv1 / 100).toFixed(1)}%`);
+    console.log(`  Max leverage: asset0=${vaultDebt.maxLeverage0.toFixed(2)}x, asset1=${vaultDebt.maxLeverage1.toFixed(2)}x`);
+  } catch {
+    console.log("  Vault info: unavailable");
+  }
+
   // --- Main poll loop ---
   const pollLoop = async () => {
     try {

@@ -88,6 +88,16 @@ export interface VaultDebtInfo {
   supplyUtilization1: bigint; // supply vault 1 utilization
   dailyYield0: bigint;        // deposit0 × supplyRate0 × supplyUtil0 × 86400 / (RAY × WAD)
   dailyYield1: bigint;        // deposit1 × supplyRate1 × supplyUtil1 × 86400 / (RAY × WAD)
+  // Cross-vault LTV (basis points, 0-10000; e.g. 8400 = 84%)
+  // ltv0 = borrowVault0.LTVBorrow(supplyVault1) — how much asset0 can borrow against asset1
+  // ltv1 = borrowVault1.LTVBorrow(supplyVault0) — how much asset1 can borrow against asset0
+  ltv0: number;
+  ltv1: number;
+  // Maximum leverage = 1 / (1 - LTV). At 84% LTV → 6.25x. 0 if LTV is 0.
+  maxLeverage0: number;
+  maxLeverage1: number;
+  // Whether this is a booster (supplyVault == borrowVault for both assets)
+  isBooster: boolean;
 }
 
 // --- Actions ---
@@ -95,6 +105,7 @@ export interface VaultDebtInfo {
 export type ActionType =
   | "reconfigure"
   | "setFeeParams"
+  | "setDecayParams"
   | "setPaused"
   | "externalSwap";
 
