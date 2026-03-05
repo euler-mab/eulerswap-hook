@@ -39,7 +39,7 @@ Layers 1+2 are in `contracts/src/LPAgentHook.sol`. Layer 3 is this directory.
 | `executor.ts` | Submits txs — reconfigure routes through EVC, hook params direct, CowSwap swaps |
 | `cowswap.ts` | CowSwap order flow: quote, EIP-712 sign, submit, poll for fill |
 | `claude.ts` | Hourly Claude API review with structured prompt/response |
-| `journal.ts` | Daily markdown files in `journal/` |
+| `journal.ts` | Daily markdown files in `journal/`, namespaced by pool address |
 | `metrics.ts` | In-memory P&L, gas, action history (last 1000 entries) |
 | `types.ts` | Shared types and constants (WAD, BPS) |
 | `abi.ts` | ABI fragments for EulerSwap pool, EVC, hook, Euler vaults, and price oracle |
@@ -52,14 +52,15 @@ Poll loop (every POLL_INTERVAL seconds):
   2. Read hook stats (trade count, volume, last trade)
   3. Read hook fee params (baseFee, mismatchScale, paused)
   4. Read vault debt info (pool debt, utilization, borrow rates)
-  5. Evaluate rules:
-     - emergencyPause: if oracle returns 0 (stale/broken) → pause hook
-     - priceRecenter: if oracle drifted >5% from equilibrium → reconfigure
+  5. Fetch CowSwap aggregator quote (primary price source for recentering)
+  6. Evaluate rules:
+     - emergencyPause: if on-chain oracle returns 0 (stale/broken) → pause hook
+     - priceRecenter: if CowSwap mid drifted >5% from equilibrium → reconfigure
      - interestRebalance: if vault utilization >70% with pool debt → widen fee spread
      - gasBudget: if daily spend exceeded → block all actions
      - rateLimit: if >12 actions this hour → block actions
-  6. Execute triggered actions (if not blocked by gas/rate limits)
-  7. Log snapshot to journal every 10th poll
+  7. Execute triggered actions (if not blocked by gas/rate limits)
+  8. Log snapshot to journal every 10th poll
 
 Claude loop (every CLAUDE_REVIEW_INTERVAL seconds):
   1. Build context: snapshot, P&L, recent trades, current params
@@ -175,9 +176,33 @@ npm install
 npm start
 ```
 
-## Oracle Price Chain
+## Price Sources
 
-The agent reads oracle prices through the Euler vault's oracle adapter:
+The agent uses **two** price sources for different purposes:
+
+| Source | Used for | Module |
+|--------|----------|--------|
+| CowSwap aggregator | Recentering decisions (primary), Claude market context | `oracle.ts`, `rules.ts` |
+| On-chain oracle (Chainlink via Euler vault) | priceX param (USDC stable), emergency pause (oracle=0), safety fallback | `monitor.ts` |
+
+CowSwap quotes use 10,000 units ($10K for USDC) to ensure fixed fees are negligible (<0.01%). At $1 the fee is ~61%, giving unusable prices.
+
+When CowSwap is unavailable, the rules engine falls back to the on-chain oracle for recentering. Emergency pause always uses the on-chain oracle (detects oracle=0 regardless of CowSwap).
+
+## Journal Organization
+
+Journal files are namespaced by pool address to prevent fork/mainnet entries from mixing:
+
+```
+journal/2026-03-05-0x4311.md   ← pool 0x4311...
+journal/2026-03-05-0xa1b2.md   ← different pool
+```
+
+The prefix is set automatically via `journal.setPool(config.poolAddress)` at startup. Each pool gets its own daily file.
+
+## On-Chain Oracle Price Chain
+
+The agent reads on-chain oracle prices through the Euler vault's oracle adapter:
 
 ```
 pool.getStaticParams().supplyVault0
@@ -226,7 +251,7 @@ Terminal 2: ./sim-harness.sh                   # Replace oracle, start swaps
 Terminal 3: cp .env.fork .env && npm start     # Start agent
 ```
 
-**Order matters**: start sim-harness BEFORE the agent. The harness replaces the real Chainlink oracle (frozen at fork block) with a `SimPriceOracle` whose prices match the pool's initial reserves. If the agent polls first, it sees the stale Chainlink price, detects a huge mismatch, and recenters to garbage.
+**Order matters**: start sim-harness BEFORE the agent. The harness replaces the real on-chain oracle (frozen at fork block) with a `SimPriceOracle` whose prices match the pool's initial reserves. If the agent polls first, it sees the stale oracle price, detects a huge mismatch, and recenters to garbage.
 
 Modes: `--default` (sinusoidal ±5%), `--drift` (steady +0.5%/step), `--volatile` (random ±5%).
 

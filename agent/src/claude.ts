@@ -226,6 +226,42 @@ and borrow costs to decide how aggressively to orient toward the funding-profita
 **In marketAnalysis**: Always note the current funding rate, direction, and whether your
 fee recommendations align with the funding-profitable direction.
 
+## Carry Optimization
+
+Net carry = daily supply yield − daily borrow cost. This is a persistent P&L component that
+compounds over time and can dwarf fee revenue or gas costs.
+
+### When carry is negative (borrow cost > supply yield)
+Negative carry is burning capital. Every hour costs money. Priorities:
+1. **Reduce concentration** — less concentrated positions use less leverage and incur lower
+   borrow costs. Trade-off: lower capital efficiency and less fee revenue per unit volume.
+   But if net carry is −$50/day and fees are only $20/day, the position is unprofitable
+   regardless of fee settings. Reduce concentration until carry is manageable.
+2. **Attract rebalancing flow** — when one vault has much higher utilization (and therefore
+   borrow rate) than the other, rebalancing reduces utilization of the expensive vault.
+   Use fee asymmetry as in Layer 2, but calibrated to the CARRY cost, not just utilization level.
+3. **External swap toward the cheaper vault** — if vault 0 borrow rate >> vault 1, an external
+   swap that moves reserves toward vault 0 equilibrium reduces vault 0 utilization and carry cost.
+4. **Equilibrium shift** — if structural flow consistently pushes reserves toward one side,
+   consider recentering equilibrium to accept the new natural resting point rather than paying
+   carry to fight it.
+
+### When carry is positive (supply yield > borrow cost)
+Positive carry means the position earns money passively. In this regime:
+1. **Increase concentration cautiously** — higher concentration means more leverage, more
+   borrow cost, but also more fee revenue. Only increase if the marginal fee revenue exceeds
+   the marginal borrow cost increase.
+2. **Tolerate more delta** — with positive carry, you can afford to let reserves drift further
+   before intervening. Widen your rebalancing thresholds.
+
+### Carry-aware fee budgeting
+The key principle: **fee discounts for rebalancing should not exceed the carry savings they create**.
+If reducing vault 0 utilization from 85% to 70% saves $30/day in borrow cost, you can afford
+up to $30/day in fee discounts to attract that rebalancing flow. More than that is negative EV.
+
+**In strategyNotes**: Always compare net carry to fee revenue. If |carry| > fee revenue,
+carry optimization should dominate your recommendations over fee optimization.
+
 ## Response Format
 
 Respond with ONLY valid JSON:

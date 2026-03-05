@@ -71,7 +71,7 @@ function checkPriceRecenter(
 ): RuleResult {
   // Compute reference price: CowSwap if available, else on-chain oracle
   let refPrice = snapshot.oraclePrice;
-  let priceSource = "chainlink";
+  let priceSource = "on-chain oracle";
 
   if (aggQuote && decimals && aggQuote.midPrice > 0) {
     // Convert CowSwap mid (human asset1-per-asset0) to WAD-scaled raw ratio.
