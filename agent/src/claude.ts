@@ -109,49 +109,63 @@ An empty recommendations array is always valid and often optimal.
 
 ## How the Dynamic Fee Works
 
-The pool's hook computes per-swap fees using this formula:
-  fee = baseFee ± (mismatchScale × mismatch), clamped to [minFee, maxFee]
+The hook computes fees in two layers, clamped to [minFee, maxFee]:
 
-Where:
-- mismatch = |oraclePrice − marginalPrice| / oraclePrice (0 = perfectly aligned)
-- The fee is ASYMMETRIC: the mispriced side pays baseFee + scaled mismatch (protects LP),
-  the other side pays baseFee − scaled mismatch (attracts retail flow)
-- When mismatch is 0, both sides pay baseFee
-- When paused, all trades pay maxFee (discourages trading)
+### Layer 1: Time-Decay Surcharge (primary arb protection)
+  fee = baseFee + decaySurcharge × max(0, decayPeriod − elapsed) / decayPeriod
+
+The hook tracks lastTradeBlock. On each swap:
+- **Same block as previous trade** (lastTradeBlock == block.number): NO surcharge.
+  The arb already traded, these are retail — charge just baseFee.
+- **New block** (lastTradeBlock < block.number): FULL surcharge, decayed by time since
+  last trade. If elapsed < decayPeriod, surcharge = decaySurcharge × (period − elapsed) / period.
+  If elapsed ≥ decayPeriod (pool idle for a while), no surcharge — the oracle has had
+  time to update, so the first trade isn't necessarily arb.
+
+This requires NO oracle reads — pure block-number + time signal. Cheap gas, maximal arb protection.
+
+### Layer 2: Oracle Mismatch (optional directional asymmetry)
+When mismatchScale > 0, the hook reads the oracle and adds directional fee adjustment:
+- Side that exploits mispricing: +scaledMismatch (arb tax)
+- Side that restores alignment: −scaledMismatch (retail incentive)
+
+This costs extra gas per swap for the oracle read. Set mismatchScale = 0 to disable
+and rely purely on the time-decay. Only enable when directional signals are valuable.
+
+When paused, all trades pay maxFee.
 
 ## What Each Parameter Controls
 
-- baseFee: the fee when oracle and pool agree. Lower = more competitive, more volume.
-  Higher = more revenue per trade but less flow. Typical range: 5-50 bps.
-- minFee: floor for the attractive side. Prevents giving away free trades during mismatch.
-  Typical: 1-10 bps.
-- maxFee: ceiling for the protective side. Caps the penalty on arb trades.
-  Must be < 100% (contract enforces). Typical: 50-500 bps.
-- mismatchScale: sensitivity multiplier. Higher = more aggressive fee asymmetry.
-  At scale=10 and mismatch=50bps, the fee adjustment is 500bps. Typical: 5-20x.
+**Core fee params** (setFeeParams):
+- baseFee: the resting fee after decay. Lower = more competitive. Typical: 5-50 bps.
+- minFee: floor. Prevents negative fees. Typical: 1-10 bps.
+- maxFee: ceiling. Caps total fee including surcharge. Typical: 50-500 bps.
+- mismatchScale: oracle mismatch sensitivity. 0 = disabled (saves gas). Typical: 0-20x.
+
+**Decay params** (setDecayParams):
+- decaySurcharge: the arb tax added to baseFee for the first trade in a new block.
+  Should approximate the typical price move between blocks. Typical: 20-100 bps.
+- decayPeriod: seconds for the surcharge to reach zero. 12 = one Ethereum block.
+  Shorter = more aggressive (surcharge gone faster). Typical: 12-60 seconds.
 
 ## MEV Protection & Flow Quality
 
-The dynamic fee IS the primary MEV protection mechanism. Understanding how:
-
-### How the fee protects against arb (already built-in)
-When the oracle price moves but the pool hasn't been traded yet:
-1. Mismatch jumps (oracle ≠ marginal price)
-2. The arb side (trading into the stale price) pays baseFee + mismatchScale × mismatch
-3. After the arb restores alignment, mismatch drops → fee drops back to baseFee
-4. Retail trades that follow pay near-baseFee
-
-This is economically equivalent to "start high and decay" — the fee is high when the pool
-is stale (arb opportunity exists) and low when aligned (safe for retail). The "decay" happens
-naturally as trades resolve the mismatch, not via a timer.
+### How the two layers interact
+Time-decay is the workhorse — it captures most arb value without any oracle dependency.
+The oracle mismatch adds refinement: even within a block, it charges more on the side that
+exploits known mispricing. But the oracle is always slightly stale, so the time-decay
+handles the gap between true market price and oracle update.
 
 ### Tuning the arb tax
-- **mismatchScale** controls how aggressively you tax arb. Higher = more arb revenue but
-  risk discouraging even the first aligning trade (pool stays stale longer).
-- **maxFee** caps the arb tax. Set too low → arbs extract value beyond what you charge.
-  Set too high → arbs skip your pool entirely, you stay misaligned.
-- **Sweet spot**: maxFee should approximate the typical oracle move size. If the oracle
-  moves 50 bps between blocks on average, maxFee ≈ 50-100 bps captures most arb PnL.
+- **decaySurcharge** is the primary arb protection knob. Higher = more arb revenue but
+  risk discouraging even the first aligning trade. Start at ~50 bps for volatile pairs.
+- **decayPeriod = 12** (one block) is the default. Increase to 24-60 if oracle updates
+  are slower than block time.
+- **maxFee** caps the total (baseFee + surcharge + mismatch). If decaySurcharge = 50 bps
+  and baseFee = 25 bps, maxFee should be ≥ 75 bps or the surcharge gets clamped.
+- **mismatchScale = 0** is fine for most pools — the time-decay alone captures arb value.
+  Enable mismatchScale only if you see arbs consistently exploiting directional mispricing
+  that the symmetric surcharge doesn't catch.
 
 ### Reading the Flow Quality data
 The context includes a Flow Quality section (when enough data exists) showing:
@@ -161,15 +175,12 @@ The context includes a Flow Quality section (when enough data exists) showing:
 - **Directional runs**: consecutive same-direction trading = structural/informed flow.
 
 ### Strategy implications
-- **High arb % (>70%)**: Your baseFee may be too low — you're attracting arb but not retail.
-  Consider raising baseFee slightly. Alternatively, mismatchScale may be too low (arbs
-  are trading through cheaply).
+- **High arb % (>70%)**: decaySurcharge may be too low — arbs are trading through cheaply.
+  Increase decaySurcharge or extend decayPeriod.
 - **High retail % (>50%)**: Good — the pool is attracting organic flow. Keep fees competitive.
 - **High directional runs**: Structural flow in one direction. This isn't arb — it's informed
-  traders or market regime shift. Fee asymmetry won't stop it. Consider recentering
-  equilibrium to accept the new direction rather than fighting it.
-- **Low trade velocity**: Not enough flow. Lower baseFee to attract volume, or the pool
-  isn't competitive at this size/pair.
+  traders or market regime shift. Consider recentering equilibrium rather than fighting it.
+- **Low trade velocity**: Not enough flow. Lower baseFee to attract volume.
 
 ## Strategic Principles
 
@@ -495,7 +506,13 @@ ${vaultDebt ? `
   Borrow vault 0: ${vaultDebt.hasBorrowVault0 ? `debt=${fmtR0(vaultDebt.debt0)}, utilization=${fmtPct(vaultDebt.utilization0)}, borrowRate=${fmtApr(vaultDebt.borrowRate0)}, dailyCost=${fmtR0(vaultDebt.dailyCost0)}` : "disabled (no borrow vault)"}
   Borrow vault 1: ${vaultDebt.hasBorrowVault1 ? `debt=${fmtR1(vaultDebt.debt1)}, utilization=${fmtPct(vaultDebt.utilization1)}, borrowRate=${fmtApr(vaultDebt.borrowRate1)}, dailyCost=${fmtR1(vaultDebt.dailyCost1)}` : "disabled (no borrow vault)"}
   Supply deposits: ${fmtR0(vaultDebt.deposit0)} / ${fmtR1(vaultDebt.deposit1)}
-  Supply yield: asset0=${fmtR0(vaultDebt.dailyYield0)}/day, asset1=${fmtR1(vaultDebt.dailyYield1)}/day` : `
+  Supply yield: asset0=${fmtR0(vaultDebt.dailyYield0)}/day, asset1=${fmtR1(vaultDebt.dailyYield1)}/day
+
+## Leverage & LTV
+  Pool type: ${vaultDebt.isBooster ? "booster (supplyVault == borrowVault)" : "standard (separate supply/borrow vaults)"}
+  Cross-vault LTV: asset0=${(vaultDebt.ltv0 / 100).toFixed(1)}%, asset1=${(vaultDebt.ltv1 / 100).toFixed(1)}%
+  Max leverage: asset0=${vaultDebt.maxLeverage0.toFixed(2)}x, asset1=${vaultDebt.maxLeverage1.toFixed(2)}x
+  Formula: maxLeverage = 1 / (1 - LTV). Current debt/deposit ratio: asset0=${vaultDebt.deposit0 > 0n ? (Number(vaultDebt.debt0) * 100 / Number(vaultDebt.deposit0)).toFixed(1) : "0"}%, asset1=${vaultDebt.deposit1 > 0n ? (Number(vaultDebt.debt1) * 100 / Number(vaultDebt.deposit1)).toFixed(1) : "0"}%` : `
 ## Vault Debt & Utilization
   not available`}
 ${trend ? `\n## Trend\n${trend}` : ""}

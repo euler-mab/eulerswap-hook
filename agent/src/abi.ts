@@ -187,6 +187,13 @@ export const evaultAbi = [
     outputs: [{ name: "", type: "uint256" }],
   },
   {
+    name: "LTVBorrow",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "collateral", type: "address" }],
+    outputs: [{ name: "", type: "uint16" }],
+  },
+  {
     name: "withdraw",
     type: "function",
     stateMutability: "nonpayable",
@@ -296,5 +303,26 @@ export const hookAbi = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "setDecayParams",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "_surcharge", type: "uint64" },
+      { name: "_period", type: "uint32" },
+    ],
+    outputs: [],
+  },
+  {
+    name: "getDecayParams",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "_surcharge", type: "uint64" },
+      { name: "_period", type: "uint32" },
+      { name: "_lastTradeTimestamp", type: "uint256" },
+    ],
   },
 ] as const;

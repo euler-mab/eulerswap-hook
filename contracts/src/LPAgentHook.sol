@@ -33,6 +33,14 @@ contract LPAgentHook is IEulerSwapHookTarget {
     uint256 public mismatchScale; // fee increase per unit mismatch (WAD-scaled)
     bool public paused; // kill switch
 
+    // --- Time-decay fee parameters (owner-updatable) ---
+    // Symmetric surcharge applied to ALL swaps, decays linearly from decaySurcharge
+    // to 0 over decayPeriod seconds since the last trade. Protects against MEV:
+    // first trade in a new block pays full surcharge (likely arb), subsequent trades
+    // in the same block pay nothing (likely retail).
+    uint64 public decaySurcharge; // max surcharge in WAD (e.g. 50e14 = 50bps)
+    uint32 public decayPeriod; // seconds for surcharge to decay to zero (e.g. 12 = 1 block)
+
     // --- Trade stats (updated by afterSwap) ---
     uint256 public tradeCount;
     uint256 public cumulativeVolume0;
@@ -40,9 +48,11 @@ contract LPAgentHook is IEulerSwapHookTarget {
     bool public lastTradeAsset0In;
     uint256 public lastTradeSize;
     uint256 public lastTradeBlock;
+    uint256 public lastTradeTimestamp;
 
     // --- Events ---
     event FeeParamsUpdated(uint64 baseFee, uint64 maxFee, uint64 minFee, uint256 mismatchScale);
+    event DecayParamsUpdated(uint64 surcharge, uint32 period);
     event Paused(bool paused);
     event TradeRecorded(
         uint256 tradeCount, bool asset0In, uint256 amountIn, uint256 amountOut, uint64 feeApplied
@@ -92,7 +102,16 @@ contract LPAgentHook is IEulerSwapHookTarget {
         revert("not implemented");
     }
 
-    /// @notice Dynamic fee based on oracle-vs-pool mismatch
+    /// @notice Dynamic fee combining time-decay (primary) and oracle mismatch (optional).
+    ///
+    /// Time-decay: after each swap, the fee starts high and decays linearly to baseFee
+    /// over decayPeriod seconds. First trade in a new block pays the surcharge (arb tax),
+    /// subsequent same-block trades pay near-baseFee (retail-friendly). No oracle needed.
+    ///
+    /// Oracle mismatch (opt-in, mismatchScale > 0): adds directional fee asymmetry based
+    /// on oracle-vs-marginal price divergence. Costs extra gas per swap for the oracle read.
+    /// Set mismatchScale = 0 to disable and save gas.
+    ///
     /// @param asset0IsInput True if asset0 is being sent to the pool
     /// @param reserve0 Current reserve of asset0
     /// @param reserve1 Current reserve of asset1
@@ -105,42 +124,62 @@ contract LPAgentHook is IEulerSwapHookTarget {
     {
         if (paused) return maxFee;
 
-        // Get oracle price: how much asset1 per 1 unit of asset0
-        uint256 oraclePrice = _getOraclePrice();
-        if (oraclePrice == 0) return baseFee; // fallback if oracle fails
+        uint256 computedFee = uint256(baseFee);
 
-        // Pool marginal price: reserve1 / reserve0 (WAD-scaled)
-        uint256 marginalPrice = (uint256(reserve1) * WAD) / uint256(reserve0);
-
-        // Compute mismatch: |oracle - marginal| / oracle (WAD-scaled)
-        uint256 mismatch;
-        bool poolUnderpriced0; // true if oracle > marginal (pool sells asset0 too cheap)
-        if (oraclePrice > marginalPrice) {
-            mismatch = ((oraclePrice - marginalPrice) * WAD) / oraclePrice;
-            poolUnderpriced0 = true;
-        } else {
-            mismatch = ((marginalPrice - oraclePrice) * WAD) / oraclePrice;
-            poolUnderpriced0 = false;
+        // --- Layer 1: Time-decay surcharge (primary arb protection, no oracle) ---
+        // First trade in a new block pays full surcharge (likely arb exploiting price move).
+        // Subsequent same-block trades pay zero surcharge (likely retail after arb aligned price).
+        // Between blocks, the surcharge decays linearly over decayPeriod seconds so a pool
+        // idle for a long time doesn't penalize the first real trade.
+        if (decaySurcharge > 0 && lastTradeBlock > 0) {
+            if (lastTradeBlock == block.number) {
+                // Same block as a previous trade — no surcharge (retail)
+            } else if (decayPeriod > 0) {
+                // New block — apply surcharge, decayed by time since last trade
+                uint256 elapsed = block.timestamp - lastTradeTimestamp;
+                if (elapsed < uint256(decayPeriod)) {
+                    computedFee += uint256(decaySurcharge) * (uint256(decayPeriod) - elapsed) / uint256(decayPeriod);
+                }
+                // If elapsed >= decayPeriod, pool has been idle long enough — no surcharge
+            } else {
+                // decayPeriod = 0: no decay, always charge full surcharge on new blocks
+                computedFee += uint256(decaySurcharge);
+            }
         }
 
-        // Compute direction-aware fee
-        // If pool underprices asset0 (oracle > marginal):
-        //   - asset0 output (asset1 input, asset0IsInput=false): charge HIGH (protect ask)
-        //   - asset0 input (asset0IsInput=true): charge LOW (attract retail)
-        // If pool overprices asset0 (oracle < marginal):
-        //   - asset0 input (asset0IsInput=true): charge HIGH (protect bid)
-        //   - asset0 output (asset0IsInput=false): charge LOW (attract retail)
-        uint256 scaledMismatch = (uint256(mismatchScale) * mismatch) / WAD;
-        uint256 computedFee;
+        // --- Layer 2: Oracle mismatch (optional directional asymmetry) ---
+        // Only active when mismatchScale > 0. Adds/subtracts fee based on which side of the
+        // trade exploits mispricing. Costs extra gas for oracle reads.
+        if (mismatchScale > 0) {
+            uint256 oraclePrice = _getOraclePrice();
+            if (oraclePrice > 0) {
+                uint256 marginalPrice = (uint256(reserve1) * WAD) / uint256(reserve0);
 
-        bool chargeHigh = (poolUnderpriced0 && !asset0IsInput) || (!poolUnderpriced0 && asset0IsInput);
+                uint256 mismatch;
+                bool poolUnderpriced0;
+                if (oraclePrice > marginalPrice) {
+                    mismatch = ((oraclePrice - marginalPrice) * WAD) / oraclePrice;
+                    poolUnderpriced0 = true;
+                } else {
+                    mismatch = ((marginalPrice - oraclePrice) * WAD) / oraclePrice;
+                    poolUnderpriced0 = false;
+                }
 
-        if (chargeHigh) {
-            computedFee = uint256(baseFee) + scaledMismatch;
-        } else {
-            computedFee = scaledMismatch > uint256(baseFee)
-                ? uint256(minFee)
-                : uint256(baseFee) - scaledMismatch;
+                uint256 scaledMismatch = (uint256(mismatchScale) * mismatch) / WAD;
+
+                // Charge high on the side that exploits mispricing, low on the other
+                bool chargeHigh = (poolUnderpriced0 && !asset0IsInput) || (!poolUnderpriced0 && asset0IsInput);
+
+                if (chargeHigh) {
+                    computedFee += scaledMismatch;
+                } else {
+                    if (scaledMismatch >= computedFee) {
+                        computedFee = uint256(minFee);
+                    } else {
+                        computedFee -= scaledMismatch;
+                    }
+                }
+            }
         }
 
         // Clamp to [minFee, maxFee]
@@ -171,6 +210,7 @@ contract LPAgentHook is IEulerSwapHookTarget {
         lastTradeAsset0In = asset0In;
         lastTradeSize = asset0In ? amount0In : amount1In;
         lastTradeBlock = block.number;
+        lastTradeTimestamp = block.timestamp;
 
         uint64 feeApplied = asset0In ? uint64(fee0) : uint64(fee1);
 
@@ -192,6 +232,13 @@ contract LPAgentHook is IEulerSwapHookTarget {
         mismatchScale = _mismatchScale;
 
         emit FeeParamsUpdated(_baseFee, _maxFee, _minFee, _mismatchScale);
+    }
+
+    function setDecayParams(uint64 _surcharge, uint32 _period) external onlyOwner {
+        require(_surcharge <= uint64(WAD), "surcharge >= 100%");
+        decaySurcharge = _surcharge;
+        decayPeriod = _period;
+        emit DecayParamsUpdated(_surcharge, _period);
     }
 
     function setPaused(bool _paused) external onlyOwner {
@@ -242,5 +289,13 @@ contract LPAgentHook is IEulerSwapHookTarget {
         returns (uint64 _baseFee, uint64 _maxFee, uint64 _minFee, uint256 _mismatchScale, bool _paused)
     {
         return (baseFee, maxFee, minFee, mismatchScale, paused);
+    }
+
+    function getDecayParams()
+        external
+        view
+        returns (uint64 _surcharge, uint32 _period, uint256 _lastTradeTimestamp)
+    {
+        return (decaySurcharge, decayPeriod, lastTradeTimestamp);
     }
 }
