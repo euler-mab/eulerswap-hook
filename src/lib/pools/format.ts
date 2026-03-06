@@ -12,11 +12,13 @@ export function fmtAmount(amount: bigint, decimals: number, maxDp = 4): string {
   return num.toExponential(2);
 }
 
-/** Format USD value */
+/** Format USD value (handles negatives correctly: -$1.23k) */
 export function fmtUsd(value: number): string {
-  if (value >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
-  if (value >= 1e3) return `$${(value / 1e3).toFixed(2)}k`;
-  return `$${value.toFixed(2)}`;
+  const sign = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(2)}k`;
+  return `${sign}$${abs.toFixed(2)}`;
 }
 
 /** Format basis points from WAD-scaled fee (1e18 = 100%) */

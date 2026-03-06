@@ -387,6 +387,31 @@ export const arbitrageurAbi = [
   },
 ] as const;
 
+// EulerSwap Registry ABI
+export const registryAbi = [
+  {
+    name: "validityBond",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "pool", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "poolByEulerAccount",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "who", type: "address" }],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    name: "poolsLength",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
 // Uniswap V3 QuoterV2 — quoteExactInputSingle is NOT a view fn (uses revert trick)
 export const quoterV2Abi = [
   {

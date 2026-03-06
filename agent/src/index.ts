@@ -69,6 +69,19 @@ async function main() {
     console.log("  Vault info: unavailable");
   }
 
+  // Check registry status at startup
+  let lastRegistryStatus: boolean | null = null;
+  if (config.registryAddress) {
+    try {
+      const regInfo = await monitor.getRegistryInfo(publicClient, config);
+      journal.registryStatus(regInfo);
+      lastRegistryStatus = regInfo.registered;
+      console.log(`  Registry: ${regInfo.registered ? "registered" : "NOT REGISTERED"} (bond: ${(Number(regInfo.validityBond) / 1e18).toFixed(4)} ETH)`);
+    } catch {
+      console.log("  Registry: unavailable");
+    }
+  }
+
   // --- Main poll loop ---
   const pollLoop = async () => {
     try {
@@ -126,6 +139,21 @@ async function main() {
         console.log(
           `Snapshot #${snapCount}: reserves=${fmtToken(snapshot.reserve0, decimals.dec0)}/${fmtToken(snapshot.reserve1, decimals.dec1)}, mismatch=${fmtBpsUtil(snapshot.mismatch)}bps`
         );
+
+        // Check registry status every 10th poll (~5 min at 30s intervals)
+        if (config.registryAddress) {
+          try {
+            const regInfo = await monitor.getRegistryInfo(publicClient, config);
+            if (lastRegistryStatus === true && !regInfo.registered) {
+              journal.registryAlert("Pool has been DEREGISTERED — validity bond lost or challenged!");
+              console.error("REGISTRY ALERT: Pool deregistered!");
+            } else if (lastRegistryStatus === false && regInfo.registered) {
+              journal.registryAlert("Pool is now registered in the registry.");
+              console.log("Registry: pool re-registered");
+            }
+            lastRegistryStatus = regInfo.registered;
+          } catch { /* non-critical */ }
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -137,12 +165,15 @@ async function main() {
   // --- Claude review loop ---
   const claudeLoop = async () => {
     try {
-      const [snapshot, stats, feeParams, decayParams, vaultDebt] = await Promise.all([
+      const [snapshot, stats, feeParams, decayParams, vaultDebt, registryInfo] = await Promise.all([
         monitor.getPoolSnapshot(publicClient, config),
         monitor.getHookStats(publicClient, config),
         monitor.getHookFeeParams(publicClient, config),
         monitor.getHookDecayParams(publicClient, config).catch(() => undefined),
         monitor.getVaultDebtInfo(publicClient, config).catch(() => undefined),
+        config.registryAddress
+          ? monitor.getRegistryInfo(publicClient, config).catch(() => undefined)
+          : Promise.resolve(undefined),
       ]);
 
       const gasToday = metrics.getGasSpentToday();
@@ -174,6 +205,7 @@ async function main() {
         funding,
         decayParams,
         lastReview,
+        registryInfo,
       );
 
       metrics.recordReview(review);

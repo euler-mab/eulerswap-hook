@@ -179,10 +179,10 @@ contract DeployUsdcUsdt is Script {
         LPAgentHook hook = new LPAgentHook(
             poolAddr,
             deployer,
+            0x3416cF6C708Da44DB2624D63ea0AAef7113527C6, // Uniswap V3 USDC/USDT 0.01%
             3e14,   // baseFee: 3 bps
             50e14,  // maxFee: 50 bps
-            1e14,   // minFee: 1 bp
-            10e18   // mismatchScale: 10x
+            0.8e18  // mismatchScale: 80% capture
         );
         console.log("Hook deployed at:", address(hook));
 

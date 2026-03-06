@@ -97,11 +97,12 @@ The position is built in layers, each amplifying the one below:
 ### Layer 1: Liquidity
 The LP deposits real tokens (e.g. 10 ETH + 20,000 USDC). These are the base capital.
 
-### Layer 2: Price Range (like Uni V3)
-Instead of providing liquidity across all prices (0, ∞), the pool concentrates it into a
-range — e.g. [1800, 2400] for ETH at 2150. This is set by **minReserve0/minReserve1**
-(reserve floors where trading stops). Tighter range = more depth per dollar = more fees,
-but the pool goes out of range faster when price moves.
+### Layer 2: Price Range
+The pool provides liquidity within a bounded range — e.g. [1800, 2400] for ETH at 2150.
+This is set by **minReserve0/minReserve1** (reserve floors where trading stops). Tighter
+range = more depth per dollar = more fees, but the pool goes out of range faster when
+price moves. The curve shape (c=0) is a constant-product hyperbola, NOT concentrated
+liquidity in the Uni V3 sense — depth comes from leverage, not curve shape.
 
 ### Layer 3: Leverage
 The pool can set virtual equilibrium reserves LARGER than real deposits by borrowing from
@@ -270,9 +271,11 @@ The formulas:
 2. **Don't change what's working**: If delta is near zero, carry is positive, volume is
    flowing, range is healthy, recommend NO changes. Gas is wasted on unnecessary reconfigs.
 
-3. **Concentration is typically 0**: Most pools use c=0 (constant-product shape).
-   Liquidity depth comes from leverage (larger virtual reserves relative to real deposits).
-   Do not change concentration unless you have a specific reason.
+3. **Concentration is typically 0**: Most pools use c=0 (constant-product-like curve).
+   Liquidity depth comes from leverage (large virtual reserves relative to real deposits),
+   not from curve shape. Do not change concentration unless you have a specific reason.
+   Note: the reserve ratio (reserve1/reserve0) is NOT the marginal price for this curve.
+   The true marginal comes from the curve derivative involving px, py, equilibrium, and reserves.
 
 4. **Automatic recentering**: The rules engine recenters equilibrium when mismatch exceeds
    5%. It preserves the same relative range width (e.g. ±5% stays ±5% around the new center).
@@ -474,19 +477,21 @@ function boundarySection(s: PoolSnapshot): string {
     return "Price range: UNBOUNDED (minReserve = 0, reserves can drain to zero)";
   }
 
-  // Proximity: how close is the oracle price to each boundary?
+  // Proximity: how close is the pool's marginal price to each boundary?
+  // Uses the curve-derived marginal (not the reserve ratio).
   // 0% = at equilibrium, 100% = at boundary
+  const marginal = Number(s.marginalPrice) / 1e18;
   let upperProx = "";
-  if (pUpper !== null && oraclePrice > 0) {
+  if (pUpper !== null && marginal > 0) {
     const pct = eqPrice < pUpper
-      ? ((oraclePrice - eqPrice) / (pUpper - eqPrice) * 100)
+      ? ((marginal - eqPrice) / (pUpper - eqPrice) * 100)
       : 0;
     upperProx = ` (${Math.max(0, Math.min(100, pct)).toFixed(0)}% consumed)`;
   }
   let lowerProx = "";
-  if (pLower !== null && oraclePrice > 0) {
+  if (pLower !== null && marginal > 0) {
     const pct = pLower < eqPrice
-      ? ((eqPrice - oraclePrice) / (eqPrice - pLower) * 100)
+      ? ((eqPrice - marginal) / (eqPrice - pLower) * 100)
       : 0;
     lowerProx = ` (${Math.max(0, Math.min(100, pct)).toFixed(0)}% consumed)`;
   }

@@ -217,10 +217,10 @@ contract DeployMainnet is Script {
         LPAgentHook hook = new LPAgentHook(
             poolAddr,
             deployer, // owner = deployer EOA
-            25e14, // baseFee: 25 bps
-            100e14, // maxFee: 100 bps
-            1e14, // minFee: 1 bp
-            10e18 // mismatchScale: 10x
+            0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640, // Uniswap V3 USDC/WETH 0.05%
+            5e14, // baseFee: 5 bps
+            120e14, // maxFee: 120 bps
+            0.8e18 // mismatchScale: 80% capture
         );
         console.log("Hook deployed at:", address(hook));
 

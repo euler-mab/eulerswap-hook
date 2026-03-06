@@ -1,11 +1,93 @@
 import type { PublicClient, Address } from "viem";
-import type { AgentConfig, PoolSnapshot, HookStats, HookFeeParams, HookDecayParams, VaultDebtInfo } from "./types.js";
-import { eulerSwapAbi, evaultAbi, priceOracleAbi, hookAbi } from "./abi.js";
+import type { AgentConfig, PoolSnapshot, HookStats, HookFeeParams, HookDecayParams, VaultDebtInfo, RegistryInfo } from "./types.js";
+import { eulerSwapAbi, evaultAbi, priceOracleAbi, hookAbi, registryAbi } from "./abi.js";
 import { WAD } from "./types.js";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
 const RAY = 10n ** 27n;
 const SECONDS_PER_DAY = 86400n;
+
+/**
+ * Compute the true marginal price from the EulerSwap curve.
+ *
+ * The curve (for c=0) is a hyperbola in two branches meeting at (x0, y0):
+ *   Branch 1 (x ≤ x0, y ≥ y0): y = y0 + px·x0·(x0−x) / (py·x)
+ *     → |dy/dx| = px·x0² / (py·x²)
+ *   Branch 2 (x > x0, y < y0): x = x0 + py·y0·(y0−y) / (px·y)
+ *     → |dy/dx| = px·y² / (py·y0²)
+ *
+ * For c > 0 the b-term in CurveLib.f changes (b = c·x + (1−c)·x0) which
+ * modifies the derivative. The general formula:
+ *   Branch 1: |dy/dx| = px·x0 / (py·x) · [cx·(2·x0 − x)/x + (1−cx)·x0/x]
+ *     simplifying: px·x0·(cx·x + (1−cx)·x0 + cx·(x0−x)) / (py·x²)
+ *     = px·x0·(2·cx·x0 − 2·cx·x + x0 + cx·x − cx·x0 + cx·x) / ...
+ *     Actually for c=0 this reduces to px·x0²/(py·x²) ✓
+ *   For simplicity and correctness, we compute the numerical derivative:
+ *     |dy/dx| ≈ (f(x−δ) − f(x+δ)) / (2δ)  using the curve equations.
+ *
+ * Returns the result WAD-scaled (raw asset1 per raw asset0 × 1e18).
+ */
+function computeMarginalPrice(
+  reserve0: bigint, reserve1: bigint,
+  px: bigint, py: bigint,
+  x0: bigint, y0: bigint,
+  cx: bigint, cy: bigint,
+): bigint {
+  if (reserve0 === 0n || py === 0n) return 0n;
+
+  // Branch 1: reserve0 ≤ x0 (current reserves below equilibrium for asset0)
+  // Branch 2: reserve0 > x0
+  if (reserve0 <= x0) {
+    // |dy/dx| = px·x0² / (py·x²) for c=0
+    // For c>0: derivative of y = y0 + px·(x0−x)·b / (1e18·x·py)
+    //   where b = cx·x + (1e18−cx)·x0
+    //   dy/dx = px / (1e18·py) · d/dx[(x0−x)·b / x]
+    //   = px / (1e18·py) · [−b/x + (x0−x)·cx/x − (x0−x)·b/x²]
+    //   = px / (1e18·py·x²) · [−b·x + cx·x·(x0−x) − (x0−x)·b]
+    //   = px / (1e18·py·x²) · [−b·x0 + cx·x·(x0−x)]
+    //   ... complex. Use simplified c=0 form + cx correction.
+    if (cx === 0n) {
+      // |dy/dx| = px·x0² / (py·x²), WAD-scaled
+      return (px * x0 * x0 * WAD) / (py * reserve0 * reserve0);
+    }
+    // General c>0: numerical derivative
+    const delta = reserve0 / 10000n > 0n ? reserve0 / 10000n : 1n;
+    const xLo = reserve0 > delta ? reserve0 - delta : 1n;
+    const xHi = reserve0 + delta > x0 ? x0 : reserve0 + delta;
+    const yLo = curveF(xLo, px, py, x0, y0, cx);
+    const yHi = curveF(xHi, px, py, x0, y0, cx);
+    if (yLo <= yHi || xHi <= xLo) return px * WAD / py; // fallback to eq price
+    return ((yLo - yHi) * WAD) / (xHi - xLo);
+  } else {
+    // Branch 2: reserve0 > x0 → we're on the inverse branch
+    // |dy/dx| = px·y² / (py·y0²) for c=0
+    if (cy === 0n) {
+      return (px * reserve1 * reserve1 * WAD) / (py * y0 * y0);
+    }
+    // General c>0: numerical derivative via inverse branch
+    const delta = reserve1 / 10000n > 0n ? reserve1 / 10000n : 1n;
+    const yLo = reserve1 > delta ? reserve1 - delta : 1n;
+    const yHi = reserve1 + delta > y0 ? y0 : reserve1 + delta;
+    const xLo = curveF(yLo, py, px, y0, x0, cy);
+    const xHi = curveF(yHi, py, px, y0, x0, cy);
+    if (xLo <= xHi || yHi <= yLo) return px * WAD / py;
+    return ((yHi - yLo) * WAD) / (xLo - xHi);
+  }
+}
+
+/** Replicates CurveLib.f for c=0: y = y0 + px·x0·(x0−x) / (py·x) */
+function curveF(x: bigint, px: bigint, py: bigint, x0: bigint, y0: bigint, c: bigint): bigint {
+  if (x >= x0) return y0;
+  if (c === 0n) {
+    // v = px * (x0 - x) * x0 / (x * py)  [integer division, rounds down]
+    return y0 + (px * (x0 - x) * x0) / (x * py);
+  }
+  // General: v = px * (x0 - x) * (c * x + (WAD - c) * x0) / (WAD * x * py)
+  const a = px * (x0 - x);
+  const b = c * x + (WAD - c) * x0;
+  const d = WAD * x * py;
+  return y0 + (a * b) / d;
+}
 
 // Cached vault metadata (immutable, only needs one read)
 let cachedVaultMeta: {
@@ -132,9 +214,18 @@ export async function getPoolSnapshot(
   const [reserve0, reserve1] = reserves;
   const dParams = dynamicParams;
 
-  // Marginal price = reserve1 / reserve0 (WAD-scaled)
-  const marginalPrice =
-    reserve0 > 0n ? (reserve1 * WAD) / reserve0 : 0n;
+  // Marginal price from the EulerSwap curve (NOT the reserve ratio).
+  // The curve has two branches meeting at equilibrium (x0, y0):
+  //   Branch 1 (x ≤ x0): |dy/dx| = px × x0² / (py × x²)
+  //   Branch 2 (x > x0):  |dy/dx| = px × y² / (py × y0²)
+  // where x = reserve0 (USDC raw), y = reserve1 (WETH raw).
+  // For c > 0, the formula includes concentration terms — see CurveLib.f().
+  const marginalPrice = computeMarginalPrice(
+    reserve0, reserve1,
+    dParams.priceX, dParams.priceY,
+    dParams.equilibriumReserve0, dParams.equilibriumReserve1,
+    dParams.concentrationX, dParams.concentrationY,
+  );
 
   // Mismatch: |oracle - marginal| / oracle
   let mismatch = 0n;
@@ -342,5 +433,34 @@ export async function getHookDecayParams(
     surcharge: result[0],
     period: Number(result[1]),
     lastTradeTimestamp: Number(result[2]),
+  };
+}
+
+export async function getRegistryInfo(
+  client: PublicClient,
+  config: AgentConfig
+): Promise<RegistryInfo> {
+  if (!config.registryAddress) {
+    return { registered: false, validityBond: 0n, totalPoolsInRegistry: 0n };
+  }
+
+  const [bond, totalPools] = await Promise.all([
+    client.readContract({
+      address: config.registryAddress,
+      abi: registryAbi,
+      functionName: "validityBond",
+      args: [config.poolAddress],
+    }),
+    client.readContract({
+      address: config.registryAddress,
+      abi: registryAbi,
+      functionName: "poolsLength",
+    }),
+  ]);
+
+  return {
+    registered: (bond as bigint) > 0n,
+    validityBond: bond as bigint,
+    totalPoolsInRegistry: totalPools as bigint,
   };
 }

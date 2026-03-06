@@ -30,39 +30,36 @@ export interface PnlAttribution {
   currentPrices: { asset0: number; asset1: number };
 }
 
+/** Immutable deploy-time data (fetched once, never changes) */
+export interface DeploySnapshot {
+  timestamp: number;
+  price0: number;
+  price1: number;
+  initDep0: number;
+  initDep1: number;
+  initialNavUsd: number;
+}
+
 /**
- * Compute P&L attribution for a pool using DeFiLlama historical prices.
- *
- * Approach:
- * 1. Fetch deploy-time USD prices from DeFiLlama (replaces hardcoded initialPrice)
- * 2. Fetch current USD prices from DeFiLlama
- * 3. Compute initial NAV = deposits valued at deploy-time prices
- * 4. Compute current NAV = vault equity valued at current prices
- * 5. Attribute P&L: fees + hodl delta + LP cost (residual)
+ * Fetch deploy-time prices and compute initial NAV. Called once per pool.
  */
-export async function computePnl(
+export async function fetchDeploySnapshot(
   pool: PoolConfig,
   state: PoolState,
-  swaps: SwapEvent[],
   deployTimestamp: number,
-): Promise<PnlAttribution> {
+): Promise<DeploySnapshot> {
   const tokens = [state.asset0, state.asset1] as Address[];
-
-  // Fetch deploy-time and current prices in parallel
-  const [deployPriceMap, currentPriceMap] = await Promise.all([
-    fetchPricesAt(tokens, deployTimestamp),
-    fetchCurrentPrices(tokens),
-  ]);
+  const priceMap = await fetchPricesAt(tokens, deployTimestamp);
 
   const a0 = state.asset0.toLowerCase();
   const a1 = state.asset1.toLowerCase();
+  const price0 = priceMap.get(a0)?.price;
+  const price1 = priceMap.get(a1)?.price;
 
-  const deployPrice0 = deployPriceMap.get(a0)?.price ?? 1;
-  const deployPrice1 = deployPriceMap.get(a1)?.price ?? 1;
-  const currentPrice0 = currentPriceMap.get(a0)?.price ?? 1;
-  const currentPrice1 = currentPriceMap.get(a1)?.price ?? 1;
+  if (price0 === undefined || price1 === undefined) {
+    throw new Error(`DeFiLlama missing deploy-time price for ${price0 === undefined ? state.asset0Symbol : state.asset1Symbol}`);
+  }
 
-  // Initial deposits (from config, will eventually come from on-chain events)
   const initDep0 = pool.initialDeposit0 !== undefined
     ? Number(formatUnits(pool.initialDeposit0, state.asset0Decimals))
     : 0;
@@ -70,8 +67,35 @@ export async function computePnl(
     ? Number(formatUnits(pool.initialDeposit1, state.asset1Decimals))
     : 0;
 
-  // Initial NAV at deploy-time prices (USD)
-  const initialNavUsd = initDep0 * deployPrice0 + initDep1 * deployPrice1;
+  return {
+    timestamp: deployTimestamp,
+    price0,
+    price1,
+    initDep0,
+    initDep1,
+    initialNavUsd: initDep0 * price0 + initDep1 * price1,
+  };
+}
+
+/**
+ * Compute P&L attribution using cached deploy snapshot and fresh current prices.
+ */
+export async function computePnl(
+  state: PoolState,
+  swaps: SwapEvent[],
+  deploy: DeploySnapshot,
+): Promise<PnlAttribution> {
+  const tokens = [state.asset0, state.asset1] as Address[];
+  const currentPriceMap = await fetchCurrentPrices(tokens);
+
+  const a0 = state.asset0.toLowerCase();
+  const a1 = state.asset1.toLowerCase();
+  const currentPrice0 = currentPriceMap.get(a0)?.price;
+  const currentPrice1 = currentPriceMap.get(a1)?.price;
+
+  if (currentPrice0 === undefined || currentPrice1 === undefined) {
+    throw new Error(`DeFiLlama missing current price for ${currentPrice0 === undefined ? state.asset0Symbol : state.asset1Symbol}`);
+  }
 
   // Current NAV from vault positions (USD)
   const dep0 = Number(formatUnits(state.vaultDeposit0, state.asset0Decimals));
@@ -81,7 +105,7 @@ export async function computePnl(
   const navUsd = (dep0 - dbt0) * currentPrice0 + (dep1 - dbt1) * currentPrice1;
 
   // Total P&L
-  const totalPnl = navUsd - initialNavUsd;
+  const totalPnl = navUsd - deploy.initialNavUsd;
 
   // Accumulated fees (valued at current prices)
   let totalFee0 = 0;
@@ -93,17 +117,17 @@ export async function computePnl(
   const feesUsd = totalFee0 * currentPrice0 + totalFee1 * currentPrice1;
 
   // Hodl value: what initial deposits would be worth at current prices
-  const hodlValueUsd = initDep0 * currentPrice0 + initDep1 * currentPrice1;
-  const hodlDelta = hodlValueUsd - initialNavUsd;
+  const hodlValueUsd = deploy.initDep0 * currentPrice0 + deploy.initDep1 * currentPrice1;
+  const hodlDelta = hodlValueUsd - deploy.initialNavUsd;
 
   // LP cost = residual (IL + net interest)
   const lpCost = totalPnl - feesUsd - hodlDelta;
 
-  const returnPct = initialNavUsd > 0 ? totalPnl / initialNavUsd : 0;
+  const returnPct = deploy.initialNavUsd > 0 ? totalPnl / deploy.initialNavUsd : 0;
 
   return {
     navUsd,
-    initialNavUsd,
+    initialNavUsd: deploy.initialNavUsd,
     totalPnl,
     feesUsd,
     hodlValueUsd,
@@ -111,7 +135,7 @@ export async function computePnl(
     lpCost,
     returnPct,
     priceSource: "defillama",
-    deployPrices: { asset0: deployPrice0, asset1: deployPrice1 },
+    deployPrices: { asset0: deploy.price0, asset1: deploy.price1 },
     currentPrices: { asset0: currentPrice0, asset1: currentPrice1 },
   };
 }

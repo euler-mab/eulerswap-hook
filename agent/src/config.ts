@@ -45,6 +45,9 @@ export function loadConfig(): AgentConfig {
     maxConcentration: 95n * WAD / 100n, // 0.95
     maxReconfigsPerHour: 12,
 
+    // Registry (optional — monitors bond status)
+    registryAddress: (process.env["REGISTRY_ADDRESS"] || undefined) as Address | undefined,
+
     // External swap bounds
     maxSwapPct: WAD / 10n, // 10% of reserves per swap
     swapSlippageBps: parseInt(optional("SWAP_SLIPPAGE_BPS", "50")), // 0.5% default

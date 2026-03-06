@@ -46,7 +46,8 @@ export interface PoolSnapshot {
   oraclePrice0: bigint;
   oraclePrice1: bigint;
 
-  // Marginal price at current reserves: (reserve1 * WAD) / reserve0
+  // Marginal price from EulerSwap curve derivative (WAD-scaled, raw asset1 per raw asset0).
+  // NOT the reserve ratio — computed from px, py, equilibrium, concentration, and current reserves.
   marginalPrice: bigint;
 
   // Mismatch: |oraclePrice - marginalPrice| / oraclePrice (WAD-scaled, 0 = perfectly aligned)
@@ -111,6 +112,14 @@ export interface VaultDebtInfo {
   maxLeverage1: number;
   // Whether this is a booster (supplyVault == borrowVault for both assets)
   isBooster: boolean;
+}
+
+// --- Registry ---
+
+export interface RegistryInfo {
+  registered: boolean;        // pool found in registry
+  validityBond: bigint;       // ETH bond amount (0 = not registered or challenged)
+  totalPoolsInRegistry: bigint;
 }
 
 // --- Actions ---
@@ -200,6 +209,9 @@ export interface AgentConfig {
   // External swap bounds
   maxSwapPct: bigint; // WAD-scaled, max % of reserves per swap (default 10%)
   swapSlippageBps: number; // slippage tolerance for CowSwap orders (default 50 = 0.5%)
+
+  // Registry
+  registryAddress?: Address; // EulerSwap registry for bond monitoring
 
   // Funding rate (optional — for volatile pairs like ETH, BTC)
   fundingSymbol?: string; // e.g. "ETH" — queries Binance/Hyperliquid for perp funding

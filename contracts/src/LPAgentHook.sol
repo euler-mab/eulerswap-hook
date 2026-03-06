@@ -5,41 +5,56 @@ import {IEulerSwapHookTarget, EULER_SWAP_HOOK_GET_FEE, EULER_SWAP_HOOK_AFTER_SWA
     "../eulerswap/src/interfaces/IEulerSwapHookTarget.sol";
 import {IEulerSwap} from "../eulerswap/src/interfaces/IEulerSwap.sol";
 import {IEVault} from "evk/EVault/IEVault.sol";
-import {IPriceOracle} from "evk/interfaces/IPriceOracle.sol";
+import {FullMath} from "../eulerswap/src/math/FullMath.sol";
+
+interface IUniswapV3Pool {
+    function slot0()
+        external
+        view
+        returns (
+            uint160 sqrtPriceX96,
+            int24 tick,
+            uint16 observationIndex,
+            uint16 observationCardinality,
+            uint16 observationCardinalityNext,
+            uint8 feeProtocol,
+            bool unlocked
+        );
+
+    function token0() external view returns (address);
+}
 
 /// @title LPAgentHook — Dynamic fee hook for autonomous LP management
-/// @notice Implements getFee (Layer 1) and afterSwap (Layer 2) for EulerSwap.
-///         getFee: reads oracle price, computes mismatch vs pool marginal price,
-///         returns asymmetric fee that charges more on the mispriced side.
+/// @notice Implements getFee and afterSwap for EulerSwap.
+///         getFee: reads Uniswap V3 spot price, computes mismatch vs pool marginal price,
+///         elevates fee on the arb direction to capture LVR. Counter-direction pays baseFee.
 ///         afterSwap: tracks trade stats for monitoring.
 ///         Owner can update fee parameters; agent EOA updates via owner calls.
 contract LPAgentHook is IEulerSwapHookTarget {
+    using FullMath for uint256;
+
     // --- Constants ---
     uint256 constant WAD = 1e18;
     uint256 constant BPS = 1e14; // 1 basis point in WAD terms (1e14 / 1e18 = 0.01%)
+    uint256 constant Q192 = 2 ** 192;
+    uint256 constant Q128 = 2 ** 128;
+    uint256 constant Q64 = 2 ** 64;
 
     // --- Immutables ---
     address public immutable pool;
     address public immutable owner;
-    address public immutable supplyVault0; // for oracle access
+    address public immutable supplyVault0;
     address public immutable supplyVault1;
     address public immutable asset0;
     address public immutable asset1;
+    address public immutable uniswapPool;
+    bool public immutable uniswapToken0IsAsset0;
 
     // --- Fee parameters (owner-updatable) ---
-    uint64 public baseFee; // base fee in WAD (e.g. 25e14 = 25bps)
+    uint64 public baseFee; // base fee in WAD (e.g. 5e14 = 5bps)
     uint64 public maxFee; // maximum fee cap
-    uint64 public minFee; // minimum fee floor
-    uint256 public mismatchScale; // fee increase per unit mismatch (WAD-scaled)
+    uint256 public mismatchScale; // fraction of mismatch to capture (WAD-scaled, e.g. 0.8e18 = 80%)
     bool public paused; // kill switch
-
-    // --- Time-decay fee parameters (owner-updatable) ---
-    // Symmetric surcharge applied to ALL swaps, decays linearly from decaySurcharge
-    // to 0 over decayPeriod seconds since the last trade. Protects against MEV:
-    // first trade in a new block pays full surcharge (likely arb), subsequent trades
-    // in the same block pay nothing (likely retail).
-    uint64 public decaySurcharge; // max surcharge in WAD (e.g. 50e14 = 50bps)
-    uint32 public decayPeriod; // seconds for surcharge to decay to zero (e.g. 12 = 1 block)
 
     // --- Trade stats (updated by afterSwap) ---
     uint256 public tradeCount;
@@ -51,8 +66,7 @@ contract LPAgentHook is IEulerSwapHookTarget {
     uint256 public lastTradeTimestamp;
 
     // --- Events ---
-    event FeeParamsUpdated(uint64 baseFee, uint64 maxFee, uint64 minFee, uint256 mismatchScale);
-    event DecayParamsUpdated(uint64 surcharge, uint32 period);
+    event FeeParamsUpdated(uint64 baseFee, uint64 maxFee, uint256 mismatchScale);
     event Paused(bool paused);
     event TradeRecorded(
         uint256 tradeCount, bool asset0In, uint256 amountIn, uint256 amountOut, uint64 feeApplied
@@ -75,16 +89,16 @@ contract LPAgentHook is IEulerSwapHookTarget {
     constructor(
         address _pool,
         address _owner,
+        address _uniswapPool,
         uint64 _baseFee,
         uint64 _maxFee,
-        uint64 _minFee,
         uint256 _mismatchScale
     ) {
         pool = _pool;
         owner = _owner;
+        uniswapPool = _uniswapPool;
         baseFee = _baseFee;
         maxFee = _maxFee;
-        minFee = _minFee;
         mismatchScale = _mismatchScale;
 
         // Cache vault and asset addresses from pool's static params
@@ -93,6 +107,9 @@ contract LPAgentHook is IEulerSwapHookTarget {
         supplyVault1 = sParams.supplyVault1;
         asset0 = IEVault(sParams.supplyVault0).asset();
         asset1 = IEVault(sParams.supplyVault1).asset();
+
+        // Determine whether Uniswap token ordering matches ours
+        uniswapToken0IsAsset0 = IUniswapV3Pool(_uniswapPool).token0() == asset0;
     }
 
     // --- IEulerSwapHookTarget ---
@@ -102,15 +119,14 @@ contract LPAgentHook is IEulerSwapHookTarget {
         revert("not implemented");
     }
 
-    /// @notice Dynamic fee combining time-decay (primary) and oracle mismatch (optional).
+    /// @notice Dynamic fee using Uniswap V3 spot price as market reference.
     ///
-    /// Time-decay: after each swap, the fee starts high and decays linearly to baseFee
-    /// over decayPeriod seconds. First trade in a new block pays the surcharge (arb tax),
-    /// subsequent same-block trades pay near-baseFee (retail-friendly). No oracle needed.
+    /// When mismatchScale > 0: reads Uniswap V3 slot0 to get current market price,
+    /// compares to the EulerSwap curve's marginal price, and elevates the fee on the
+    /// arb direction (the side that exploits the mismatch). The counter-direction pays
+    /// baseFee — never less. This captures LVR without penalizing retail flow.
     ///
-    /// Oracle mismatch (opt-in, mismatchScale > 0): adds directional fee asymmetry based
-    /// on oracle-vs-marginal price divergence. Costs extra gas per swap for the oracle read.
-    /// Set mismatchScale = 0 to disable and save gas.
+    /// Set mismatchScale = 0 to disable and use flat baseFee for all swaps.
     ///
     /// @param asset0IsInput True if asset0 is being sent to the pool
     /// @param reserve0 Current reserve of asset0
@@ -126,65 +142,37 @@ contract LPAgentHook is IEulerSwapHookTarget {
 
         uint256 computedFee = uint256(baseFee);
 
-        // --- Layer 1: Time-decay surcharge (primary arb protection, no oracle) ---
-        // First trade in a new block pays full surcharge (likely arb exploiting price move).
-        // Subsequent same-block trades pay zero surcharge (likely retail after arb aligned price).
-        // Between blocks, the surcharge decays linearly over decayPeriod seconds so a pool
-        // idle for a long time doesn't penalize the first real trade.
-        if (decaySurcharge > 0 && lastTradeBlock > 0) {
-            if (lastTradeBlock == block.number) {
-                // Same block as a previous trade — no surcharge (retail)
-            } else if (decayPeriod > 0) {
-                // New block — apply surcharge, decayed by time since last trade
-                uint256 elapsed = block.timestamp - lastTradeTimestamp;
-                if (elapsed < uint256(decayPeriod)) {
-                    computedFee += uint256(decaySurcharge) * (uint256(decayPeriod) - elapsed) / uint256(decayPeriod);
-                }
-                // If elapsed >= decayPeriod, pool has been idle long enough — no surcharge
-            } else {
-                // decayPeriod = 0: no decay, always charge full surcharge on new blocks
-                computedFee += uint256(decaySurcharge);
-            }
-        }
-
-        // --- Layer 2: Oracle mismatch (optional directional asymmetry) ---
-        // Only active when mismatchScale > 0. Adds/subtracts fee based on which side of the
-        // trade exploits mispricing. Costs extra gas for oracle reads.
+        // --- Uniswap mismatch (directional fee elevation) ---
+        // Reads Uniswap V3 slot0 for current market price. If our pool's marginal price
+        // diverges, elevate the fee on the arb direction. The opposite direction is unaffected.
+        // Gas: ~500 warm (arb txs that already touched Uniswap), ~5000 cold (retail).
         if (mismatchScale > 0) {
-            uint256 oraclePrice = _getOraclePrice();
-            if (oraclePrice > 0) {
-                uint256 marginalPrice = (uint256(reserve1) * WAD) / uint256(reserve0);
+            uint256 uniPrice = _getUniswapPrice();
+            if (uniPrice > 0) {
+                uint256 marginalPrice = _getMarginalPrice(reserve0, reserve1);
 
                 uint256 mismatch;
-                bool poolUnderpriced0;
-                if (oraclePrice > marginalPrice) {
-                    mismatch = ((oraclePrice - marginalPrice) * WAD) / oraclePrice;
-                    poolUnderpriced0 = true;
+                bool isArbDirection;
+
+                if (uniPrice > marginalPrice) {
+                    // Pool underprices asset0 → arb buys asset0 from us (asset0 out)
+                    mismatch = ((uniPrice - marginalPrice) * WAD) / uniPrice;
+                    isArbDirection = !asset0IsInput;
                 } else {
-                    mismatch = ((marginalPrice - oraclePrice) * WAD) / oraclePrice;
-                    poolUnderpriced0 = false;
+                    // Pool overprices asset0 → arb sells asset0 to us (asset0 in)
+                    mismatch = ((marginalPrice - uniPrice) * WAD) / uniPrice;
+                    isArbDirection = asset0IsInput;
                 }
 
-                uint256 scaledMismatch = (uint256(mismatchScale) * mismatch) / WAD;
-
-                // Charge high on the side that exploits mispricing, low on the other
-                bool chargeHigh = (poolUnderpriced0 && !asset0IsInput) || (!poolUnderpriced0 && asset0IsInput);
-
-                if (chargeHigh) {
-                    computedFee += scaledMismatch;
-                } else {
-                    if (scaledMismatch >= computedFee) {
-                        computedFee = uint256(minFee);
-                    } else {
-                        computedFee -= scaledMismatch;
-                    }
+                // Only elevate on arb direction; counter-direction stays at baseFee
+                if (isArbDirection) {
+                    computedFee += (mismatchScale * mismatch) / WAD;
                 }
             }
         }
 
-        // Clamp to [minFee, maxFee]
+        // Clamp to [baseFee, maxFee] — baseFee is the true floor
         if (computedFee > uint256(maxFee)) computedFee = uint256(maxFee);
-        if (computedFee < uint256(minFee)) computedFee = uint256(minFee);
 
         fee = uint64(computedFee);
     }
@@ -219,26 +207,15 @@ contract LPAgentHook is IEulerSwapHookTarget {
 
     // --- Owner management ---
 
-    function setFeeParams(uint64 _baseFee, uint64 _maxFee, uint64 _minFee, uint256 _mismatchScale)
-        external
-        onlyOwner
-    {
-        require(_minFee <= _baseFee && _baseFee <= _maxFee, "invalid fee ordering");
+    function setFeeParams(uint64 _baseFee, uint64 _maxFee, uint256 _mismatchScale) external onlyOwner {
+        require(_baseFee <= _maxFee, "invalid fee ordering");
         require(_maxFee < uint64(WAD), "max fee >= 100%");
 
         baseFee = _baseFee;
         maxFee = _maxFee;
-        minFee = _minFee;
         mismatchScale = _mismatchScale;
 
-        emit FeeParamsUpdated(_baseFee, _maxFee, _minFee, _mismatchScale);
-    }
-
-    function setDecayParams(uint64 _surcharge, uint32 _period) external onlyOwner {
-        require(_surcharge <= uint64(WAD), "surcharge >= 100%");
-        decaySurcharge = _surcharge;
-        decayPeriod = _period;
-        emit DecayParamsUpdated(_surcharge, _period);
+        emit FeeParamsUpdated(_baseFee, _maxFee, _mismatchScale);
     }
 
     function setPaused(bool _paused) external onlyOwner {
@@ -248,22 +225,64 @@ contract LPAgentHook is IEulerSwapHookTarget {
 
     // --- Internal ---
 
-    /// @notice Get oracle price: asset1 per 1 WAD of asset0
-    function _getOraclePrice() internal view returns (uint256) {
-        address oracleAddr = IEVault(supplyVault0).oracle();
-        if (oracleAddr == address(0)) return 0;
+    /// @notice Read Uniswap V3 spot price from slot0.
+    /// @return WAD-scaled price (raw asset1 per raw asset0), or 0 on failure.
+    function _getUniswapPrice() internal view returns (uint256) {
+        // slot0 read: ~500 gas warm (arb txs), ~5000 gas cold (retail)
+        try IUniswapV3Pool(uniswapPool).slot0() returns (
+            uint160 sqrtPriceX96, int24, uint16, uint16, uint16, uint8, bool
+        ) {
+            if (sqrtPriceX96 == 0) return 0;
 
-        address unitOfAccount = IEVault(supplyVault0).unitOfAccount();
+            uint256 sqrtPrice = uint256(sqrtPriceX96);
 
-        // Get price of 1 unit of asset0 in unit of account
-        uint256 price0 = IPriceOracle(oracleAddr).getQuote(WAD, asset0, unitOfAccount);
-        // Get price of 1 unit of asset1 in unit of account
-        uint256 price1 = IPriceOracle(oracleAddr).getQuote(WAD, asset1, unitOfAccount);
+            // price = sqrtPriceX96^2 / 2^192 (Uniswap token1 per token0, raw units)
+            // WAD-scaled: priceWad = sqrtPriceX96^2 * WAD / 2^192
+            uint256 priceWad;
+            if (sqrtPrice <= type(uint128).max) {
+                priceWad = (sqrtPrice * sqrtPrice).mulDiv(WAD, Q192);
+            } else {
+                priceWad = sqrtPrice.mulDiv(sqrtPrice, Q64).mulDiv(WAD, Q128);
+            }
 
-        if (price1 == 0) return 0;
+            // If Uniswap token0 != our asset0, invert to get asset1/asset0
+            if (!uniswapToken0IsAsset0) {
+                if (priceWad == 0) return 0;
+                priceWad = WAD.mulDiv(WAD, priceWad);
+            }
 
-        // asset1 per asset0 = price0 / price1 (WAD-scaled)
-        return (price0 * WAD) / price1;
+            return priceWad;
+        } catch {
+            return 0; // Uniswap read failed — fall back to baseFee
+        }
+    }
+
+    /// @notice Compute the true marginal price from the EulerSwap curve derivative.
+    /// @dev For c=0: Branch 1 (x <= x0): |dy/dx| = px * x0^2 / (py * x^2)
+    ///              Branch 2 (x > x0):  |dy/dx| = px * y^2 / (py * y0^2)
+    ///      Uses FullMath.mulDiv for overflow-safe 512-bit intermediates.
+    /// @return WAD-scaled marginal price (raw asset1 per raw asset0)
+    function _getMarginalPrice(uint112 reserve0, uint112 reserve1) internal view returns (uint256) {
+        IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
+        uint256 px = uint256(d.priceX);
+        uint256 py = uint256(d.priceY);
+        uint256 x0 = uint256(d.equilibriumReserve0);
+        uint256 y0 = uint256(d.equilibriumReserve1);
+
+        if (reserve0 == 0 || py == 0) return 0;
+
+        if (uint256(reserve0) <= x0) {
+            // Branch 1: marginal = px * x0^2 * WAD / (py * reserve0^2)
+            uint256 step1 = px.mulDiv(x0, py);
+            uint256 r0 = uint256(reserve0);
+            return step1.mulDiv(x0 * WAD, r0 * r0);
+        } else {
+            // Branch 2: marginal = px * reserve1^2 * WAD / (py * y0^2)
+            if (y0 == 0) return 0;
+            uint256 r1 = uint256(reserve1);
+            uint256 step1 = px.mulDiv(r1, py);
+            return step1.mulDiv(r1 * WAD, y0 * y0);
+        }
     }
 
     // --- View helpers for agent ---
@@ -286,16 +305,8 @@ contract LPAgentHook is IEulerSwapHookTarget {
     function getFeeParams()
         external
         view
-        returns (uint64 _baseFee, uint64 _maxFee, uint64 _minFee, uint256 _mismatchScale, bool _paused)
+        returns (uint64 _baseFee, uint64 _maxFee, uint256 _mismatchScale, bool _paused)
     {
-        return (baseFee, maxFee, minFee, mismatchScale, paused);
-    }
-
-    function getDecayParams()
-        external
-        view
-        returns (uint64 _surcharge, uint32 _period, uint256 _lastTradeTimestamp)
-    {
-        return (decaySurcharge, decayPeriod, lastTradeTimestamp);
+        return (baseFee, maxFee, mismatchScale, paused);
     }
 }

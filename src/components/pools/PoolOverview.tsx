@@ -29,12 +29,11 @@ function Badge({ ok, label }: { ok: boolean; label: string }) {
 interface OverviewProps {
   state: PoolState;
   pool: PoolConfig;
-  totalFee0?: bigint;
-  totalFee1?: bigint;
   pnl?: PnlAttribution | null;
+  pnlError?: string | null;
 }
 
-export default function PoolOverview({ state, pool, totalFee0, totalFee1, pnl }: OverviewProps) {
+export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewProps) {
   const [inverted, setInverted] = useState(true);
   const ethPrice = state.hookOraclePrice
     ? Number(formatUnits(state.hookOraclePrice, 6))
@@ -104,7 +103,9 @@ export default function PoolOverview({ state, pool, totalFee0, totalFee1, pnl }:
             return (
               <span className={nav >= 0 ? "text-gray-900 font-medium" : "text-red-700 font-medium"}>
                 {isUsd ? fmtUsd(nav) : `${nav.toFixed(4)} ${state.asset0Symbol}`}
-                <span className="text-gray-400 ml-1 text-xs animate-pulse">loading P&L...</span>
+                {pnlError
+                  ? <span className="text-red-500 ml-1 text-xs" title={pnlError}>P&L unavailable</span>
+                  : <span className="text-gray-400 ml-1 text-xs animate-pulse">loading P&L...</span>}
               </span>
             );
           })()}
@@ -164,9 +165,9 @@ export default function PoolOverview({ state, pool, totalFee0, totalFee1, pnl }:
       {pnl && (
         <Row label="Market price">
           <span className="text-xs">
-            {state.asset0Symbol} ${pnl.currentPrices.asset0.toFixed(4)}
+            {state.asset0Symbol} ${fmtPrice(pnl.currentPrices.asset0)}
             {" / "}
-            {state.asset1Symbol} ${pnl.currentPrices.asset1.toFixed(2)}
+            {state.asset1Symbol} ${fmtPrice(pnl.currentPrices.asset1)}
           </span>
           <span className="text-gray-400 ml-1 text-xs">(DeFiLlama)</span>
         </Row>

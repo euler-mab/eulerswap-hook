@@ -8,6 +8,7 @@ import type {
   RuleResult,
   AssetDecimals,
   VaultDebtInfo,
+  RegistryInfo,
 } from "./types.js";
 import { BPS, fmtToken } from "./types.js";
 
@@ -147,6 +148,20 @@ export function arbResult(result: {
   } else {
     append(`- Reason: ${result.reason}`);
   }
+  append("");
+}
+
+export function registryStatus(info: RegistryInfo): void {
+  append(`## ${timestamp()} — Registry`);
+  append(`- Registered: ${info.registered}`);
+  append(`- Validity bond: ${fmtEth(info.validityBond)} ETH`);
+  append(`- Total pools in registry: ${info.totalPoolsInRegistry.toString()}`);
+  append("");
+}
+
+export function registryAlert(msg: string): void {
+  append(`## ${timestamp()} — REGISTRY ALERT`);
+  append(`- ${msg}`);
   append("");
 }
 
