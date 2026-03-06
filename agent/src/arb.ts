@@ -17,7 +17,6 @@ export interface ArbConfig {
   arbitrageurAddress: Address;
   minProfitUsd: number; // minimum profit in USD to execute
   maxTradeUsd: number; // max trade size in USD
-  gasGwei: number; // assumed gas price for profitability calc
 }
 
 export interface ArbOpportunity {
@@ -43,8 +42,8 @@ export async function checkArbOpportunity(
   decimals: AssetDecimals,
   ethPriceUsd: number,
 ): Promise<ArbOpportunity | null> {
-  // Read current reserves + prices
-  const [reserves, dParams] = await Promise.all([
+  // Read current reserves + prices + live gas price
+  const [reserves, dParams, gasPrice] = await Promise.all([
     publicClient.readContract({
       address: config.poolAddress,
       abi: eulerSwapAbi,
@@ -55,6 +54,7 @@ export async function checkArbOpportunity(
       abi: eulerSwapAbi,
       functionName: "getDynamicParams",
     }),
+    publicClient.getGasPrice(),
   ]);
 
   const eqR0 = dParams.equilibriumReserve0;
@@ -77,6 +77,7 @@ export async function checkArbOpportunity(
         decimals,
         ethPriceUsd,
         arbConfig,
+        gasPrice,
       );
       if (opp && (!best || opp.profitUsd > best.profitUsd)) {
         best = opp;
@@ -97,6 +98,7 @@ export async function checkArbOpportunity(
         decimals,
         ethPriceUsd,
         arbConfig,
+        gasPrice,
       );
       if (opp && (!best || opp.profitUsd > best.profitUsd)) {
         best = opp;
@@ -118,6 +120,7 @@ async function tryDirection(
   decimals: AssetDecimals,
   ethPriceUsd: number,
   arbConfig: ArbConfig,
+  gasPrice: bigint,
 ): Promise<ArbOpportunity | null> {
   const amountOut = direction === "B" ? amount0Out : amount1Out;
 
@@ -194,8 +197,8 @@ async function tryDirection(
   // For WETH (18 dec): multiply by ETH price
   const profitUsd = profitDec === 6 ? profitHuman : profitHuman * ethPriceUsd;
 
-  // Estimate gas cost (~250k gas for flash-swap + Uni swap)
-  const gasCostEth = (250_000 * arbConfig.gasGwei) / 1e9;
+  // Estimate gas cost (~250k gas for flash-swap + Uni swap) using live gas price
+  const gasCostEth = (250_000 * Number(gasPrice)) / 1e18;
   const gasCostUsd = gasCostEth * ethPriceUsd;
 
   const netProfitUsd = profitUsd - gasCostUsd;

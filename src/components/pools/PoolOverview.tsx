@@ -16,6 +16,17 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
+function PriceDiff({ marginal, other, inverted }: { marginal: number; other: number; inverted: boolean }) {
+  if (other <= 0 || marginal <= 0) return null;
+  // % diff in the displayed direction (inverted: displayed = 1/price)
+  const pct = inverted ? (other / marginal - 1) * 100 : (marginal / other - 1) * 100;
+  return (
+    <span className="text-gray-400 ml-1 text-xs">
+      ({pct >= 0 ? "+" : ""}{pct.toFixed(2)}%)
+    </span>
+  );
+}
+
 function Badge({ ok, label }: { ok: boolean; label: string }) {
   return (
     <span className={`text-xs px-1.5 py-0.5 rounded ${
@@ -125,8 +136,8 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
         </Row>
       )}
 
-      {/* Marginal price — click to flip direction */}
-      <Row label="Marginal price">
+      {/* EulerSwap marginal price — click to flip direction */}
+      <Row label="EulerSwap price">
         {state.marginalPrice > 0 ? (
           <button
             onClick={() => setInverted((v) => !v)}
@@ -148,21 +159,117 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
             {inverted
               ? `${fmtPrice(1 / state.equilibriumPrice)} ${state.asset0Symbol}/${state.asset1Symbol}`
               : `${fmtPrice(state.equilibriumPrice)} ${state.asset1Symbol}/${state.asset0Symbol}`}
+            <PriceDiff marginal={state.marginalPrice} other={state.equilibriumPrice} inverted={inverted} />
           </span>
         ) : "—"}
       </Row>
 
-      {/* DeFiLlama price cross-reference */}
-      {pnl && (
-        <Row label="Market price">
-          <span className="text-xs">
-            {state.asset0Symbol} ${fmtPrice(pnl.currentPrices.asset0)}
-            {" / "}
-            {state.asset1Symbol} ${fmtPrice(pnl.currentPrices.asset1)}
-          </span>
-          <span className="text-gray-400 ml-1 text-xs">(DeFiLlama)</span>
+      {/* Uniswap V3 oracle price (what the hook sees) */}
+      {state.uniswapPrice !== undefined && state.uniswapPrice > 0 && (
+        <Row label="Uniswap V3 price">
+          {inverted
+            ? `${fmtPrice(1 / state.uniswapPrice)} ${state.asset0Symbol}/${state.asset1Symbol}`
+            : `${fmtPrice(state.uniswapPrice)} ${state.asset1Symbol}/${state.asset0Symbol}`}
+          <PriceDiff marginal={state.marginalPrice} other={state.uniswapPrice} inverted={inverted} />
         </Row>
       )}
+
+      {/* DeFiLlama price cross-reference */}
+      {pnl && pnl.currentPrices.asset0 > 0 && pnl.currentPrices.asset1 > 0 && (
+        <Row label="DeFiLlama price">
+          {inverted
+            ? `${fmtPrice(pnl.currentPrices.asset1 / pnl.currentPrices.asset0)} ${state.asset0Symbol}/${state.asset1Symbol}`
+            : `${fmtPrice(pnl.currentPrices.asset0 / pnl.currentPrices.asset1)} ${state.asset1Symbol}/${state.asset0Symbol}`}
+          <PriceDiff marginal={state.marginalPrice} other={pnl.currentPrices.asset0 / pnl.currentPrices.asset1} inverted={inverted} />
+        </Row>
+      )}
+
+      {/* Arb estimate (Uniswap ↔ EulerSwap) */}
+      {state.uniswapPrice !== undefined && state.uniswapPrice > 0 && state.marginalPrice > 0 && pnl && (() => {
+        const WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+        const ARB_GAS = 350_000n;
+
+        // Price mismatch: positive = EulerSwap marginal > Uniswap (in asset1/asset0)
+        const mismatchPct = (state.marginalPrice / state.uniswapPrice - 1);
+        const absMismatch = Math.abs(mismatchPct);
+
+        // Fee in the arb direction
+        const esOverpriced = mismatchPct > 0; // ES overprices asset1 → arber sells asset1 on ES
+        const eulerFeeWad = esOverpriced ? state.hookLiveFee1In : state.hookLiveFee0In;
+        const eulerFeePct = eulerFeeWad ? Number(eulerFeeWad) / 1e18 : Number(esOverpriced ? state.fee1 : state.fee0) / 1e18;
+        const uniFeePct = (pool.uniswapFeeBps ?? 5) / 10000;
+        const netEdgePct = absMismatch - eulerFeePct - uniFeePct;
+
+        // Gas cost in USD (need ETH price)
+        const a0Lower = state.asset0.toLowerCase();
+        const a1Lower = state.asset1.toLowerCase();
+        const ethPriceUsd = a1Lower === WETH ? pnl.currentPrices.asset1
+          : a0Lower === WETH ? pnl.currentPrices.asset0 : undefined;
+        const gasCostEth = Number(state.gasPrice * ARB_GAS) / 1e18;
+        const gasCostUsd = ethPriceUsd ? gasCostEth * ethPriceUsd : undefined;
+        const gasGwei = Number(state.gasPrice) / 1e9;
+
+        // Max trade from limits (in USD)
+        const maxTradeUsd = esOverpriced
+          ? Number(formatUnits(state.limit1In, state.asset1Decimals)) * pnl.currentPrices.asset1
+          : Number(formatUnits(state.limit0In, state.asset0Decimals)) * pnl.currentPrices.asset0;
+
+        // Edge in bps for display
+        const edgeBps = netEdgePct * 10000;
+        const totalFeeBps = (eulerFeePct + uniFeePct) * 10000;
+
+        // Arb direction label (always in terms of non-quote asset = asset1)
+        // esOverpriced (mismatchPct > 0): more asset1 per asset0 on ES → asset1 cheap → buy on ES
+        // !esOverpriced: asset1 expensive on ES (displayed price higher) → sell on ES
+        const arbToken = state.asset1Symbol;
+        const arbDir = esOverpriced ? "buy" : "sell";
+
+        if (netEdgePct <= 0) {
+          return (
+            <Row label="Arb estimate">
+              <span className="text-xs text-gray-400">
+                no edge ({arbDir} {arbToken} on ES: {(absMismatch * 10000).toFixed(1)} bps mismatch &lt; {totalFeeBps.toFixed(1)} bps fees)
+              </span>
+            </Row>
+          );
+        }
+
+        // Break-even: min trade size where edge profit > gas cost
+        // Profit ≈ netEdgePct × tradeUsd (at marginal, upper bound)
+        const breakEvenUsd = gasCostUsd !== undefined ? gasCostUsd / netEdgePct : undefined;
+
+        // Estimated max profit = edge × maxTrade - gas (upper bound, ignores price impact)
+        const grossProfit = netEdgePct * maxTradeUsd;
+        const netProfit = gasCostUsd !== undefined ? grossProfit - gasCostUsd : undefined;
+
+        return (
+          <Row label="Arb estimate">
+            <span className="text-xs">
+              <span className={netProfit !== undefined && netProfit > 0 ? "text-emerald-700" : "text-gray-500"}>
+                {arbDir} {arbToken} on ES: {edgeBps.toFixed(1)} bps edge
+              </span>
+              {gasCostUsd !== undefined && (
+                <span className="text-gray-400 ml-2">
+                  gas {fmtUsd(gasCostUsd)} ({gasGwei.toFixed(1)} gwei)
+                </span>
+              )}
+              {breakEvenUsd !== undefined && (
+                <span className="text-gray-400 ml-2">
+                  b/e {fmtUsd(breakEvenUsd)}
+                </span>
+              )}
+              <span className="text-gray-400 ml-2">
+                max {fmtUsd(maxTradeUsd)}
+              </span>
+              {netProfit !== undefined && (
+                <span className={`ml-2 font-medium ${netProfit > 0 ? "text-emerald-700" : "text-red-600"}`}>
+                  est. {netProfit >= 0 ? "+" : ""}{fmtUsd(netProfit)}
+                </span>
+              )}
+            </span>
+          </Row>
+        );
+      })()}
 
       {/* Hook status */}
       <Row label="Hook">
@@ -185,7 +292,9 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
         {fmtFeeBps(state.fee0)} / {fmtFeeBps(state.fee1)}
         {state.hookBaseFee !== undefined && (
           <span className="text-gray-500 ml-1">
-            (hook: {fmtFeeBps(state.hookBaseFee)} base, {fmtFeeBps(state.hookMaxFee!)} max)
+            (hook: {fmtFeeBps(state.hookBaseFee)} base, {fmtFeeBps(state.hookMaxFee!)} max
+            {state.hookCaptureRate !== undefined && `, ${(Number(state.hookCaptureRate) / 1e16).toFixed(0)}% capture`}
+            {state.hookAttractRate !== undefined && Number(state.hookAttractRate) > 0 && `, ${(Number(state.hookAttractRate) / 1e16).toFixed(0)}% attract`})
           </span>
         )}
       </Row>

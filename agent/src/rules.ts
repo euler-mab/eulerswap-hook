@@ -248,8 +248,9 @@ function checkInterestRateRebalance(
       params: {
         baseFee: feeParams.baseFee.toString(),
         maxFee: newMaxFee.toString(),
-        gasThreshold: feeParams.gasThreshold.toString(),
+        gasCoeff: feeParams.gasCoeff.toString(),
         captureRate: feeParams.captureRate.toString(),
+        attractRate: feeParams.attractRate.toString(),
       },
     },
   };
@@ -303,11 +304,12 @@ export function isSafe(
   if (rec.type === "setFeeParams") {
     const baseFee = BigInt(rec.params["baseFee"] as string || "0");
     const maxFee = BigInt(rec.params["maxFee"] as string || "0");
-    const gasThreshold = BigInt(rec.params["gasThreshold"] as string || "0");
+    const gasCoeff = BigInt(rec.params["gasCoeff"] as string || "0");
     const captureRate = BigInt(rec.params["captureRate"] as string || "0");
+    const attractRate = BigInt(rec.params["attractRate"] as string || "0");
 
-    if (!rec.params["baseFee"] || !rec.params["maxFee"] || !rec.params["gasThreshold"] || !rec.params["captureRate"]) {
-      return { safe: false, reason: "setFeeParams requires all 4 params: baseFee, maxFee, gasThreshold, captureRate" };
+    if (!rec.params["baseFee"] || !rec.params["maxFee"] || !rec.params["gasCoeff"] || !rec.params["captureRate"] || !rec.params["attractRate"]) {
+      return { safe: false, reason: "setFeeParams requires all 5 params: baseFee, maxFee, gasCoeff, captureRate, attractRate" };
     }
 
     if (baseFee < config.minBaseFee || baseFee > config.maxBaseFee) {
@@ -316,11 +318,14 @@ export function isSafe(
     if (maxFee > WAD) {
       return { safe: false, reason: `maxFee ${maxFee} exceeds 100%` };
     }
-    if (gasThreshold > 500n * BPS) {
-      return { safe: false, reason: `gasThreshold ${gasThreshold} exceeds 500 bps cap` };
+    if (gasCoeff > BigInt(1e16)) {
+      return { safe: false, reason: `gasCoeff ${gasCoeff} exceeds 1e16 cap` };
     }
     if (captureRate > 2n * WAD) {
       return { safe: false, reason: `captureRate ${captureRate} exceeds 2x (200%) cap` };
+    }
+    if (attractRate > WAD) {
+      return { safe: false, reason: `attractRate ${attractRate} exceeds 1x (100%) cap` };
     }
     if (baseFee > maxFee) {
       return { safe: false, reason: `fee ordering violated: base(${baseFee}) > max(${maxFee})` };

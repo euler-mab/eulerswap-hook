@@ -1,4 +1,4 @@
-# Bayesian-Informed Dynamic Fee Model
+# Dynamic Fee Model
 
 ## Problem
 
@@ -19,52 +19,79 @@ With `mismatchScale = 5`, even small mismatches produced outsized fees:
 
 This penalizes retail traders who arrive when there's any mismatch between Uniswap and EulerSwap — even if the mismatch is too small for arb to be profitable.
 
-## Insight: The No-Arb Zone
+Additionally, the counter-direction (attract side) always paid baseFee, leaving routing-advantage revenue on the table.
 
-Uniswap V3's spot price (slot0) is a censored observation of the true market price. The censoring comes from the **gas band**: an arber won't trade on Uniswap unless the profit exceeds gas costs. This creates a zone around the true price where:
+## Insight: The No-Arb Zone + Routing Advantage
 
-- Uniswap's price may lag the true price by up to `gasThreshold`
-- Trades within this zone are **not arb** — they're retail or informed flow
-- Only trades above `gasThreshold` are likely arb
+**No-arb zone**: Uniswap V3's spot price (slot0) is a censored observation of the true market price. An arber won't trade unless profit exceeds gas costs. This creates a zone where trades are retail, not arb.
 
-## New Formula
+**Routing advantage**: When our price diverges from Uniswap's, traders wanting to trade in the counter-direction get a *better* price from us. We can charge more on this "attract" side and still win routing.
+
+## Formula
 
 ```
+effectiveThreshold = gasCoeff × √(tx.gasprice)
 mismatch = |uniswapPrice − marginalPrice| / uniswapPrice
+excess = max(mismatch − effectiveThreshold, 0)
 
-fee = baseFee + captureRate × max(mismatch − gasThreshold, 0)
+Arb direction:     fee = baseFee + captureRate × excess
+Attract direction:  fee = baseFee + attractRate × excess
+Both clamped to [baseFee, maxFee]
 ```
 
-- **Below gasThreshold**: all swaps pay `baseFee` (likely retail)
-- **Above gasThreshold, arb direction**: `baseFee + captureRate × excess`
-- **Above gasThreshold, counter-direction**: always `baseFee`
-- Clamped to `[baseFee, maxFee]`
+- **Below threshold**: all swaps pay `baseFee` (likely retail)
+- **Above threshold, arb direction**: elevated fee captures LVR
+- **Above threshold, attract direction**: modest fee captures routing advantage
+- Gas threshold adapts automatically to current gas prices
 
 ## Parameters
 
-### `gasThreshold` (uint64, WAD-scaled)
+### `gasCoeff` (uint64)
 
-Minimum mismatch for profitable arb. Estimated from:
+Controls the dynamic gas threshold: `threshold = gasCoeff × √(tx.gasprice)`.
+
+On a c=0 EulerSwap curve, arb profit is **quadratic** in mismatch:
 
 ```
-gasThreshold ≈ swapGasCost_ETH / (poolDepth_ETH × 2)
+trade ≈ eq × m/2,  profit ≈ eq × m² / 4
 ```
 
-- A 150k gas swap at 5 gwei = 0.00075 ETH
-- A $900 pool = ~0.45 ETH depth → gasThreshold ≈ 0.00075 / 0.9 ≈ 8 bps
-- For larger pools ($100K), gasThreshold is much smaller (~0.1 bps)
+Break-even: `eq × m² / 4 = gasCost` → `m = 2 × √(gasCost / eq)`
 
-**Typical values**:
-- Volatile pairs (USDC/WETH): 20-50 bps (accounts for Uniswap lag + gas)
-- Stable pairs (USDC/USDT): 3-10 bps (tight pricing, small gas band)
+Factoring out `√(tx.gasprice)`:
+
+```
+gasCoeff = 2e18 × √(swapGasUnits × 2 / eqReserveWei)
+```
+
+**USDC/WETH (eq ≈ 78 WETH):** gasCoeff ≈ 1.24e12
+- At 0.4 gwei → threshold ≈ 25 bps
+- At 10 gwei → threshold ≈ 124 bps
+- At 100 gwei → threshold ≈ 392 bps
+
+**USDC/USDT (eq ≈ 504 ETH):** gasCoeff ≈ 1.54e9
+- At 0.4 gwei → threshold ≈ 0.03 bps (deep pool, nearly all mismatch is arb)
+
+The agent updates `gasCoeff` when pool depth changes (via reconfigs). Gas price variations are handled automatically.
 
 ### `captureRate` (uint256, WAD-scaled)
 
-Fraction of arb profit above threshold to capture. Default: 0.8e18 (80%).
+Fraction of excess mismatch to capture on the **arb side**. Default: 0.8e18 (80%).
 
 - 80% capture leaves 20% for the arber as incentive to execute
 - Higher values extract more LVR but reduce arb flow (worse price tracking)
 - Lower values are more competitive but leave more LVR on the table
+
+### `attractRate` (uint256, WAD-scaled)
+
+Fraction of excess mismatch to capture on the **attract side**. Default: 0.3e18 (30%).
+
+When mismatch is large, our price on the attract side is better than competitors by ~mismatch. We can charge more and still win routing. `attractRate` captures a fraction of this advantage.
+
+**Example**: mismatch = 50 bps, threshold = 25 bps, attractRate = 0.3:
+- Attract fee = 5 + 0.3 × 25 = 12.5 bps
+- Trader saves 50 − 12.5 = 37.5 bps vs market → still massively better
+- We earn 7.5 bps more per attract-side trade than flat baseFee
 
 ### `baseFee` (uint64, WAD-scaled)
 
@@ -76,29 +103,24 @@ Hard ceiling. Prevents extreme fees during volatility spikes.
 
 ## Example: USDC/WETH Pool
 
-With `baseFee = 5 bps`, `gasThreshold = 30 bps`, `captureRate = 0.8`:
+With `baseFee = 5 bps`, `gasCoeff = 1.24e12` (≈25 bps at 0.4 gwei), `captureRate = 0.8`, `attractRate = 0.3`:
 
-| Mismatch | Type          | Fee    |
-|----------|---------------|--------|
-| 0.01%    | Retail        | 5 bps  |
-| 0.1%     | Retail        | 5 bps  |
-| 0.3%     | Borderline    | 5 bps  |
-| 0.5%     | Arb direction | 21 bps |
-| 1.0%     | Arb direction | 61 bps |
-| 2.0%     | Arb direction | 141 bps|
-| Counter  | Any mismatch  | 5 bps  |
+| Mismatch | Arb fee | Attract fee | Type |
+|----------|---------|-------------|------|
+| 0.01%    | 5 bps   | 5 bps       | Below threshold |
+| 0.1%     | 5 bps   | 5 bps       | Below threshold |
+| 0.25%    | 5 bps   | 5 bps       | Borderline |
+| 0.5%     | 25 bps  | 12.5 bps    | Above threshold |
+| 1.0%     | 65 bps  | 27.5 bps    | Above threshold |
+| 2.0%     | 145 bps | 57.5 bps    | Above threshold |
 
-## Comparison to Old Model
-
-The old model with `mismatchScale = 5` vs new with `gasThreshold = 30bps, captureRate = 0.8`:
-
-| Mismatch | Old fee | New fee | Difference |
-|----------|---------|---------|------------|
-| 0.1%     | 55 bps  | 5 bps   | Retail now pays 11x less |
-| 0.3%     | 155 bps | 5 bps   | Retail within gas band |
-| 0.5%     | 255 bps | 21 bps  | Arb, but much more competitive |
-| 1.0%     | 505 bps | 61 bps  | Captures arb profit, not volume |
+At 10 gwei (threshold ≈ 124 bps), even 1% mismatch falls below threshold → all pay baseFee.
 
 ## Implementation
 
-See `LPAgentHook.sol`. The hook reads Uniswap V3 `slot0` for the market reference price, computes the curve's marginal price from the pool's dynamic params, and applies the threshold + capture formula on the arb direction only.
+See `LPAgentHook.sol`. The hook:
+1. Reads Uniswap V3 `slot0` for the market reference price
+2. Computes `effectiveThreshold = gasCoeff × √(tx.gasprice)` — adapts to gas costs
+3. Computes mismatch between Uniswap and the curve's marginal price
+4. Applies `captureRate` on arb direction, `attractRate` on attract direction
+5. Clamps result to `[baseFee, maxFee]`

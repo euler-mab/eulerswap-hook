@@ -64,6 +64,5 @@ export function loadArbConfig(): ArbConfig {
     arbitrageurAddress: (process.env["ARBITRAGEUR_ADDRESS"] ?? "0x0000000000000000000000000000000000000000") as Address,
     minProfitUsd: parseFloat(process.env["ARB_MIN_PROFIT_USD"] ?? "0.25"),
     maxTradeUsd: parseFloat(process.env["ARB_MAX_TRADE_USD"] ?? "50"),
-    gasGwei: parseFloat(process.env["ARB_GAS_GWEI"] ?? "30"),
   };
 }

@@ -283,8 +283,9 @@ export const hookAbi = [
     outputs: [
       { name: "_baseFee", type: "uint64" },
       { name: "_maxFee", type: "uint64" },
-      { name: "_gasThreshold", type: "uint64" },
+      { name: "_gasCoeff", type: "uint64" },
       { name: "_captureRate", type: "uint256" },
+      { name: "_attractRate", type: "uint256" },
     ],
   },
   {
@@ -294,8 +295,9 @@ export const hookAbi = [
     inputs: [
       { name: "_baseFee", type: "uint64" },
       { name: "_maxFee", type: "uint64" },
-      { name: "_gasThreshold", type: "uint64" },
+      { name: "_gasCoeff", type: "uint64" },
       { name: "_captureRate", type: "uint256" },
+      { name: "_attractRate", type: "uint256" },
     ],
     outputs: [],
   },

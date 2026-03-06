@@ -220,8 +220,9 @@ contract DeployMainnet is Script {
             0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640, // Uniswap V3 USDC/WETH 0.05%
             5e14, // baseFee: 5 bps
             3500e14, // maxFee: 3500 bps
-            30e14, // gasThreshold: 30 bps
-            0.8e18 // captureRate: 80%
+            uint64(1.24e12), // gasCoeff: ~25 bps at 0.4 gwei
+            0.8e18, // captureRate: 80% (arb side)
+            0.3e18 // attractRate: 30% (attract side)
         );
         console.log("Hook deployed at:", address(hook));
 

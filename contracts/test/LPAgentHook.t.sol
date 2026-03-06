@@ -49,8 +49,9 @@ contract LPAgentHookTest is EulerSwapTestBase {
 
     uint64 constant BASE_FEE = 25e14; // 25 bps
     uint64 constant MAX_FEE = 100e14; // 100 bps
-    uint64 constant GAS_THRESHOLD = 0; // 0 bps (tests use small mismatches, so threshold=0 keeps existing behavior)
+    uint64 constant GAS_COEFF = 0; // gasCoeff=0 -> threshold=0 (tests use small mismatches)
     uint256 constant CAPTURE_RATE = 10e18; // 10x (matches old mismatchScale=10x for compatibility)
+    uint256 constant ATTRACT_RATE = 0; // no attract fee by default
 
     function setUp() public override {
         super.setUp();
@@ -72,7 +73,7 @@ contract LPAgentHookTest is EulerSwapTestBase {
         // 4. Deploy hook pointing at pool + mock Uniswap
         hook = new LPAgentHook(
             address(pool), address(this), address(mockUniPool),
-            BASE_FEE, MAX_FEE, GAS_THRESHOLD, CAPTURE_RATE
+            BASE_FEE, MAX_FEE, GAS_COEFF, CAPTURE_RATE, ATTRACT_RATE
         );
 
         // 5. Reconfigure pool to install hook
@@ -121,7 +122,7 @@ contract LPAgentHookTest is EulerSwapTestBase {
     // --- getFee tests ---
 
     function test_getFee_baseFee_when_no_mismatch() public view {
-        // Uniswap price = marginal price (both 1:1) → no mismatch → baseFee both directions
+        // Uniswap price = marginal price (both 1:1) -> no mismatch -> baseFee both directions
         (uint112 r0, uint112 r1,) = pool.getReserves();
 
         uint64 fee0In = hook.getFee(true, r0, r1, false);
@@ -132,7 +133,7 @@ contract LPAgentHookTest is EulerSwapTestBase {
     }
 
     function test_getFee_elevated_on_arb_direction() public {
-        // Set Uniswap price to 1.1 → pool underprices asset0
+        // Set Uniswap price to 1.1 -> pool underprices asset0
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.1e18));
 
         (uint112 r0, uint112 r1,) = pool.getReserves();
@@ -140,26 +141,26 @@ contract LPAgentHookTest is EulerSwapTestBase {
         uint64 feeAsset0In = hook.getFee(true, r0, r1, false); // selling asset0 (counter-direction)
         uint64 feeAsset1In = hook.getFee(false, r0, r1, false); // buying asset0 (arb direction)
 
-        // Arb buys asset0 (asset1 in) → elevated
+        // Arb buys asset0 (asset1 in) -> elevated
         assertTrue(feeAsset1In > BASE_FEE, "arb direction should exceed baseFee");
-        // Counter-direction stays at baseFee
-        assertEq(feeAsset0In, BASE_FEE, "counter-direction should be baseFee");
+        // Counter-direction stays at baseFee (attractRate=0)
+        assertEq(feeAsset0In, BASE_FEE, "counter-direction should be baseFee when attractRate=0");
     }
 
     function test_getFee_counter_direction_always_baseFee() public {
-        // Even with large mismatch, counter-direction never goes below baseFee
+        // Even with large mismatch, counter-direction stays at baseFee when attractRate=0
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.5e18)); // 50% mismatch
 
         (uint112 r0, uint112 r1,) = pool.getReserves();
 
-        // Pool underprices asset0 → arb buys asset0 (asset1 in)
+        // Pool underprices asset0 -> arb buys asset0 (asset1 in)
         // Counter = asset0 in
         uint64 counterFee = hook.getFee(true, r0, r1, false);
-        assertEq(counterFee, BASE_FEE, "counter-direction must stay at baseFee");
+        assertEq(counterFee, BASE_FEE, "counter-direction must stay at baseFee when attractRate=0");
     }
 
     function test_getFee_clamped_to_maxFee() public {
-        // Large mismatch with large scale → clamped to maxFee
+        // Large mismatch with large scale -> clamped to maxFee
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(2e18)); // 100% mismatch
 
         (uint112 r0, uint112 r1,) = pool.getReserves();
@@ -179,8 +180,8 @@ contract LPAgentHookTest is EulerSwapTestBase {
     }
 
     function test_getFee_baseFee_when_captureRate_zero() public {
-        // With captureRate=0, all swaps pay baseFee regardless of price
-        hook.setFeeParams(BASE_FEE, MAX_FEE, 0, 0);
+        // With captureRate=0 and attractRate=0, all swaps pay baseFee regardless of price
+        hook.setFeeParams(BASE_FEE, MAX_FEE, 0, 0, 0);
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.5e18));
 
         (uint112 r0, uint112 r1,) = pool.getReserves();
@@ -198,16 +199,16 @@ contract LPAgentHookTest is EulerSwapTestBase {
         uint64 feeAsset0In = hook.getFee(true, r0, r1, false);
         uint64 feeAsset1In = hook.getFee(false, r0, r1, false);
 
-        // Uniswap < marginal → pool overprices asset0
-        // Arb sells asset0 to us (asset0 in) → elevated
-        // Counter = asset1 in → baseFee
+        // Uniswap < marginal -> pool overprices asset0
+        // Arb sells asset0 to us (asset0 in) -> elevated
+        // Counter = asset1 in -> baseFee
         assertTrue(feeAsset0In > BASE_FEE, "arb direction (asset0In) should be elevated");
         assertEq(feeAsset1In, BASE_FEE, "counter-direction should be baseFee");
     }
 
     function test_getFee_exact_math() public {
-        // baseFee=100bps, maxFee=1000bps, gasThreshold=0, captureRate=0.5x (50% capture)
-        hook.setFeeParams(100e14, 1000e14, 0, 0.5e18);
+        // baseFee=100bps, maxFee=1000bps, gasCoeff=0 (threshold=0), captureRate=0.5x, attractRate=0
+        hook.setFeeParams(100e14, 1000e14, 0, 0.5e18, 0);
 
         // 1% mismatch: Uniswap=1.01, marginal=1.0
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.01e18));
@@ -215,10 +216,10 @@ contract LPAgentHookTest is EulerSwapTestBase {
         (uint112 r0, uint112 r1,) = pool.getReserves();
 
         // Expected: mismatch ≈ 0.99% ≈ 9900990099009900
-        // excess = mismatch - gasThreshold = mismatch (threshold=0)
+        // excess = mismatch - 0 = mismatch
         // capturedFee ≈ 0.5 * 0.99% ≈ 49.5 bps
         // Arb direction (asset1 in): 100bps + 49.5bps ≈ 149.5 bps
-        // Counter direction (asset0 in): 100bps (unchanged)
+        // Counter direction (asset0 in): 100bps (attractRate=0)
 
         uint64 arbFee = hook.getFee(false, r0, r1, false);
         uint64 counterFee = hook.getFee(true, r0, r1, false);
@@ -228,10 +229,13 @@ contract LPAgentHookTest is EulerSwapTestBase {
     }
 
     function test_getFee_below_gasThreshold_returns_baseFee() public {
-        // baseFee=5bps, maxFee=3500bps, gasThreshold=30bps, captureRate=0.8x
-        hook.setFeeParams(5e14, 3500e14, 30e14, 0.8e18);
+        // baseFee=5bps, maxFee=3500bps, gasCoeff producing ~30bps threshold, captureRate=0.8x
+        // tx.gasprice = 10 gwei = 1e10 wei -> sqrt = 1e5
+        // gasCoeff = 30e14 / 1e5 = 3e10 -> threshold = 3e10 * 1e5 = 3e15 = 30e14 (30 bps)
+        vm.txGasPrice(10 gwei);
+        hook.setFeeParams(5e14, 3500e14, 3e10, 0.8e18, 0);
 
-        // 0.1% mismatch (10 bps) — below gasThreshold (30 bps) → baseFee
+        // 0.1% mismatch (10 bps) — below threshold (30 bps) -> baseFee
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.001e18));
 
         (uint112 r0, uint112 r1,) = pool.getReserves();
@@ -244,10 +248,11 @@ contract LPAgentHookTest is EulerSwapTestBase {
     }
 
     function test_getFee_above_gasThreshold_captures_excess() public {
-        // baseFee=5bps, maxFee=3500bps, gasThreshold=30bps, captureRate=0.8x
-        hook.setFeeParams(5e14, 3500e14, 30e14, 0.8e18);
+        // gasCoeff=3e10 at 10 gwei -> threshold = 30 bps
+        vm.txGasPrice(10 gwei);
+        hook.setFeeParams(5e14, 3500e14, 3e10, 0.8e18, 0);
 
-        // 1% mismatch (100 bps) — above gasThreshold (30 bps)
+        // 1% mismatch (100 bps) — above threshold (30 bps)
         // excess = 100 - 30 = 70 bps, captured = 0.8 * 70 = 56 bps
         // arb fee = 5 + 56 = 61 bps
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.01e18));
@@ -261,42 +266,126 @@ contract LPAgentHookTest is EulerSwapTestBase {
         assertEq(counterFee, 5e14, "counter should be baseFee");
     }
 
+    // --- Attract-side fee tests ---
+
+    function test_getFee_attract_side_elevated() public {
+        // attractRate=0.3 -> counter-direction elevated when mismatch > threshold
+        // gasCoeff=0 -> threshold=0 (any mismatch triggers elevation)
+        hook.setFeeParams(5e14, 3500e14, 0, 0.8e18, 0.3e18);
+
+        // 1% mismatch -> excess = 100 bps
+        // arb fee = 5 + 0.8 * 100 = 85 bps
+        // attract fee = 5 + 0.3 * 100 = 35 bps
+        mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.01e18));
+
+        (uint112 r0, uint112 r1,) = pool.getReserves();
+
+        uint64 arbFee = hook.getFee(false, r0, r1, false);
+        uint64 attractFee = hook.getFee(true, r0, r1, false);
+
+        assertApproxEqAbs(arbFee, 85e14, 2e14, "arb side ~85 bps");
+        assertApproxEqAbs(attractFee, 35e14, 2e14, "attract side ~35 bps");
+        assertTrue(attractFee > 5e14, "attract side should exceed baseFee");
+        assertTrue(attractFee < arbFee, "attract fee should be less than arb fee");
+    }
+
+    function test_getFee_attract_side_baseFee_when_rate_zero() public {
+        // attractRate=0 -> counter-direction always baseFee
+        hook.setFeeParams(5e14, 3500e14, 0, 0.8e18, 0);
+
+        mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.05e18)); // 5% mismatch
+
+        (uint112 r0, uint112 r1,) = pool.getReserves();
+
+        uint64 attractFee = hook.getFee(true, r0, r1, false);
+        assertEq(attractFee, 5e14, "attractRate=0 -> counter = baseFee");
+    }
+
+    function test_getFee_attract_side_clamped_to_maxFee() public {
+        // Large mismatch + moderate attractRate -> clamped to maxFee
+        hook.setFeeParams(5e14, 100e14, 0, 0.8e18, 0.5e18); // maxFee=100bps
+
+        mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(2e18)); // 50% mismatch
+
+        (uint112 r0, uint112 r1,) = pool.getReserves();
+
+        uint64 attractFee = hook.getFee(true, r0, r1, false);
+        assertEq(attractFee, 100e14, "attract side should be clamped to maxFee");
+    }
+
+    // --- Dynamic gas threshold tests ---
+
+    function test_getFee_dynamic_threshold_scales_with_gas() public {
+        // gasCoeff=3e10: at 10 gwei -> threshold=30bps, at 40 gwei -> threshold=60bps
+        hook.setFeeParams(5e14, 3500e14, 3e10, 0.8e18, 0);
+
+        // 0.5% mismatch (50 bps)
+        mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.005e18));
+        (uint112 r0, uint112 r1,) = pool.getReserves();
+
+        // At 10 gwei: threshold=30bps, excess=20bps, arb fee = 5 + 0.8*20 = 21 bps
+        vm.txGasPrice(10 gwei);
+        uint64 feeLowGas = hook.getFee(false, r0, r1, false);
+
+        // At 40 gwei: sqrt(4e10) = 2e5, threshold = 3e10 * 2e5 = 6e15 = 60 bps
+        // 50 bps < 60 bps threshold -> baseFee
+        vm.txGasPrice(40 gwei);
+        uint64 feeHighGas = hook.getFee(false, r0, r1, false);
+
+        assertTrue(feeLowGas > 5e14, "low gas -> threshold < mismatch -> elevated fee");
+        assertEq(feeHighGas, 5e14, "high gas -> threshold > mismatch -> baseFee");
+    }
+
+    function test_getFee_threshold_zero_when_gasCoeff_zero() public {
+        // gasCoeff=0 -> threshold always 0 regardless of gas price
+        hook.setFeeParams(5e14, 3500e14, 0, 0.8e18, 0);
+
+        mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.001e18)); // tiny mismatch
+        (uint112 r0, uint112 r1,) = pool.getReserves();
+
+        vm.txGasPrice(500 gwei); // very high gas
+        uint64 fee = hook.getFee(false, r0, r1, false);
+
+        assertTrue(fee > 5e14, "gasCoeff=0 -> threshold=0 -> even tiny mismatch elevated");
+    }
+
     // --- Access control tests ---
 
     function test_setFeeParams_onlyOwner() public {
-        hook.setFeeParams(30e14, 200e14, 20e14, 0.8e18);
+        hook.setFeeParams(30e14, 200e14, 0, 0.8e18, 0.3e18);
         assertEq(hook.baseFee(), 30e14);
 
         vm.prank(makeAddr("random"));
         vm.expectRevert(LPAgentHook.Unauthorized.selector);
-        hook.setFeeParams(30e14, 200e14, 20e14, 0.8e18);
+        hook.setFeeParams(30e14, 200e14, 0, 0.8e18, 0.3e18);
     }
 
     function test_setFeeParams_validates_ordering() public {
         // baseFee > maxFee should revert
         vm.expectRevert("invalid fee ordering");
-        hook.setFeeParams(300e14, 200e14, 10e14, 0.8e18);
+        hook.setFeeParams(300e14, 200e14, 0, 0.8e18, 0);
     }
 
     function test_setFeeParams_rejects_maxFee_100_percent() public {
         vm.expectRevert("max fee >= 100%");
-        hook.setFeeParams(25e14, uint64(1e18), 10e14, 0.8e18);
+        hook.setFeeParams(25e14, uint64(1e18), 0, 0.8e18, 0);
     }
 
     // --- View helpers ---
 
     function test_getFeeParams() public view {
-        (uint64 base, uint64 max, uint64 threshold, uint256 rate) = hook.getFeeParams();
+        (uint64 base, uint64 max, uint64 coeff, uint256 capture, uint256 attract) = hook.getFeeParams();
         assertEq(base, BASE_FEE);
         assertEq(max, MAX_FEE);
-        assertEq(threshold, GAS_THRESHOLD);
-        assertEq(rate, CAPTURE_RATE);
+        assertEq(coeff, GAS_COEFF);
+        assertEq(capture, CAPTURE_RATE);
+        assertEq(attract, ATTRACT_RATE);
     }
 
     // --- Swap integration ---
 
     function test_swap_uses_dynamic_fee() public {
-        // Set Uniswap price to 1.05 → mismatch triggers elevated fee
+        // Set Uniswap price to 1.05 -> mismatch triggers elevated fee
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.05e18));
 
         address swapper = makeAddr("swapper");
@@ -309,8 +398,8 @@ contract LPAgentHookTest is EulerSwapTestBase {
 
     function test_setFeeParams_emits_event() public {
         vm.expectEmit(true, true, true, true);
-        emit LPAgentHook.FeeParamsUpdated(30e14, 200e14, 20e14, 0.8e18);
-        hook.setFeeParams(30e14, 200e14, 20e14, 0.8e18);
+        emit LPAgentHook.FeeParamsUpdated(30e14, 200e14, 0, 0.8e18, 0.3e18);
+        hook.setFeeParams(30e14, 200e14, 0, 0.8e18, 0.3e18);
     }
 
     // --- Access control ---

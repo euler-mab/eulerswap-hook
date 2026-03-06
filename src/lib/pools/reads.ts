@@ -1,9 +1,17 @@
-import { type Address, type PublicClient, formatUnits, parseAbiItem } from "viem";
-import { eulerSwapAbi, evaultAbi, erc20Abi, hookAbi } from "./abi";
+import { type Address, type PublicClient, formatUnits, parseAbiItem, encodeFunctionData, decodeFunctionResult, type Abi } from "viem";
+import { eulerSwapAbi, evaultAbi, erc20Abi, hookAbi, uniswapV3PoolAbi } from "./abi";
 import { TOKEN_META, type PoolConfig } from "./config";
 import type { PoolState, SwapEvent, VaultFlow } from "./types";
 
 const ZERO = "0x0000000000000000000000000000000000000000" as Address;
+
+/** readContract with gasPrice set so on-chain tx.gasprice is realistic in view calls */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readContractWithGasPrice(client: PublicClient, address: Address, abi: any, functionName: string, args: any[], gasPrice: bigint) {
+  const data = encodeFunctionData({ abi, functionName, args });
+  const result = await client.call({ to: address, data, gasPrice });
+  return decodeFunctionResult({ abi, functionName, data: result.data! });
+}
 
 function tokenMeta(addr: Address) {
   return TOKEN_META[addr.toLowerCase()] ?? { symbol: "???", decimals: 18, color: "#888" };
@@ -14,8 +22,8 @@ export async function fetchPoolState(
   client: PublicClient,
   pool: PoolConfig,
 ): Promise<PoolState> {
-  // Step 1: core pool reads (batched via multicall)
-  const [reserves, dynamicParams, staticParams, assets, installed, blockNumber] =
+  // Step 1: core pool reads + gas price (batched via multicall)
+  const [reserves, dynamicParams, staticParams, assets, installed, blockNumber, gasPrice_] =
     await Promise.all([
       client.readContract({ address: pool.address, abi: eulerSwapAbi, functionName: "getReserves" }),
       client.readContract({ address: pool.address, abi: eulerSwapAbi, functionName: "getDynamicParams" }),
@@ -23,6 +31,7 @@ export async function fetchPoolState(
       client.readContract({ address: pool.address, abi: eulerSwapAbi, functionName: "getAssets" }),
       client.readContract({ address: pool.address, abi: eulerSwapAbi, functionName: "isInstalled" }),
       client.getBlockNumber(),
+      client.getGasPrice(),
     ]);
 
   const asset0 = assets[0] as Address;
@@ -71,13 +80,13 @@ export async function fetchPoolState(
     hasHook
       ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getFeeParams" })
       : Promise.resolve(null),
-    // 8: hook live fee for asset0-in
+    // 8: hook live fee for asset0-in (pass gasPrice so tx.gasprice is realistic in the view call)
     hasHook
-      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getFee", args: [true, reserves[0], reserves[1], false] })
+      ? readContractWithGasPrice(client, hookAddr, hookAbi, "getFee", [true, reserves[0], reserves[1], false], gasPrice_)
       : Promise.resolve(null),
     // 9: hook live fee for asset1-in
     hasHook
-      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getFee", args: [false, reserves[0], reserves[1], false] })
+      ? readContractWithGasPrice(client, hookAddr, hookAbi, "getFee", [false, reserves[0], reserves[1], false], gasPrice_)
       : Promise.resolve(null),
     // 10: block timestamp
     client.getBlock({ blockNumber: blockNumber }).then(b => b.timestamp),
@@ -85,6 +94,10 @@ export async function fetchPoolState(
     client.readContract({ address: pool.address, abi: eulerSwapAbi, functionName: "getLimits", args: [asset0, asset1] }),
     // 12: getLimits(asset1 → asset0)
     client.readContract({ address: pool.address, abi: eulerSwapAbi, functionName: "getLimits", args: [asset1, asset0] }),
+    // 13: Uniswap V3 slot0 (oracle price)
+    pool.uniswapPool
+      ? client.readContract({ address: pool.uniswapPool, abi: uniswapV3PoolAbi, functionName: "slot0" })
+      : Promise.resolve(null),
   ]);
 
   const val = <T,>(r: PromiseSettledResult<T>, fallback: T): T =>
@@ -107,6 +120,8 @@ export async function fetchPoolState(
   const limits0to1 = val(results[11], null) as any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const limits1to0 = val(results[12], null) as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const slot0 = val(results[13], null) as any;
 
   // Compute marginal price using EulerSwap curve.
   // On-chain priceX/priceY are (USD_price / 10^decimals) * 1e18, so normalise to
@@ -135,6 +150,23 @@ export async function fetchPoolState(
     }
   }
 
+  // Uniswap V3 oracle price (asset1/asset0 in human units)
+  let uniswapPrice: number | undefined;
+  if (slot0) {
+    const sqrtPriceX96 = slot0[0] as bigint;
+    if (sqrtPriceX96 > 0n) {
+      // sqrtPriceX96 = sqrt(token1_raw/token0_raw) * 2^96
+      // price_raw = (sqrtPriceX96 / 2^96)^2 = token1_raw/token0_raw
+      const num = Number(sqrtPriceX96) / 2 ** 96;
+      const rawPrice = num * num;
+      // Uniswap V3 token0 is always the lower address
+      const token0IsAsset0 = asset0.toLowerCase() < asset1.toLowerCase();
+      const adjusted = token0IsAsset0 ? rawPrice : 1 / rawPrice;
+      // Convert raw to human: asset1_human/asset0_human
+      uniswapPrice = adjusted * Math.pow(10, meta0.decimals - meta1.decimals);
+    }
+  }
+
   return {
     reserve0: reserves[0], reserve1: reserves[1], status: Number(reserves[2]),
     asset0, asset1,
@@ -155,10 +187,13 @@ export async function fetchPoolState(
     eulerAccount: staticParams.eulerAccount as Address,
     feeRecipient: staticParams.feeRecipient as Address,
     marginalPrice, equilibriumPrice, isInstalled: installed,
+    uniswapPrice,
     // Hook
     hookBaseFee: feeParams ? feeParams[0] : undefined,
     hookMaxFee: feeParams ? feeParams[1] : undefined,
-    hookMismatchScale: feeParams ? feeParams[2] : undefined,
+    hookGasCoeff: feeParams ? feeParams[2] : undefined,
+    hookCaptureRate: feeParams ? feeParams[3] : undefined,
+    hookAttractRate: feeParams ? feeParams[4] : undefined,
     hookLiveFee0In: liveFee0In ?? undefined,
     hookLiveFee1In: liveFee1In ?? undefined,
     // Wallet
@@ -170,6 +205,8 @@ export async function fetchPoolState(
     limit1Out: limits0to1 ? (limits0to1[1] as bigint) : 0n,
     limit1In: limits1to0 ? (limits1to0[0] as bigint) : 0n,
     limit0Out: limits1to0 ? (limits1to0[1] as bigint) : 0n,
+    // Network
+    gasPrice: gasPrice_,
     // Meta
     fetchedAt: Date.now(), blockNumber, blockTimestamp: Number(blockTimestamp),
   };

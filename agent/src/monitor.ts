@@ -393,8 +393,9 @@ export async function getHookFeeParams(
   return {
     baseFee: result[0],
     maxFee: result[1],
-    gasThreshold: result[2],
+    gasCoeff: result[2],
     captureRate: result[3],
+    attractRate: result[4],
   };
 }
 

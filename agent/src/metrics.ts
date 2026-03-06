@@ -110,29 +110,29 @@ export function getRealizedVol(): { volBps: number; avgBlocksBetweenPolls: numbe
 }
 
 /**
- * Estimate gasThreshold: minimum mismatch for profitable arb.
+ * Compute gasCoeff for the dynamic gas threshold formula.
  *
- * gasThreshold ≈ swapGasCost_ETH / (poolDepth_ETH × 2)
+ * The hook computes threshold dynamically: threshold = gasCoeff × √(tx.gasprice)
  *
- * An arb needs the fee savings to exceed gas cost. With a pool of depth D (in ETH),
- * a mismatch of m produces an arb profit ≈ m × D. Setting fee = m captures all of it,
- * so the arb is unprofitable if m × D < gasCost, i.e. m < gasCost / D.
+ * From the quadratic arb profit formula (c=0 curve):
+ *   profit ≈ eq × m² / 4, break-even m = 2 × √(gasCost / eq)
+ *   gasCost = tx.gasprice × swapGasUnits × 2
+ *   threshold = 2 × √(tx.gasprice × swapGasUnits × 2 / eqReserveWei)
+ *             = gasCoeff × √(tx.gasprice)
  *
- * @param gasPriceGwei Current gas price in gwei
- * @param swapGasUnits Gas units for an arb swap (~150,000)
- * @param poolDepthEth Total pool depth in ETH terms (both sides)
- * @returns gasThreshold as WAD-scaled value
+ * So: gasCoeff = 2e18 × √(swapGasUnits × 2 / eqReserveWei)
+ *
+ * @param eqReserveEth Equilibrium reserve of one side in ETH terms
+ * @param swapGasUnits Gas units for a single-leg swap (~150,000). Doubled for two-leg arb.
+ * @returns gasCoeff as uint64-compatible value
  */
-export function computeGasThreshold(
-  gasPriceGwei: number,
+export function computeGasCoeff(
+  eqReserveEth: number = 78,
   swapGasUnits: number = 150_000,
-  poolDepthEth: number = 450,
 ): bigint {
-  const gasCostEth = gasPriceGwei * swapGasUnits * 1e-9;
-  const threshold = gasCostEth / (poolDepthEth * 2);
-  // Convert to WAD (1e18), clamp to [1 bps, 200 bps]
-  const thresholdWad = Math.max(1e14, Math.min(200e14, threshold * 1e18));
-  return BigInt(Math.round(thresholdWad));
+  const eqReserveWei = eqReserveEth * 1e18;
+  const coeff = 2e18 * Math.sqrt((swapGasUnits * 2) / eqReserveWei);
+  return BigInt(Math.round(coeff));
 }
 
 /**

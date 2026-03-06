@@ -94,8 +94,9 @@ export async function execute(
         args: [
           BigInt(action.params["baseFee"] as string),
           BigInt(action.params["maxFee"] as string),
-          BigInt(action.params["gasThreshold"] as string),
+          BigInt(action.params["gasCoeff"] as string),
           BigInt(action.params["captureRate"] as string),
+          BigInt(action.params["attractRate"] as string),
         ],
         account,
         chain: walletClient.chain,

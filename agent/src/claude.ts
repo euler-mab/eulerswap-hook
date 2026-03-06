@@ -106,18 +106,18 @@ Euler vaults. If the LP deposited 10 ETH but sets equilibriumReserve0 to 50 ETH,
 borrows 40 ETH. This multiplies liquidity depth within the range, generating more fees —
 but creates borrow costs (carry) and liquidation risk.
 
-### Layer 4: Dynamic Fees (Bayesian Gas-Threshold Model)
-The hook reads Uniswap V3 slot0 as a market reference. When the pool's marginal price
-diverges from Uniswap by more than gasThreshold (the no-arb zone where gas costs exceed
-arb profit), the fee is elevated on the arb direction by captureRate × (mismatch - gasThreshold).
-Below gasThreshold, all swaps pay baseFee — retail trades are never penalized.
+### Layer 4: Dynamic Fees (Gas-Threshold Model)
+The hook reads Uniswap V3 slot0 as a market reference. The gas threshold is computed
+dynamically from tx.gasprice: threshold = gasCoeff × √(tx.gasprice). When mismatch exceeds
+this threshold, the arb direction pays baseFee + captureRate × excess, and the attract
+(counter) direction pays baseFee + attractRate × excess. Below threshold, all swaps pay baseFee.
 
 ### Your Job
 You manage ALL of these layers:
 - **Equilibrium price** (priceX/priceY): recenter when the market moves
 - **Price range** (minReserve0/minReserve1): set boundaries, shift when approaching limits
 - **Leverage** (equilibriumReserve0/1 vs real deposits): dial up for more depth, down when carry is bad
-- **Dynamic fees** (baseFee, maxFee, gasThreshold, captureRate): calibrate to capture arb value, attract retail
+- **Dynamic fees** (baseFee, maxFee, gasCoeff, captureRate, attractRate): calibrate to capture arb value, attract retail
 - **Rebalancing**: fee asymmetry, external swaps when reserves are heavily imbalanced
 
 **P&L components** (in priority order):
@@ -133,29 +133,34 @@ An empty recommendations array is always valid and often optimal.
 
 The hook reads Uniswap V3 slot0 as a market reference, clamped to [baseFee, maxFee]:
 
+  effectiveThreshold = gasCoeff × √(tx.gasprice)
   mismatch = |uniswapPrice − marginalPrice| / uniswapPrice
-  fee = baseFee + captureRate × max(mismatch − gasThreshold, 0)
+  excess = max(mismatch − effectiveThreshold, 0)
+  arb fee = baseFee + captureRate × excess
+  attract fee = baseFee + attractRate × excess
 
 Key behavior:
-- **Below gasThreshold**: all swaps pay baseFee (likely retail — arb is unprofitable)
-- **Above gasThreshold, arb direction**: fee = baseFee + captureRate × excess mismatch
-- **Above gasThreshold, counter-direction**: always pays baseFee
-- **captureRate = 0**: flat baseFee for all swaps (no oracle reads, saves gas)
+- **Below threshold**: all swaps pay baseFee (likely retail — arb is unprofitable)
+- **Above threshold, arb direction**: baseFee + captureRate × excess (captures LVR)
+- **Above threshold, attract direction**: baseFee + attractRate × excess (captures routing advantage)
+- **captureRate = 0 AND attractRate = 0**: flat baseFee for all swaps (no oracle reads)
+- **gasCoeff = 0**: threshold is always 0 regardless of gas price
 
 ## What Each Parameter Controls
 
-**Core fee params** (setFeeParams — all 4 required):
+**Core fee params** (setFeeParams — all 5 required):
 - baseFee: the resting fee for non-arb swaps. Lower = more competitive. Typical: 5-50 bps.
 - maxFee: ceiling. Caps total fee. Typical: 50-500 bps.
-- gasThreshold: min mismatch for profitable arb (WAD-scaled). Below this → retail. Typical: 10-50 bps.
-- captureRate: fraction of excess mismatch to capture (WAD-scaled). 0.8e18 = 80%. Typical: 0.5-1.0.
+- gasCoeff: multiplier for dynamic threshold (threshold = gasCoeff × √(tx.gasprice)). Encodes pool depth.
+- captureRate: fraction of excess to capture on arb side (WAD). 0.8e18 = 80%. Typical: 0.5-1.0.
+- attractRate: fraction of excess to capture on attract side (WAD). 0.3e18 = 30%. Typical: 0.1-0.5.
 
 ## MEV Protection
 
 The Uniswap V3 oracle provides directional arb detection:
 - When pool marginal price diverges from Uniswap, arbs will trade in the direction
   that exploits the mismatch. The hook elevates fees on that direction.
-- Counter-direction (retail flow restoring alignment) always pays baseFee.
+- Attract-direction (retail flow restoring alignment) pays baseFee + modest attract premium.
 - Worst case from oracle manipulation: baseFee (acceptable).
 - Gas cost: ~500 warm (arb txs that already touched Uniswap), ~5000 cold (retail).
 
@@ -234,8 +239,9 @@ The formulas:
 
 - baseFee: ${(Number(config.minBaseFee) / Number(BPS)).toFixed(0)}-${(Number(config.maxBaseFee) / Number(BPS)).toFixed(0)} bps
 - maxFee: must be < 100% (${WAD.toString()})
-- gasThreshold: max 500 bps
+- gasCoeff: max 1e16 (controls dynamic threshold = gasCoeff × √(tx.gasprice))
 - captureRate: max 2x (${(2n * WAD).toString()})
+- attractRate: max 1x (${WAD.toString()})
 - concentration: ${(Number(config.minConcentration) / 1e18).toFixed(2)}-${(Number(config.maxConcentration) / 1e18).toFixed(2)}
 - equilibrium changes: max 3x per recenter
 
@@ -243,13 +249,13 @@ The formulas:
 
 When reserves drift from equilibrium, you accumulate delta. Flatten it in escalating order:
 
-### Step 1: Fee Asymmetry (requires captureRate > 0)
-When captureRate > 0, the hook adds a directional fee adjustment based on Uniswap slot0 vs
-marginal price. When mismatch > gasThreshold, the arb direction pays elevated fees. Swaps
-below gasThreshold or in the counter-direction always pay baseFee.
+### Step 1: Fee Asymmetry (requires captureRate > 0 or attractRate > 0)
+The hook adds directional fee adjustment based on Uniswap slot0 vs marginal price.
+Above the dynamic gas threshold, arb direction pays captureRate × excess and attract
+direction pays attractRate × excess. Both added to baseFee.
 
-**If captureRate = 0**: fees are symmetric — all trades pay baseFee. You CANNOT create
-directional incentives through fees alone. Skip to Step 2 or recommend enabling captureRate.
+**If captureRate = 0 AND attractRate = 0**: fees are symmetric — all trades pay baseFee.
+You CANNOT create directional incentives. Skip to Step 2 or recommend enabling rates.
 
 ### Step 2: BaseFee + Interest Rate Response
 Lower baseFee to attract more volume (including rebalancing flow). When the pool has
@@ -257,7 +263,7 @@ leverage, reserve drift causes vault utilization spikes:
 
 - utilization < 70%: no urgency
 - utilization 70-85% (near kink): lower baseFee by 1-3 bps to attract flow
-- utilization 85-95% (above kink): lower baseFee aggressively + enable captureRate if off
+- utilization 85-95% (above kink): lower baseFee aggressively + enable captureRate/attractRate if off
 - utilization > 95% (critical): minimum baseFee + reduce leverage (Step 3)
 
 **Key principle**: spend up to dailyBorrowCost in fee discounts to attract rebalancing flow.
@@ -337,8 +343,9 @@ All values are strings of integers (no decimals, no floats).
 **setFeeParams** (all 4 required):
   baseFee: WAD-scaled. 25 bps = "${(25n * BPS).toString()}"
   maxFee: WAD-scaled. 200 bps = "${(200n * BPS).toString()}"
-  gasThreshold: WAD-scaled. 30 bps = "${(30n * BPS).toString()}"
+  gasCoeff: uint64. Controls dynamic threshold = gasCoeff × √(tx.gasprice)
   captureRate: WAD-scaled fraction. 80% = "${(WAD * 80n / 100n).toString()}"
+  attractRate: WAD-scaled fraction. 30% = "${(WAD * 30n / 100n).toString()}"
 
 **reconfigure** (only include fields you want to change):
   concentrationX, concentrationY: WAD-scaled. 0.40 = "${(40n * WAD / 100n).toString()}"
@@ -505,8 +512,9 @@ ${boundarySection(snapshot)}
 ## Hook Fee Params
   baseFee: ${fmtBps(feeParams.baseFee)}
   maxFee: ${fmtBps(feeParams.maxFee)}
-  gasThreshold: ${fmtBps(feeParams.gasThreshold)}
-  captureRate: ${fmtWad(feeParams.captureRate)}
+  gasCoeff: ${feeParams.gasCoeff.toString()} (threshold = gasCoeff × √(tx.gasprice))
+  captureRate: ${fmtWad(feeParams.captureRate)} (arb side)
+  attractRate: ${fmtWad(feeParams.attractRate)} (attract side)
 ${(() => {
   const vol = getRealizedVol();
   return vol ? `

@@ -72,7 +72,9 @@ export default function StrategyPanel({ state }: { state: PoolState }) {
           <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-2.5 text-sm">
             <Row label="Base fee">{fmtFeeBps(state.hookBaseFee)}</Row>
             <Row label="Max fee">{fmtFeeBps(state.hookMaxFee!)}</Row>
-            <Row label="Mismatch scale">{state.hookMismatchScale!.toString()}</Row>
+            <Row label="Gas coeff">{state.hookGasCoeff!.toString()}</Row>
+            <Row label="Capture rate">{(Number(state.hookCaptureRate!) / 1e16).toFixed(1)}%</Row>
+            <Row label="Attract rate">{(Number(state.hookAttractRate!) / 1e16).toFixed(1)}%</Row>
           </div>
         </div>
       )}

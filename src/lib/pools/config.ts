@@ -15,6 +15,10 @@ export interface PoolConfig {
   description?: string;
   /** Block number from which to start fetching historical events */
   deployBlock: bigint;
+  /** Uniswap V3 pool used by the hook as oracle price reference */
+  uniswapPool?: Address;
+  /** Uniswap V3 pool fee tier in bps (e.g. 5 for 0.05%) */
+  uniswapFeeBps?: number;
 }
 
 export const POOLS: PoolConfig[] = [
@@ -26,6 +30,8 @@ export const POOLS: PoolConfig[] = [
     name: "USDC/WETH #1",
     description: "Dynamic fee hook, test pool",
     deployBlock: 24591724n,
+    uniswapPool: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+    uniswapFeeBps: 5,
   },
   {
     address: "0x719529e99b7b272c5ef4CE07C30d15BC57CD68A8",
@@ -35,6 +41,8 @@ export const POOLS: PoolConfig[] = [
     name: "USDC/USDT #1",
     description: "One-sided USDC equity, ±1% range, dynamic fee hook",
     deployBlock: 24593397n,
+    uniswapPool: "0x3416cF6C708Da44DB2624D63ea0AAef7113527C6",
+    uniswapFeeBps: 1,
   },
 ];
 

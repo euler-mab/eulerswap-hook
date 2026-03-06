@@ -182,8 +182,9 @@ contract DeployUsdcUsdt is Script {
             0x3416cF6C708Da44DB2624D63ea0AAef7113527C6, // Uniswap V3 USDC/USDT 0.01%
             5e13,   // baseFee: 0.5 bps
             50e14,  // maxFee: 50 bps
-            5e14,   // gasThreshold: 5 bps
-            0.8e18  // captureRate: 80%
+            uint64(1.54e9), // gasCoeff: ~0.03 bps at 0.4 gwei (stables, deep pool)
+            0.8e18, // captureRate: 80% (arb side)
+            0.3e18  // attractRate: 30% (attract side)
         );
         console.log("Hook deployed at:", address(hook));
 

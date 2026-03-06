@@ -42,11 +42,16 @@ export interface PoolState {
   equilibriumPrice: number; // asset1/asset0 at equilibrium (px/py normalised)
   isInstalled: boolean;
 
+  // Uniswap V3 oracle price (asset1/asset0 in human units, same convention as marginalPrice)
+  uniswapPrice?: number;
+
   // Hook state
   hookBaseFee?: bigint;
   hookMaxFee?: bigint;
-  hookMismatchScale?: bigint;
-  // Live fees from hook.getFee (computed at current block)
+  hookGasCoeff?: bigint;       // threshold = gasCoeff × √(tx.gasprice)
+  hookCaptureRate?: bigint;    // WAD: fraction of excess captured on arb side
+  hookAttractRate?: bigint;    // WAD: fraction of excess captured on attract side
+  // Live fees from hook.getFee (computed at current block with realistic gas price)
   hookLiveFee0In?: bigint; // fee when asset0 is input
   hookLiveFee1In?: bigint; // fee when asset1 is input
 
@@ -66,6 +71,9 @@ export interface PoolState {
   limit1Out: bigint; // max asset1 that can be bought (when selling asset0)
   limit1In: bigint;  // max asset1 that can be sold
   limit0Out: bigint; // max asset0 that can be bought (when selling asset1)
+
+  // Network
+  gasPrice: bigint;
 
   // Metadata
   fetchedAt: number;

@@ -222,7 +222,9 @@ export const hookAbi = [
     outputs: [
       { name: "_baseFee", type: "uint64" },
       { name: "_maxFee", type: "uint64" },
-      { name: "_mismatchScale", type: "uint256" },
+      { name: "_gasCoeff", type: "uint64" },
+      { name: "_captureRate", type: "uint256" },
+      { name: "_attractRate", type: "uint256" },
     ],
   },
   {
@@ -236,6 +238,24 @@ export const hookAbi = [
       { name: "", type: "bool" },
     ],
     outputs: [{ name: "fee", type: "uint64" }],
+  },
+] as const;
+
+export const uniswapV3PoolAbi = [
+  {
+    name: "slot0",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "sqrtPriceX96", type: "uint160" },
+      { name: "tick", type: "int24" },
+      { name: "observationIndex", type: "uint16" },
+      { name: "observationCardinality", type: "uint16" },
+      { name: "observationCardinalityNext", type: "uint16" },
+      { name: "feeProtocol", type: "uint8" },
+      { name: "unlocked", type: "bool" },
+    ],
   },
 ] as const;
 

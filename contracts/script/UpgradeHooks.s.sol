@@ -38,27 +38,32 @@ contract UpgradeHooks is Script {
         vm.startBroadcast(pk);
 
         // --- USDC/WETH ---
+        // gasCoeff: threshold = gasCoeff × √(tx.gasprice)
+        // eq=78.2 WETH, swapGas=150k, 2 legs: gasCoeff = 2e18 × √(300000/78.2e18) ≈ 1.24e12
         LPAgentHook hook1 = new LPAgentHook(
             USDC_WETH_POOL,
             deployer,
             UNI_USDC_WETH,
             5e14,    // baseFee: 5 bps
             3500e14, // maxFee: 3500 bps
-            30e14,   // gasThreshold: 30 bps (no-arb zone)
-            0.8e18   // captureRate: 80% of excess mismatch
+            uint64(1.24e12), // gasCoeff: ~25 bps at 0.4 gwei, ~124 bps at 10 gwei
+            0.8e18,  // captureRate: 80% of excess mismatch (arb side)
+            0.3e18   // attractRate: 30% of excess mismatch (attract side)
         );
         console.log("USDC/WETH hook:", address(hook1));
         _installHook(USDC_WETH_POOL, USDC_WETH_ACCOUNT, address(hook1));
 
         // --- USDC/USDT ---
+        // eq≈504 ETH: gasCoeff = 2e18 × √(300000/504e18) ≈ 1.54e9
         LPAgentHook hook2 = new LPAgentHook(
             USDC_USDT_POOL,
             deployer,
             UNI_USDC_USDT,
             5e13,    // baseFee: 0.5 bps
             50e14,   // maxFee: 50 bps
-            5e14,    // gasThreshold: 5 bps (stables have tight no-arb zone)
-            0.8e18   // captureRate: 80% of excess mismatch
+            uint64(1.54e9), // gasCoeff: ~0.03 bps at 0.4 gwei (stables, deep pool)
+            0.8e18,  // captureRate: 80% of excess mismatch (arb side)
+            0.3e18   // attractRate: 30% of excess mismatch (attract side)
         );
         console.log("USDC/USDT hook:", address(hook2));
         _installHook(USDC_USDT_POOL, USDC_USDT_ACCOUNT, address(hook2));
