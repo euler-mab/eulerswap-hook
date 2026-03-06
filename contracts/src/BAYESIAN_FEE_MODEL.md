@@ -64,13 +64,13 @@ Factoring out `√(tx.gasprice)`:
 gasCoeff = 2e18 × √(swapGasUnits × 2 / eqReserveWei)
 ```
 
-**USDC/WETH (eq ≈ 78 WETH):** gasCoeff ≈ 1.24e12
-- At 0.4 gwei → threshold ≈ 25 bps
-- At 10 gwei → threshold ≈ 124 bps
-- At 100 gwei → threshold ≈ 392 bps
+**USDC/WETH (eq ≈ 80 WETH):** gasCoeff ≈ 1.22e11
+- At 0.4 gwei → threshold ≈ 24 bps
+- At 10 gwei → threshold ≈ 122 bps
+- At 100 gwei → threshold ≈ 386 bps
 
-**USDC/USDT (eq ≈ 504 ETH):** gasCoeff ≈ 1.54e9
-- At 0.4 gwei → threshold ≈ 0.03 bps (deep pool, nearly all mismatch is arb)
+**USDC/USDT (eq ≈ 1.26 ETH, $2514 pool):** gasCoeff ≈ 9.74e11
+- At 0.4 gwei → threshold ≈ 195 bps (small pool, arb rarely profitable)
 
 The agent updates `gasCoeff` when pool depth changes (via reconfigs). Gas price variations are handled automatically.
 
@@ -103,7 +103,7 @@ Hard ceiling. Prevents extreme fees during volatility spikes.
 
 ## Example: USDC/WETH Pool
 
-With `baseFee = 5 bps`, `gasCoeff = 1.24e12` (≈25 bps at 0.4 gwei), `captureRate = 0.8`, `attractRate = 0.3`:
+With `baseFee = 5 bps`, `gasCoeff = 1.22e11` (≈24 bps at 0.4 gwei), `captureRate = 0.8`, `attractRate = 0.3`:
 
 | Mismatch | Arb fee | Attract fee | Type |
 |----------|---------|-------------|------|

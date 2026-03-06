@@ -39,14 +39,14 @@ contract UpgradeHooks is Script {
 
         // --- USDC/WETH ---
         // gasCoeff: threshold = gasCoeff × √(tx.gasprice)
-        // eq=78.2 WETH, swapGas=150k, 2 legs: gasCoeff = 2e18 × √(300000/78.2e18) ≈ 1.24e12
+        // eq~80 WETH, swapGas=150k, 2 legs: gasCoeff = 2e18 × √(300000/80e18) ≈ 1.22e11
         LPAgentHook hook1 = new LPAgentHook(
             USDC_WETH_POOL,
             deployer,
             UNI_USDC_WETH,
             5e14,    // baseFee: 5 bps
             3500e14, // maxFee: 3500 bps
-            uint64(1.24e12), // gasCoeff: ~25 bps at 0.4 gwei, ~124 bps at 10 gwei
+            uint64(1.22e11), // gasCoeff: ~24 bps at 0.4 gwei, ~122 bps at 10 gwei
             0.8e18,  // captureRate: 80% of excess mismatch (arb side)
             0.3e18   // attractRate: 30% of excess mismatch (attract side)
         );
@@ -54,14 +54,14 @@ contract UpgradeHooks is Script {
         _installHook(USDC_WETH_POOL, USDC_WETH_ACCOUNT, address(hook1));
 
         // --- USDC/USDT ---
-        // eq≈504 ETH: gasCoeff = 2e18 × √(300000/504e18) ≈ 1.54e9
+        // eq~1.26 ETH ($2514 pool): gasCoeff = 2e18 × √(300000/1.26e18) ≈ 9.74e11
         LPAgentHook hook2 = new LPAgentHook(
             USDC_USDT_POOL,
             deployer,
             UNI_USDC_USDT,
             5e13,    // baseFee: 0.5 bps
             50e14,   // maxFee: 50 bps
-            uint64(1.54e9), // gasCoeff: ~0.03 bps at 0.4 gwei (stables, deep pool)
+            uint64(9.74e11), // gasCoeff: ~195 bps at 0.4 gwei (small pool, high threshold)
             0.8e18,  // captureRate: 80% of excess mismatch (arb side)
             0.3e18   // attractRate: 30% of excess mismatch (attract side)
         );
