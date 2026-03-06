@@ -54,30 +54,30 @@ returnPct   = totalPnl / netInvestedUsd
 
 ### Three-way decomposition
 
-For each swap, the pool's net position change minus the fee gives the rebalancing (IL) component:
+For each swap, the pool's net position change gives the rebalancing component:
 
 ```
 Per swap:
-  fee_i      = swap.fee{0,1}
-  rebal_i    = (amountIn - amountOut - fee) per asset    ← pure adverse selection
+  fee_i      = swap.fee{0,1}              (charged separately, NOT included in amountIn)
+  rebal_i    = (amountIn - amountOut) per asset
 
-Accumulated:
-  fees       = Σ(fee0) × p0 + Σ(fee1) × p1              (always positive)
-  ilUsd      = Σ(rebal0) × p0 + Σ(rebal1) × p1          (typically negative)
-  interest   = totalPnl - fees - ilUsd                    (residual: net vault interest)
+Accumulated (at current prices):
+  fees       = Σ(fee0) × p0 + Σ(fee1) × p1                (always positive)
+  rebalUsd   = Σ(rebal0) × p0 + Σ(rebal1) × p1            (positive or negative)
+  interest   = totalPnl - fees - rebalUsd                   (residual: net vault interest)
 ```
 
-| Component | Meaning | Typically |
+| Component | Meaning | Sign |
 |---|---|---|
-| **fees** | Swap fees earned by the pool | Positive (revenue) |
-| **IL** | Rebalancing loss from adverse selection | Negative (cost) |
-| **interest** | Net vault interest (supply earned - borrow paid) | Positive (small) |
+| **fees** | Swap fees earned by the pool | Always positive |
+| **rebal** | Net rebalancing P&L from position shifts | Positive = favorable (pool traded well), Negative = adverse selection |
+| **interest** | Net vault interest (supply earned - borrow paid) | Typically positive |
 
-Identity: `totalPnl = fees + IL + interest`
+Identity: `totalPnl = fees + rebal + interest`
 
-Note: IL is derived from actual swap history — not from a constant-product formula. It captures the exact rebalancing loss for whatever curve the pool uses (EulerSwap's concentrated liquidity curve).
+Note: Rebalancing is derived from actual swap history — not from a constant-product IL formula. It captures the exact position-shift P&L for whatever curve the pool uses. Unlike traditional "impermanent loss" (which is always negative), rebalancing can be positive when the pool trades favorably — e.g. selling WETH before a price drop.
 
-Note: `netInvestedUsd` is valued at *current* prices, not historical. This means P&L captures the pool's actual performance without being confounded by asset price changes.
+Note: All three components are valued at *current* prices (consistent with `netInvestedUsd`). This means rebalancing captures both the per-trade adverse selection and the mark-to-market effect of the accumulated position shift.
 
 ## P&L Time Series
 
@@ -85,10 +85,12 @@ Historical P&L is built from swap events + DeFiLlama price charts:
 
 1. Fetch hourly price charts for both tokens via `/chart` endpoint (2 API calls, cached)
 2. At each swap event, interpolate USD prices from the charts
-3. Accumulate fees and IL in USD at historical prices
+3. Accumulate fees and rebalancing in USD at historical prices
 4. Estimate NAV from post-swap reserves × historical prices
 
-Displayed as a three-line chart: cumulative fees (green), cumulative IL (red), net (blue).
+Displayed as a three-line chart: cumulative fees (green), cumulative rebalancing (red), net (blue).
+
+Note: The time series uses *historical* prices (at each swap's timestamp), while the overview uses *current* prices. Small differences between the chart's final point and the overview numbers are expected.
 
 ## Time-Weighted Return (TWR)
 
@@ -136,9 +138,9 @@ The cache resets when `pool.address` changes.
 | Row | Content |
 |---|---|
 | **NAV** | `$905.71 +$2.31 (+0.26%) (invested $903.40, 5 flows) (+3.1% ann., 30d)` |
-| **P&L breakdown** | `fees +$3.15 · IL -$0.62 · interest +$0.12` |
+| **P&L breakdown** | `fees +$3.15 · rebal +$0.62 · interest +$0.12` |
 
-Charts tab "P&L": cumulative fees / IL / net lines over time.
+Charts tab "P&L": cumulative fees / rebalancing / net lines over time.
 
 Fallback while loading: simple NAV from vault positions using on-chain oracle/marginal prices.
 

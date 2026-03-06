@@ -138,19 +138,19 @@ export default function PoolCharts({ pricePoints, state, pnlTimeSeries }: Props)
                   formatter={(v: any, name: any) => {
                     const val = v as number;
                     const label = name === "cumulativeFeesUsd" ? "Fees"
-                      : name === "cumulativeIlUsd" ? "IL"
+                      : name === "cumulativeRebalUsd" ? "Rebal"
                       : "Net";
                     return [`$${val.toFixed(2)}`, label];
                   }}
                 />
                 <Line type="monotone" dataKey="cumulativeFeesUsd" stroke="#34d399" dot={false} strokeWidth={1.5} name="cumulativeFeesUsd" />
-                <Line type="monotone" dataKey="cumulativeIlUsd" stroke="#ef4444" dot={false} strokeWidth={1.5} name="cumulativeIlUsd" />
+                <Line type="monotone" dataKey="cumulativeRebalUsd" stroke="#ef4444" dot={false} strokeWidth={1.5} name="cumulativeRebalUsd" />
                 <Line type="monotone" dataKey="cumulativeNetUsd" stroke="#3b82f6" dot={false} strokeWidth={1.5} name="cumulativeNetUsd" />
               </LineChart>
             </ResponsiveContainer>
             <Legend items={[
               { color: "#34d399", label: "Fees" },
-              { color: "#ef4444", label: "IL" },
+              { color: "#ef4444", label: "Rebal" },
               { color: "#3b82f6", label: "Net" },
             ]} />
           </div>

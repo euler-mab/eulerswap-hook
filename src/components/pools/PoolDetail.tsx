@@ -79,6 +79,7 @@ export default function PoolDetail({ pool }: { pool: PoolConfig }) {
             asset1Decimals={state.asset1Decimals}
             asset0Symbol={state.asset0Symbol}
             asset1Symbol={state.asset1Symbol}
+            prices={pnl ? pnl.currentPrices : undefined}
           />
         )}
       </SectionCard>

@@ -13,8 +13,8 @@ export interface PnlAttribution {
   totalPnl: number;
   /** Accumulated swap fees in USD (valued at current prices) */
   feesUsd: number;
-  /** Impermanent loss from swap rebalancing (typically negative) */
-  ilUsd: number;
+  /** Rebalancing P&L from swap position shifts (positive = favorable, negative = adverse selection) */
+  rebalUsd: number;
   /** Net vault interest (supply earned - borrow paid), computed as residual */
   interestUsd: number;
   /** Return percentage: totalPnl / netInvestedUsd */
@@ -66,8 +66,10 @@ export function buildCapitalSnapshot(
  *
  * Three-way attribution:
  *   fees     = swap fees earned (from event logs)
- *   ilUsd    = rebalancing loss from adverse selection (Σ(amountIn - amountOut - fee) × price)
- *   interest = residual: totalPnl - fees - IL (net vault interest)
+ *   rebal    = net position change from swaps (Σ(amountIn - amountOut) × price)
+ *             amountIn excludes fee in EulerSwap events
+ *             positive = favorable rebalancing, negative = adverse selection
+ *   interest = residual: totalPnl - fees - rebal (net vault interest)
  */
 export async function computePnl(
   state: PoolState,
@@ -99,7 +101,7 @@ export async function computePnl(
   // Total P&L
   const totalPnl = navUsd - netInvestedUsd;
 
-  // Accumulated fees and rebalancing (IL) from swap events
+  // Accumulated fees and rebalancing from swap events (valued at current prices)
   let totalFee0 = 0;
   let totalFee1 = 0;
   let totalRebal0 = 0;
@@ -113,15 +115,15 @@ export async function computePnl(
     const out1 = Number(formatUnits(s.amount1Out, state.asset1Decimals));
     totalFee0 += f0;
     totalFee1 += f1;
-    // Rebalancing = net position change minus fee (pure adverse selection / IL)
-    totalRebal0 += (in0 - out0 - f0);
-    totalRebal1 += (in1 - out1 - f1);
+    // Rebalancing = net position change from swap (amountIn excludes fee in EulerSwap)
+    totalRebal0 += (in0 - out0);
+    totalRebal1 += (in1 - out1);
   }
   const feesUsd = totalFee0 * currentPrice0 + totalFee1 * currentPrice1;
-  const ilUsd = totalRebal0 * currentPrice0 + totalRebal1 * currentPrice1;
+  const rebalUsd = totalRebal0 * currentPrice0 + totalRebal1 * currentPrice1;
 
-  // Interest = residual (totalPnl - fees - IL = net vault interest)
-  const interestUsd = totalPnl - feesUsd - ilUsd;
+  // Interest = residual (totalPnl - fees - rebalancing = net vault interest)
+  const interestUsd = totalPnl - feesUsd - rebalUsd;
 
   const returnPct = netInvestedUsd > 0 ? totalPnl / netInvestedUsd : 0;
 
@@ -130,7 +132,7 @@ export async function computePnl(
     netInvestedUsd,
     totalPnl,
     feesUsd,
-    ilUsd,
+    rebalUsd,
     interestUsd,
     returnPct,
     currentPrices: { asset0: currentPrice0, asset1: currentPrice1 },
@@ -145,8 +147,8 @@ export interface PnlTimePoint {
   timestamp: number;
   /** Cumulative swap fees in USD (at historical prices) */
   cumulativeFeesUsd: number;
-  /** Cumulative IL in USD (at historical prices, typically negative) */
-  cumulativeIlUsd: number;
+  /** Cumulative rebalancing P&L in USD (at historical prices) */
+  cumulativeRebalUsd: number;
   /** Cumulative net swap P&L = fees + IL */
   cumulativeNetUsd: number;
   /** NAV estimate = post-swap reserves valued at historical prices */
@@ -167,7 +169,7 @@ export function buildPnlTimeSeries(
 ): PnlTimePoint[] {
   const points: PnlTimePoint[] = [];
   let cumFeeUsd = 0;
-  let cumIlUsd = 0;
+  let cumRebalUsd = 0;
 
   for (const s of swaps) {
     const ts = s.timestamp ?? 0;
@@ -184,7 +186,7 @@ export function buildPnlTimeSeries(
     const out1 = Number(formatUnits(s.amount1Out, asset1Decimals));
 
     cumFeeUsd += f0 * p0 + f1 * p1;
-    cumIlUsd += (in0 - out0 - f0) * p0 + (in1 - out1 - f1) * p1;
+    cumRebalUsd += (in0 - out0) * p0 + (in1 - out1) * p1;
 
     // NAV estimate from post-swap reserves
     const r0 = Number(formatUnits(s.reserve0, asset0Decimals));
@@ -194,8 +196,8 @@ export function buildPnlTimeSeries(
     points.push({
       timestamp: ts,
       cumulativeFeesUsd: cumFeeUsd,
-      cumulativeIlUsd: cumIlUsd,
-      cumulativeNetUsd: cumFeeUsd + cumIlUsd,
+      cumulativeRebalUsd: cumRebalUsd,
+      cumulativeNetUsd: cumFeeUsd + cumRebalUsd,
       navEstimateUsd,
     });
   }

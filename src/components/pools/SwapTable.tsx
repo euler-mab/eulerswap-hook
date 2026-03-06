@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { SwapEvent } from "@/lib/pools/types";
+import { formatUnits } from "viem";
 import { fmtAmount, timeAgo } from "@/lib/pools/format";
 
 interface Props {
@@ -10,11 +11,12 @@ interface Props {
   asset1Decimals: number;
   asset0Symbol: string;
   asset1Symbol: string;
+  prices?: { asset0: number; asset1: number };
 }
 
 const PAGE_SIZE = 50;
 
-export default function SwapTable({ swaps, asset0Decimals, asset1Decimals, asset0Symbol, asset1Symbol }: Props) {
+export default function SwapTable({ swaps, asset0Decimals, asset1Decimals, asset0Symbol, asset1Symbol, prices }: Props) {
   const [showAll, setShowAll] = useState(false);
 
   // Reverse to show most recent first
@@ -59,8 +61,25 @@ export default function SwapTable({ swaps, asset0Decimals, asset1Decimals, asset
                       : `${fmtAmount(s.amount0Out, asset0Decimals)} ${asset0Symbol}`}
                   </td>
                   <td className="py-2.5 text-right font-mono text-gray-500">
-                    {s.fee0 > 0n && `${fmtAmount(s.fee0, asset0Decimals)}`}
-                    {s.fee1 > 0n && `${fmtAmount(s.fee1, asset1Decimals)}`}
+                    {(() => {
+                      const fee = isBuy ? s.fee0 : s.fee1;
+                      const amtIn = isBuy ? s.amount0In : s.amount1In;
+                      if (fee <= 0n || amtIn <= 0n) return "—";
+                      const bps = Number(fee * 1_000_000n / amtIn) / 100;
+                      const decimals = isBuy ? asset0Decimals : asset1Decimals;
+                      const price = prices ? (isBuy ? prices.asset0 : prices.asset1) : undefined;
+                      const feeUsd = price ? Number(formatUnits(fee, decimals)) * price : undefined;
+                      return (
+                        <span>
+                          {bps.toFixed(1)} bps
+                          {feeUsd !== undefined && (
+                            <span className="text-gray-400 ml-1">
+                              (${feeUsd < 0.01 ? feeUsd.toFixed(4) : feeUsd.toFixed(2)})
+                            </span>
+                          )}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="py-2.5 text-right">
                     <a
