@@ -136,7 +136,8 @@ contract DeployForkTest is Script {
             5e14,       // baseFee: 5 bps
             3500e14,    // maxFee: 3500 bps
             uint64(1.22e11), // gasCoeff: ~24 bps at 0.4 gwei
-            0.8e18,     // captureRate: 80% (arb side)
+            5e14,       // externalFee: 5 bps (Uni V3 0.05% pool)
+            0.8e18,     // captureRate: 80% of net edge (arb side)
             0.3e18      // attractRate: 30% (attract side)
         );
         console.log("Hook deployed at:", address(hook));

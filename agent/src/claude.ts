@@ -148,11 +148,12 @@ Key behavior:
 
 ## What Each Parameter Controls
 
-**Core fee params** (setFeeParams — all 5 required):
+**Core fee params** (setFeeParams — all 6 required):
 - baseFee: the resting fee for non-arb swaps. Lower = more competitive. Typical: 5-50 bps.
 - maxFee: ceiling. Caps total fee. Typical: 50-500 bps.
 - gasCoeff: multiplier for dynamic threshold (threshold = gasCoeff × √(tx.gasprice)). Encodes pool depth.
-- captureRate: fraction of excess to capture on arb side (WAD). 0.8e18 = 80%. Typical: 0.5-1.0.
+- externalFee: arber's external cost floor (e.g. Uni swap fee). 5 bps for Uni V3 0.05% pool.
+- captureRate: fraction of NET edge to capture on arb side (WAD). netEdge = mismatch - gas - baseFee - externalFee. 0.8e18 = 80%. Arber keeps (1 - captureRate) × netEdge.
 - attractRate: fraction of excess to capture on attract side (WAD). 0.3e18 = 30%. Typical: 0.1-0.5.
 
 ## MEV Protection
@@ -340,10 +341,11 @@ Respond with ONLY valid JSON:
 All values are strings of integers (no decimals, no floats).
 1 basis point = ${BPS.toString()}.
 
-**setFeeParams** (all 4 required):
+**setFeeParams** (all 6 required):
   baseFee: WAD-scaled. 25 bps = "${(25n * BPS).toString()}"
   maxFee: WAD-scaled. 200 bps = "${(200n * BPS).toString()}"
   gasCoeff: uint64. Controls dynamic threshold = gasCoeff × √(tx.gasprice)
+  externalFee: WAD-scaled. 5 bps = "${(5n * BPS).toString()}"
   captureRate: WAD-scaled fraction. 80% = "${(WAD * 80n / 100n).toString()}"
   attractRate: WAD-scaled fraction. 30% = "${(WAD * 30n / 100n).toString()}"
 
@@ -513,7 +515,8 @@ ${boundarySection(snapshot)}
   baseFee: ${fmtBps(feeParams.baseFee)}
   maxFee: ${fmtBps(feeParams.maxFee)}
   gasCoeff: ${feeParams.gasCoeff.toString()} (threshold = gasCoeff × √(tx.gasprice))
-  captureRate: ${fmtWad(feeParams.captureRate)} (arb side)
+  externalFee: ${fmtBps(feeParams.externalFee)} (arber's external cost floor, e.g. Uni fee)
+  captureRate: ${fmtWad(feeParams.captureRate)} (arb side — applied to net edge after costs)
   attractRate: ${fmtWad(feeParams.attractRate)} (attract side)
 ${(() => {
   const vol = getRealizedVol();

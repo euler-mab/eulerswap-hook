@@ -47,7 +47,8 @@ contract UpgradeHooks is Script {
             5e14,    // baseFee: 5 bps
             3500e14, // maxFee: 3500 bps
             uint64(1.22e11), // gasCoeff: ~24 bps at 0.4 gwei, ~122 bps at 10 gwei
-            0.8e18,  // captureRate: 80% of excess mismatch (arb side)
+            5e14,    // externalFee: 5 bps (Uni V3 0.05% pool)
+            0.8e18,  // captureRate: 80% of net edge (arb side)
             0.3e18   // attractRate: 30% of excess mismatch (attract side)
         );
         console.log("USDC/WETH hook:", address(hook1));
@@ -62,7 +63,8 @@ contract UpgradeHooks is Script {
             5e13,    // baseFee: 0.5 bps
             50e14,   // maxFee: 50 bps
             uint64(9.74e11), // gasCoeff: ~195 bps at 0.4 gwei (small pool, high threshold)
-            0.8e18,  // captureRate: 80% of excess mismatch (arb side)
+            1e14,    // externalFee: 1 bps (Uni V3 0.01% pool)
+            0.8e18,  // captureRate: 80% of net edge (arb side)
             0.3e18   // attractRate: 30% of excess mismatch (attract side)
         );
         console.log("USDC/USDT hook:", address(hook2));

@@ -73,6 +73,7 @@ export default function StrategyPanel({ state }: { state: PoolState }) {
             <Row label="Base fee">{fmtFeeBps(state.hookBaseFee)}</Row>
             <Row label="Max fee">{fmtFeeBps(state.hookMaxFee!)}</Row>
             <Row label="Gas coeff">{state.hookGasCoeff!.toString()}</Row>
+            <Row label="External fee">{fmtFeeBps(state.hookExternalFee!)}</Row>
             <Row label="Capture rate">{(Number(state.hookCaptureRate!) / 1e16).toFixed(1)}%</Row>
             <Row label="Attract rate">{(Number(state.hookAttractRate!) / 1e16).toFixed(1)}%</Row>
           </div>

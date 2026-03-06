@@ -50,7 +50,7 @@ Layers 1+2 are in `contracts/src/LPAgentHook.sol`. Layer 3 is this directory.
 Poll loop (every POLL_INTERVAL seconds):
   1. Read pool snapshot (reserves, dynamic params, oracle price)
   2. Read hook stats (trade count, volume, last trade)
-  3. Read hook fee params (baseFee, mismatchScale, paused)
+  3. Read hook fee params (baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate)
   4. Read vault debt info (pool debt, utilization, borrow rates)
   5. Fetch CowSwap aggregator quote (primary price source for recentering)
   6. Evaluate rules:
@@ -91,8 +91,8 @@ Hardcoded in `config.ts`, not adjustable by Claude:
 |-------|-----|-----|-----------|
 | baseFee | 1 bp | 100 bp | Below 1bp loses money to gas; above 100bp drives away all flow |
 | maxFee | — | 100% | Contract also enforces this; prevents total lockout |
-| mismatchScale | — | 100x | Prevents extreme fee sensitivity to small mismatch |
-| fee ordering | min ≤ base ≤ max | — | Contract reverts on violation; agent validates first |
+| captureRate | — | 200% | Prevents extreme fee sensitivity to mismatch |
+| fee ordering | base ≤ max | — | Contract reverts on violation; agent validates first |
 | concentration | 0.01 | 0.95 | Near-zero is useless; near-1 is constant-sum (infinite IL risk) |
 | equilibrium reserves | >0 | — | Zero reserves would brick the pool |
 | actions/hour | — | 12 | Rate limit covers both reconfigure and setFeeParams |
@@ -160,8 +160,8 @@ When fee adjustments aren't rebalancing fast enough, Claude can recommend an `ex
 The Claude review (`claude.ts`) sends a system message explaining the pool's fee mechanism and strategic principles, then a user message with current pool state. Claude responds with JSON recommendations.
 
 **System prompt includes:**
-- Fee formula: `fee = baseFee ± (mismatchScale × mismatch)`, clamped to `[minFee, maxFee]`
-- What each parameter controls (baseFee, minFee, maxFee, mismatchScale) with typical ranges
+- Fee formula: arb direction `fee = baseFee + captureRate × max(0, mismatch - gasThreshold - baseFee - externalFee)`, clamped to maxFee
+- What each parameter controls (baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate) with typical ranges
 - 6 strategic principles from DYNAMIC_FEES.md:
   1. Profitability = fees − IL (fees linear, IL quadratic)
   2. Undercut the market (baseFee ≈ market_spread/2 − ε)
@@ -174,13 +174,13 @@ The Claude review (`claude.ts`) sends a system message explaining the pool's fee
 
 **Context provided per review:**
 - Reserves, equilibrium, oracle/marginal price, mismatch, concentration
-- Hook fee params (baseFee, minFee, maxFee, mismatchScale, paused)
+- Hook fee params (baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate)
 - Trade stats (count, volume, last trade direction/size)
 - Gas spent today, recent actions
 - CowSwap aggregator quote (bid/ask/spread) when available
 
 **Allowed recommendation types:**
-- `setFeeParams`: update baseFee, minFee, maxFee, mismatchScale (all 4 required)
+- `setFeeParams`: update baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate (all 6 required)
 - `reconfigure`: adjust concentration and/or equilibrium reserves
 - `externalSwap`: sell excess asset on CowSwap, deposit depleted asset back (last resort)
 
@@ -332,7 +332,7 @@ npm start
 cast call $POOL_ADDRESS "getReserves()(uint112,uint112,uint32)" --rpc-url $RPC_URL
 
 # Hook fee params
-cast call $HOOK_ADDRESS "getFeeParams()(uint64,uint64,uint64,uint256,bool)" --rpc-url $RPC_URL
+cast call $HOOK_ADDRESS "getFeeParams()(uint64,uint64,uint64,uint64,uint256,uint256)" --rpc-url $RPC_URL
 
 # Test a small quote (sell 1 USDC for WETH)
 cast call $POOL_ADDRESS "computeQuote(address,address,uint256,bool)(uint256)" \

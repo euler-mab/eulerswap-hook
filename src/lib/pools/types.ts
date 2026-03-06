@@ -49,7 +49,8 @@ export interface PoolState {
   hookBaseFee?: bigint;
   hookMaxFee?: bigint;
   hookGasCoeff?: bigint;       // threshold = gasCoeff × √(tx.gasprice)
-  hookCaptureRate?: bigint;    // WAD: fraction of excess captured on arb side
+  hookExternalFee?: bigint;    // WAD: arber's external cost floor (Uni swap fee)
+  hookCaptureRate?: bigint;    // WAD: fraction of net edge captured on arb side
   hookAttractRate?: bigint;    // WAD: fraction of excess captured on attract side
   // Live fees from hook.getFee (computed at current block with realistic gas price)
   hookLiveFee0In?: bigint; // fee when asset0 is input
@@ -71,6 +72,15 @@ export interface PoolState {
   limit1Out: bigint; // max asset1 that can be bought (when selling asset0)
   limit1In: bigint;  // max asset1 that can be sold
   limit0Out: bigint; // max asset0 that can be bought (when selling asset1)
+
+  // Arb probe (computeQuote-based estimate vs Uniswap)
+  arbProbe?: {
+    direction: string;       // e.g. "buy WETH on ES, sell on Uni"
+    bestProfitUsd: number;   // best net profit after gas (in asset0 ≈ USD)
+    bestTradeUsd: number;    // trade size that yields best profit
+    gasCostUsd: number;      // gas cost in USD
+    edgeBps: number;         // effective edge at optimal size
+  } | null;
 
   // Network
   gasPrice: bigint;

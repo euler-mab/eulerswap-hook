@@ -58,6 +58,7 @@ export interface HookFeeParams {
   baseFee: bigint;
   maxFee: bigint;
   gasCoeff: bigint;
+  externalFee: bigint;
   captureRate: bigint;
   attractRate: bigint;
 }

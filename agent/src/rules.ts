@@ -50,18 +50,17 @@ export function evaluate(
  * Uses CowSwap mid-price as the primary reference (more accurate than Chainlink),
  * falling back to on-chain oracle if CowSwap is unavailable.
  *
- * If the reference price has drifted >5% from pool marginal price, reconfigure:
- *   1. Computes totalValue in asset1-equivalent raw units (preserving pool value)
- *   2. Splits 50/50 to get new equilibriumReserve0 and equilibriumReserve1
- *   3. Updates priceX/priceY — priceX from on-chain oracle (USDC stable),
- *      priceY derived from CowSwap so the AMM curve matches the real market rate
+ * If the reference price has drifted >5% from pool marginal price, reconfigure
+ * with updated priceX/priceY only. Equilibrium and min reserves are NOT changed —
+ * they are set by the boost formula (which accounts for vault leverage constraints)
+ * and should only change when the LP explicitly recomputes the boost.
  *
- * priceX/priceY MUST be updated alongside equilibrium. They define the AMM
- * curve's exchange rate (amountOut ≈ amountIn * priceX / priceY). If equilibrium
- * shifts but prices stay stale, swaps produce near-zero in one direction and
- * drain the pool in the other.
- *
- * Safety: rejects recenters that would change reserves by >3x (stale price guard).
+ * NOTE: The previous 50/50 value split was unsafe for boosted pools. The boost
+ * formula computes asymmetric eq values based on actual vault deposits/debts and
+ * LTVs. Naively redistributing 50/50 can push one side beyond its safe leverage
+ * limit (health < 1 at boundary). A proper recenter that also adjusts eq/min
+ * requires an additive boost reformulation (x0 = xr + boostX) that can handle
+ * arbitrary vault states including depleted deposits. This is being worked on.
  */
 function checkPriceRecenter(
   snapshot: PoolSnapshot,
@@ -98,66 +97,17 @@ function checkPriceRecenter(
     return { name: "priceRecenter", triggered: false, reason: `mismatch within threshold (${priceSource})` };
   }
 
-  // Compute new equilibrium reserves that match the reference price.
-  // totalValue is denominated in asset1 raw units:
-  //   eq0 * refPrice / WAD converts asset0 raw → asset1-equivalent raw
-  const totalValue =
-    snapshot.equilibriumReserve0 * refPrice / WAD +
-    snapshot.equilibriumReserve1;
-
-  // Split 50/50 by value: eq1 = totalValue/2, eq0 = totalValue/(2*refPrice)
-  const newEq1 = totalValue / 2n;
-  const newEq0 = (totalValue * WAD) / (2n * refPrice);
-
-  // Safety: cap change at MAX_RECENTER_CHANGE× in either direction.
-  // Prevents catastrophic recenters from stale/mismatched prices.
-  const eq0 = snapshot.equilibriumReserve0;
-  const eq1 = snapshot.equilibriumReserve1;
-  if (
-    eq0 > 0n && eq1 > 0n &&
-    (newEq0 > eq0 * MAX_RECENTER_CHANGE || newEq0 * MAX_RECENTER_CHANGE < eq0 ||
-     newEq1 > eq1 * MAX_RECENTER_CHANGE || newEq1 * MAX_RECENTER_CHANGE < eq1)
-  ) {
-    return {
-      name: "priceRecenter",
-      triggered: false,
-      reason: `recenter would change reserves by >${MAX_RECENTER_CHANGE}x — ${priceSource} price likely stale, skipping`,
-    };
-  }
-
+  // Update priceX/priceY only — do NOT change equilibrium or min reserves.
   // priceX from on-chain oracle (USDC is stable, Chainlink accurate for stables).
   // priceY derived from CowSwap reference so AMM curve matches real market rate:
-  //   priceX/priceY = refPrice/WAD  →  priceY = (priceX * WAD²) / refPrice
-  //   = oraclePrice0 / refPrice
+  //   priceX/priceY = refPrice/WAD  →  priceY = oraclePrice0 / refPrice
   const newPriceX = snapshot.oraclePrice0 / WAD;
   const newPriceY = snapshot.oraclePrice0 / refPrice;
 
-  // Recompute price boundaries based on the same percentage range width.
-  // Instead of preserving the eq/min ratio (which can drift the absolute range),
-  // compute the current range width as a price ratio, then re-apply it around
-  // the new equilibrium price. This maintains e.g. ±5% range consistently.
-  //
-  // For c=0: pUpper/eqPrice = (eq0/min0)², so rangeRatio = (eq0/min0)²
-  // For c>0: pUpper/eqPrice = cx + (1-cx)*(eq0/min0)²
-  // We preserve this rangeRatio and compute new min from new eq.
   const reconfigParams: Record<string, string> = {
-    equilibriumReserve0: newEq0.toString(),
-    equilibriumReserve1: newEq1.toString(),
     priceX: newPriceX.toString(),
     priceY: newPriceY.toString(),
   };
-
-  if (snapshot.minReserve0 > 0n && snapshot.equilibriumReserve0 > 0n) {
-    // Compute the old eq/min ratio and apply it to the new equilibrium.
-    // This preserves the same percentage range width around the new center.
-    // ratio = oldEq0 / oldMin0 → newMin0 = newEq0 / ratio = newEq0 * oldMin0 / oldEq0
-    const newMin0 = newEq0 * snapshot.minReserve0 / snapshot.equilibriumReserve0;
-    reconfigParams["minReserve0"] = newMin0.toString();
-  }
-  if (snapshot.minReserve1 > 0n && snapshot.equilibriumReserve1 > 0n) {
-    const newMin1 = newEq1 * snapshot.minReserve1 / snapshot.equilibriumReserve1;
-    reconfigParams["minReserve1"] = newMin1.toString();
-  }
 
   return {
     name: "priceRecenter",
@@ -165,7 +115,7 @@ function checkPriceRecenter(
     reason: `mismatch ${formatBps(mismatch)} bps exceeds ${formatBps(RECENTER_THRESHOLD)} bps threshold (${priceSource})`,
     action: {
       type: "reconfigure",
-      reason: `Recenter equilibrium to match ${priceSource} price`,
+      reason: `Update prices to match ${priceSource} (eq/min unchanged — set by boost formula)`,
       params: reconfigParams,
     },
   };
@@ -249,6 +199,7 @@ function checkInterestRateRebalance(
         baseFee: feeParams.baseFee.toString(),
         maxFee: newMaxFee.toString(),
         gasCoeff: feeParams.gasCoeff.toString(),
+        externalFee: feeParams.externalFee.toString(),
         captureRate: feeParams.captureRate.toString(),
         attractRate: feeParams.attractRate.toString(),
       },
@@ -305,11 +256,12 @@ export function isSafe(
     const baseFee = BigInt(rec.params["baseFee"] as string || "0");
     const maxFee = BigInt(rec.params["maxFee"] as string || "0");
     const gasCoeff = BigInt(rec.params["gasCoeff"] as string || "0");
+    const externalFee = BigInt(rec.params["externalFee"] as string || "0");
     const captureRate = BigInt(rec.params["captureRate"] as string || "0");
     const attractRate = BigInt(rec.params["attractRate"] as string || "0");
 
-    if (!rec.params["baseFee"] || !rec.params["maxFee"] || !rec.params["gasCoeff"] || !rec.params["captureRate"] || !rec.params["attractRate"]) {
-      return { safe: false, reason: "setFeeParams requires all 5 params: baseFee, maxFee, gasCoeff, captureRate, attractRate" };
+    if (!rec.params["baseFee"] || !rec.params["maxFee"] || !rec.params["gasCoeff"] || !rec.params["externalFee"] || !rec.params["captureRate"] || !rec.params["attractRate"]) {
+      return { safe: false, reason: "setFeeParams requires all 6 params: baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate" };
     }
 
     if (baseFee < config.minBaseFee || baseFee > config.maxBaseFee) {
@@ -320,6 +272,9 @@ export function isSafe(
     }
     if (gasCoeff > BigInt(1e16)) {
       return { safe: false, reason: `gasCoeff ${gasCoeff} exceeds 1e16 cap` };
+    }
+    if (externalFee > 100n * BPS) {
+      return { safe: false, reason: `externalFee ${externalFee} exceeds 100 bps cap` };
     }
     if (captureRate > 2n * WAD) {
       return { safe: false, reason: `captureRate ${captureRate} exceeds 2x (200%) cap` };

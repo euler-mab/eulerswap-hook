@@ -33,7 +33,7 @@ This is distinct from oracle mismatch fees — it's a **position health** signal
 **Implementation in getFee**: the hook already reads reserves and equilibrium. Add imbalance-aware fee adjustment on top of the existing mismatch-based formula:
 
 ```
-fee = baseFee ± (mismatchScale × mismatch) ± (imbalanceScale × imbalance)
+fee = baseFee + captureRate × max(0, mismatch - gasThreshold - baseFee - externalFee)
 ```
 
 Where `imbalance = |reserve0 - eq0| / eq0` (or equivalent for asset1).

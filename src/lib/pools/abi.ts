@@ -108,6 +108,19 @@ export const eulerSwapAbi = [
       { name: "limitOut", type: "uint256" },
     ],
   },
+  // computeQuote — actual swap quote including hook fees and price impact
+  {
+    name: "computeQuote",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "tokenIn", type: "address" },
+      { name: "tokenOut", type: "address" },
+      { name: "amount", type: "uint256" },
+      { name: "exactIn", type: "bool" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
 ] as const;
 
 export const evaultAbi = [
@@ -223,6 +236,7 @@ export const hookAbi = [
       { name: "_baseFee", type: "uint64" },
       { name: "_maxFee", type: "uint64" },
       { name: "_gasCoeff", type: "uint64" },
+      { name: "_externalFee", type: "uint64" },
       { name: "_captureRate", type: "uint256" },
       { name: "_attractRate", type: "uint256" },
     ],

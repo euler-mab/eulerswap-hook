@@ -183,7 +183,8 @@ contract DeployUsdcUsdt is Script {
             5e13,   // baseFee: 0.5 bps
             50e14,  // maxFee: 50 bps
             uint64(9.74e11), // gasCoeff: ~195 bps at 0.4 gwei (small pool)
-            0.8e18, // captureRate: 80% (arb side)
+            1e14,   // externalFee: 1 bps (Uni V3 0.01% pool)
+            0.8e18, // captureRate: 80% of net edge (arb side)
             0.3e18  // attractRate: 30% (attract side)
         );
         console.log("Hook deployed at:", address(hook));

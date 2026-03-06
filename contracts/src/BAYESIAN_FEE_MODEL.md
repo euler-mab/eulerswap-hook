@@ -32,17 +32,24 @@ Additionally, the counter-direction (attract side) always paid baseFee, leaving 
 ```
 effectiveThreshold = gasCoeff × √(tx.gasprice)
 mismatch = |uniswapPrice − marginalPrice| / uniswapPrice
-excess = max(mismatch − effectiveThreshold, 0)
 
-Arb direction:     fee = baseFee + captureRate × excess
-Attract direction:  fee = baseFee + attractRate × excess
+Arb direction:
+  netEdge = max(mismatch − effectiveThreshold − baseFee − externalFee, 0)
+  fee = baseFee + captureRate × netEdge
+  Arber keeps exactly (1 − captureRate) × netEdge as profit.
+
+Attract direction:
+  excess = max(mismatch − effectiveThreshold, 0)
+  fee = baseFee + attractRate × excess
+
 Both clamped to [baseFee, maxFee]
 ```
 
-- **Below threshold**: all swaps pay `baseFee` (likely retail)
-- **Above threshold, arb direction**: elevated fee captures LVR
+- **Below cost floor**: all swaps pay `baseFee` (likely retail)
+- **Above cost floor, arb direction**: elevated fee captures LVR while ensuring arbers keep (1−captureRate) of net edge
 - **Above threshold, attract direction**: modest fee captures routing advantage
 - Gas threshold adapts automatically to current gas prices
+- `externalFee` accounts for the arber's Uni swap fee (e.g. 5 bps for 0.05% pool)
 
 ## Parameters
 
@@ -76,11 +83,19 @@ The agent updates `gasCoeff` when pool depth changes (via reconfigs). Gas price 
 
 ### `captureRate` (uint256, WAD-scaled)
 
-Fraction of excess mismatch to capture on the **arb side**. Default: 0.8e18 (80%).
+Fraction of **net exploitable edge** to capture on the **arb side**. Default: 0.8e18 (80%).
 
-- 80% capture leaves 20% for the arber as incentive to execute
+Net edge = mismatch − gasThreshold − baseFee − externalFee. This is the arber's actual profit margin after all costs. `captureRate` captures a fraction of this net edge, leaving the rest as arber incentive.
+
+- 80% capture leaves 20% of net edge for the arber as incentive to execute
 - Higher values extract more LVR but reduce arb flow (worse price tracking)
 - Lower values are more competitive but leave more LVR on the table
+
+### `externalFee` (uint64, WAD-scaled)
+
+The arber's external cost floor — typically the Uni V3 swap fee tier they must pay on the other leg. E.g., `5e14` = 5 bps for the 0.05% USDC/WETH pool, `1e14` = 1 bps for the 0.01% USDC/USDT pool.
+
+This is subtracted (along with gasThreshold and baseFee) before applying captureRate, ensuring the arber's net profit remains positive.
 
 ### `attractRate` (uint256, WAD-scaled)
 
@@ -103,16 +118,19 @@ Hard ceiling. Prevents extreme fees during volatility spikes.
 
 ## Example: USDC/WETH Pool
 
-With `baseFee = 5 bps`, `gasCoeff = 1.22e11` (≈24 bps at 0.4 gwei), `captureRate = 0.8`, `attractRate = 0.3`:
+With `baseFee = 5 bps`, `gasCoeff = 1.22e11` (≈24 bps at 0.4 gwei), `captureRate = 0.8`, `attractRate = 0.3`, `externalFee = 5 bps`:
 
-| Mismatch | Arb fee | Attract fee | Type |
-|----------|---------|-------------|------|
-| 0.01%    | 5 bps   | 5 bps       | Below threshold |
-| 0.1%     | 5 bps   | 5 bps       | Below threshold |
-| 0.25%    | 5 bps   | 5 bps       | Borderline |
-| 0.5%     | 25 bps  | 12.5 bps    | Above threshold |
-| 1.0%     | 65 bps  | 27.5 bps    | Above threshold |
-| 2.0%     | 145 bps | 57.5 bps    | Above threshold |
+Arb side: `fee = 5 + 0.8 × max(0, mismatch − 24 − 5 − 5)` = `5 + 0.8 × max(0, mismatch − 34)`
+Attract side: `fee = 5 + 0.3 × max(0, mismatch − 24)`
+
+| Mismatch | Arb fee  | Attract fee | Type |
+|----------|----------|-------------|------|
+| 0.01%    | 5 bps    | 5 bps       | Below threshold |
+| 0.1%     | 5 bps    | 5 bps       | Below threshold |
+| 0.25%    | 5 bps    | 5 bps       | Borderline |
+| 0.5%     | 17.8 bps | 12.8 bps    | Above threshold |
+| 1.0%     | 57.8 bps | 27.8 bps    | Above threshold |
+| 2.0%     | 138 bps  | 57.8 bps    | Above threshold |
 
 At 10 gwei (threshold ≈ 124 bps), even 1% mismatch falls below threshold → all pay baseFee.
 
@@ -122,5 +140,6 @@ See `LPAgentHook.sol`. The hook:
 1. Reads Uniswap V3 `slot0` for the market reference price
 2. Computes `effectiveThreshold = gasCoeff × √(tx.gasprice)` — adapts to gas costs
 3. Computes mismatch between Uniswap and the curve's marginal price
-4. Applies `captureRate` on arb direction, `attractRate` on attract direction
-5. Clamps result to `[baseFee, maxFee]`
+4. **Arb direction**: subtracts all arber costs (gasThreshold + baseFee + externalFee) to get net edge, then applies `captureRate`
+5. **Attract direction**: subtracts gasThreshold to get excess, then applies `attractRate`
+6. Clamps result to `[baseFee, maxFee]`

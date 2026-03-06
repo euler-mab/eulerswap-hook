@@ -145,7 +145,7 @@ Both values end up in the same units (asset1-native-per-asset0-native scaled by 
 
 ### Fee parameters — always WAD scale
 
-Fees (`fee0`, `fee1`, `baseFee`, `maxFee`, `minFee`) are always in WAD (1e18) scale regardless of token decimals:
+Fees (`fee0`, `fee1`, `baseFee`, `maxFee`, `externalFee`) are always in WAD (1e18) scale regardless of token decimals:
 - 1 basis point = `1e14`
 - 30 bps = `0.003e18` = `3e15`
 - 100% = `1e18` (rejected by swap — `SwapRejected()`)
@@ -338,7 +338,7 @@ function afterSwap(
 
 Key insight: the afterSwap hook fires with the pool **unlocked**, so the hook can call `reconfigure()` directly (no EVC routing needed). This is how you build continuous releverage without external keepers.
 
-### Dynamic Fee Strategy (LPAgentHook — Bayesian Gas-Threshold Model)
+### Dynamic Fee Strategy (LPAgentHook — Dynamic Gas Threshold + Attract-Side Fee)
 
 See `contracts/src/LPAgentHook.sol` for the deployed implementation.
 See `contracts/src/BAYESIAN_FEE_MODEL.md` for the full model derivation.
@@ -347,15 +347,26 @@ See `contracts/src/BAYESIAN_FEE_MODEL.md` for the full model derivation.
 
 **Fee formula:**
 ```
+effectiveThreshold = gasCoeff × √(tx.gasprice)
 mismatch = |uniswapPrice − marginalPrice| / uniswapPrice
-fee = baseFee + captureRate × max(mismatch − gasThreshold, 0)
+
+Arb direction:
+  netEdge = max(mismatch − effectiveThreshold − baseFee − externalFee, 0)
+  fee = baseFee + captureRate × netEdge   (capped at maxFee)
+  Arber keeps exactly (1 − captureRate) × netEdge as profit.
+
+Attract direction:
+  excess = max(mismatch − effectiveThreshold, 0)
+  fee = baseFee + attractRate × excess   (capped at maxFee)
 ```
 
-- `gasThreshold` (WAD): minimum mismatch for profitable arb (the "no-arb zone")
-- `captureRate` (WAD): fraction of excess mismatch to capture (e.g. 0.8e18 = 80%)
-- Below gasThreshold → all swaps pay baseFee (likely retail)
-- Above gasThreshold, arb direction → elevated fee captures LVR
-- Counter-direction → always baseFee
+- `gasCoeff` (uint64): scales gas price into a dynamic threshold. Formula: `gasCoeff = 2e18 × √(swapGas × 2 / eqReserveWei)`. Pool-depth-dependent, NOT gas-price-dependent.
+- `externalFee` (uint64, WAD): arber's external cost floor — the Uni swap fee tier used for rebalancing (e.g. 5e14 = 5 bps for Uni V3 0.05%)
+- `captureRate` (uint256, WAD): fraction of NET exploitable edge to capture on arb side (e.g. 0.8e18 = 80%). Net edge = mismatch minus all arber costs (gas + baseFee + externalFee).
+- `attractRate` (uint256, WAD): fraction of excess mismatch to charge on attract side (e.g. 0.3e18 = 30%)
+- Below cost floor → all swaps pay baseFee (likely retail)
+- Above cost floor, arb direction → elevated fee captures LVR while leaving arber with (1-captureRate) × netEdge
+- Above threshold, attract direction → moderately elevated fee (still cheaper than Uniswap for trader)
 
 ```solidity
 function getFee(bool asset0IsInput, uint112 reserve0, uint112 reserve1, bool)
@@ -363,13 +374,22 @@ function getFee(bool asset0IsInput, uint112 reserve0, uint112 reserve1, bool)
 {
     uint256 computedFee = uint256(baseFee);
 
-    if (captureRate > 0) {
+    if (captureRate > 0 || attractRate > 0) {
         uint256 uniPrice = _getUniswapPrice();       // Uniswap V3 slot0
         uint256 marginalPrice = _getMarginalPrice(reserve0, reserve1);
-        uint256 mismatch = |uniPrice - marginalPrice| / uniPrice;
+        uint256 mismatch = abs(uniPrice - marginalPrice) * WAD / uniPrice;
+        uint256 effectiveThreshold = uint256(gasCoeff) * tx.gasprice.sqrt();
 
-        if (isArbDirection && mismatch > uint256(gasThreshold)) {
-            computedFee += (captureRate * (mismatch - uint256(gasThreshold))) / WAD;
+        if (isArbDirection && captureRate > 0) {
+            // Net edge = mismatch - gasCost - baseFee - externalFee
+            uint256 totalCost = effectiveThreshold + baseFee + externalFee;
+            if (mismatch > totalCost) {
+                computedFee += (captureRate * (mismatch - totalCost)) / WAD;
+            }
+        } else if (!isArbDirection && attractRate > 0) {
+            if (mismatch > effectiveThreshold) {
+                computedFee += (attractRate * (mismatch - effectiveThreshold)) / WAD;
+            }
         }
     }
 
@@ -378,11 +398,22 @@ function getFee(bool asset0IsInput, uint112 reserve0, uint112 reserve1, bool)
 }
 ```
 
-**Parameters** (setFeeParams — all 4 required):
-- `baseFee` (uint64): resting fee. Typical: 5-50 bps.
-- `maxFee` (uint64): hard ceiling. Typical: 50-3500 bps.
-- `gasThreshold` (uint64): no-arb zone width. Typical: 5-50 bps.
-- `captureRate` (uint256): capture fraction. Typical: 0.5-1.0 (WAD-scaled).
+**Constructor** (9 params):
+```solidity
+LPAgentHook(pool, owner, uniswapPool, baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate)
+```
+
+**Parameters** (setFeeParams — all 6 required):
+- `baseFee` (uint64): resting fee. Typical: 0.5-5 bps (5e13-5e14).
+- `maxFee` (uint64): hard ceiling. Typical: 50-3500 bps (50e14-3500e14).
+- `gasCoeff` (uint64): dynamic threshold scaler. Typical: 1.22e11 (USDC/WETH), 9.74e11 (USDC/USDT).
+- `externalFee` (uint64): arber's external cost floor (Uni swap fee). Typical: 5e14 (5 bps for 0.05% pool), 1e14 (1 bps for 0.01% pool).
+- `captureRate` (uint256): arb-side capture of net edge. Typical: 0.8e18 (80%).
+- `attractRate` (uint256): attract-side capture fraction. Typical: 0.3e18 (30%).
+
+**gasCoeff examples:**
+- USDC/WETH (eq~80 WETH): 1.22e11 → ~25 bps at 0.4 gwei, ~122 bps at 10 gwei
+- USDC/USDT (eq~1.26 ETH): 9.74e11 → ~195 bps at 0.4 gwei (high threshold for tiny pool)
 
 ## Leverage via Euler Vaults
 
@@ -813,8 +844,8 @@ address pool = factory.deployPool(
 );
 
 // 2. Deploy hook — constructor reads pool.getStaticParams()
-//    captureRate is uint256 (not uint64) — WAD-scaled values like 0.8e18 overflow uint64
-LPAgentHook hook = new LPAgentHook(pool, owner, uniswapPool, baseFee, maxFee, gasThreshold, captureRate);
+//    captureRate/attractRate are uint256 (not uint64) — WAD-scaled values like 0.8e18 overflow uint64
+LPAgentHook hook = new LPAgentHook(pool, owner, uniswapPool, baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate);
 
 // 3. Reconfigure pool to install hook (must go through EVC)
 DynamicParams memory dp = IEulerSwap(pool).getDynamicParams();

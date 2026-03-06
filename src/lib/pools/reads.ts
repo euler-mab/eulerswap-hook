@@ -167,6 +167,94 @@ export async function fetchPoolState(
     }
   }
 
+  // ─── Arb probe: use computeQuote for realistic arb estimate ───
+  const WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+  const ARB_GAS = 350_000n;
+  let arbProbe: PoolState["arbProbe"] = undefined;
+
+  if (uniswapPrice && uniswapPrice > 0 && marginalPrice > 0) {
+    const esOverpriced = marginalPrice > uniswapPrice;
+
+    // ETH price in USD (for gas cost conversion)
+    const a0Lower = asset0.toLowerCase();
+    const a1Lower = asset1.toLowerCase();
+    // uniswapPrice is asset1/asset0. For USDC/WETH: ~0.0005 WETH/USDC → 1 WETH = 1/0.0005 = 2000 USDC
+    const ethPriceUsd = a1Lower === WETH ? 1 / uniswapPrice
+      : a0Lower === WETH ? uniswapPrice : undefined;
+    const gasCostUsd = ethPriceUsd ? (Number(gasPrice_ * ARB_GAS) / 1e18) * ethPriceUsd : 0;
+
+    // Max tradeable amount of asset1 in the arb direction
+    const maxAsset1 = esOverpriced
+      ? (limits0to1 ? (limits0to1[1] as bigint) : 0n)  // max WETH out when buying
+      : (limits1to0 ? (limits1to0[0] as bigint) : 0n); // max WETH in when selling
+
+    const arbToken = meta1.symbol;
+    const arbRoute = esOverpriced
+      ? `buy ${arbToken} on ES, sell on Uni`
+      : `sell ${arbToken} on ES, buy on Uni`;
+
+    if (maxAsset1 > 0n) {
+      const probePcts = [5n, 10n, 25n, 50n, 100n];
+      const probeResults = await Promise.all(
+        probePcts.map(async (pct) => {
+          const tradeAmount = (maxAsset1 * pct) / 100n;
+          if (tradeAmount === 0n) return null;
+          try {
+            if (esOverpriced) {
+              // Buy asset1 from ES: computeQuote(asset0, asset1, tradeAmount, exactIn=false) → asset0 cost
+              const cost = await readContractWithGasPrice(
+                client, pool.address, eulerSwapAbi, "computeQuote",
+                [asset0, asset1, tradeAmount, false], gasPrice_,
+              ) as bigint;
+              const asset1Human = Number(formatUnits(tradeAmount, meta1.decimals));
+              const costHuman = Number(formatUnits(cost, meta0.decimals));
+              // Revenue from selling asset1 on Uni: asset1_amount / uniswapPrice (in asset0 terms)
+              const revenue = asset1Human / uniswapPrice;
+              return { profit: revenue - costHuman - gasCostUsd, tradeUsd: revenue };
+            } else {
+              // Sell asset1 to ES: computeQuote(asset1, asset0, tradeAmount, exactIn=true) → asset0 received
+              const received = await readContractWithGasPrice(
+                client, pool.address, eulerSwapAbi, "computeQuote",
+                [asset1, asset0, tradeAmount, true], gasPrice_,
+              ) as bigint;
+              const asset1Human = Number(formatUnits(tradeAmount, meta1.decimals));
+              const receivedHuman = Number(formatUnits(received, meta0.decimals));
+              // Cost to buy asset1 on Uni: asset1_amount / uniswapPrice (in asset0 terms)
+              const cost = asset1Human / uniswapPrice;
+              return { profit: receivedHuman - cost - gasCostUsd, tradeUsd: cost };
+            }
+          } catch {
+            return null; // computeQuote reverted (exceeds pool capacity)
+          }
+        }),
+      );
+
+      let bestProfit = -Infinity;
+      let bestTrade = 0;
+      for (const r of probeResults) {
+        if (r && r.profit > bestProfit) {
+          bestProfit = r.profit;
+          bestTrade = r.tradeUsd;
+        }
+      }
+
+      if (bestProfit > -Infinity) {
+        const grossEdge = bestTrade > 0 ? ((bestProfit + gasCostUsd) / bestTrade) * 10000 : 0;
+        arbProbe = {
+          direction: arbRoute,
+          bestProfitUsd: bestProfit,
+          bestTradeUsd: bestTrade,
+          gasCostUsd,
+          edgeBps: grossEdge,
+        };
+      }
+    }
+
+    if (!arbProbe) {
+      arbProbe = { direction: arbRoute, bestProfitUsd: 0, bestTradeUsd: 0, gasCostUsd, edgeBps: 0 };
+    }
+  }
+
   return {
     reserve0: reserves[0], reserve1: reserves[1], status: Number(reserves[2]),
     asset0, asset1,
@@ -192,8 +280,9 @@ export async function fetchPoolState(
     hookBaseFee: feeParams ? feeParams[0] : undefined,
     hookMaxFee: feeParams ? feeParams[1] : undefined,
     hookGasCoeff: feeParams ? feeParams[2] : undefined,
-    hookCaptureRate: feeParams ? feeParams[3] : undefined,
-    hookAttractRate: feeParams ? feeParams[4] : undefined,
+    hookExternalFee: feeParams ? feeParams[3] : undefined,
+    hookCaptureRate: feeParams ? feeParams[4] : undefined,
+    hookAttractRate: feeParams ? feeParams[5] : undefined,
     hookLiveFee0In: liveFee0In ?? undefined,
     hookLiveFee1In: liveFee1In ?? undefined,
     // Wallet
@@ -205,6 +294,8 @@ export async function fetchPoolState(
     limit1Out: limits0to1 ? (limits0to1[1] as bigint) : 0n,
     limit1In: limits1to0 ? (limits1to0[0] as bigint) : 0n,
     limit0Out: limits1to0 ? (limits1to0[1] as bigint) : 0n,
+    // Arb probe
+    arbProbe,
     // Network
     gasPrice: gasPrice_,
     // Meta

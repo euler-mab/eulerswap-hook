@@ -56,11 +56,12 @@ contract LPAgentHook is IEulerSwapHookTarget {
     uint64 public baseFee; // base fee in WAD (e.g. 5e14 = 5bps)
     uint64 public maxFee; // maximum fee cap
     uint64 public gasCoeff; // threshold = gasCoeff × √(tx.gasprice). Encodes pool depth + swap gas.
-    uint256 public captureRate; // WAD: fraction of excess mismatch to capture on arb side (e.g. 0.8e18)
+    uint64 public externalFee; // WAD: arber's external cost floor (Uni swap fee, e.g. 5e14 = 5bps)
+    uint256 public captureRate; // WAD: fraction of net exploitable edge to capture on arb side (e.g. 0.8e18)
     uint256 public attractRate; // WAD: fraction of excess mismatch to capture on attract side (e.g. 0.3e18)
 
     // --- Events ---
-    event FeeParamsUpdated(uint64 baseFee, uint64 maxFee, uint64 gasCoeff, uint256 captureRate, uint256 attractRate);
+    event FeeParamsUpdated(uint64 baseFee, uint64 maxFee, uint64 gasCoeff, uint64 externalFee, uint256 captureRate, uint256 attractRate);
 
     // --- Errors ---
     error Unauthorized();
@@ -83,6 +84,7 @@ contract LPAgentHook is IEulerSwapHookTarget {
         uint64 _baseFee,
         uint64 _maxFee,
         uint64 _gasCoeff,
+        uint64 _externalFee,
         uint256 _captureRate,
         uint256 _attractRate
     ) {
@@ -92,6 +94,7 @@ contract LPAgentHook is IEulerSwapHookTarget {
         baseFee = _baseFee;
         maxFee = _maxFee;
         gasCoeff = _gasCoeff;
+        externalFee = _externalFee;
         captureRate = _captureRate;
         attractRate = _attractRate;
 
@@ -118,10 +121,15 @@ contract LPAgentHook is IEulerSwapHookTarget {
     /// Computes a dynamic gas threshold from tx.gasprice: threshold = gasCoeff × √(tx.gasprice).
     /// This automatically adapts the no-arb zone to current gas costs.
     ///
-    /// Above threshold:
-    ///   - Arb direction: baseFee + captureRate × excess (captures LVR)
-    ///   - Attract direction: baseFee + attractRate × excess (captures routing advantage)
-    /// Below threshold: all swaps pay baseFee.
+    /// Arb direction:
+    ///   netEdge = mismatch - gasThreshold - baseFee - externalFee
+    ///   fee = baseFee + captureRate × netEdge
+    ///   Arber keeps exactly (1 - captureRate) × netEdge as profit.
+    ///
+    /// Attract direction:
+    ///   fee = baseFee + attractRate × (mismatch - gasThreshold)
+    ///
+    /// Below cost floor: all swaps pay baseFee.
     ///
     /// @param asset0IsInput True if asset0 is being sent to the pool
     /// @param reserve0 Current reserve of asset0
@@ -159,11 +167,19 @@ contract LPAgentHook is IEulerSwapHookTarget {
                 // Dynamic gas threshold: scales with √(tx.gasprice)
                 uint256 effectiveThreshold = uint256(gasCoeff) * tx.gasprice.sqrt();
 
-                if (mismatch > effectiveThreshold) {
-                    uint256 excess = mismatch - effectiveThreshold;
-                    if (isArbDirection) {
-                        computedFee += (_captureRate * excess) / WAD;
-                    } else if (_attractRate > 0) {
+                if (isArbDirection && _captureRate > 0) {
+                    // Arb direction: capture fraction of NET exploitable edge.
+                    // Net edge = mismatch - gasCost - baseFee - externalFee (Uni swap fee).
+                    // Arber keeps (1 - captureRate) × netEdge as profit.
+                    uint256 totalCost = effectiveThreshold + uint256(baseFee) + uint256(externalFee);
+                    if (mismatch > totalCost) {
+                        uint256 netEdge = mismatch - totalCost;
+                        computedFee += (_captureRate * netEdge) / WAD;
+                    }
+                } else if (!isArbDirection && _attractRate > 0) {
+                    // Attract direction: capture fraction of mismatch above gas threshold
+                    if (mismatch > effectiveThreshold) {
+                        uint256 excess = mismatch - effectiveThreshold;
                         computedFee += (_attractRate * excess) / WAD;
                     }
                 }
@@ -187,7 +203,7 @@ contract LPAgentHook is IEulerSwapHookTarget {
 
     // --- Owner management ---
 
-    function setFeeParams(uint64 _baseFee, uint64 _maxFee, uint64 _gasCoeff, uint256 _captureRate, uint256 _attractRate)
+    function setFeeParams(uint64 _baseFee, uint64 _maxFee, uint64 _gasCoeff, uint64 _externalFee, uint256 _captureRate, uint256 _attractRate)
         external
         onlyOwner
     {
@@ -197,10 +213,11 @@ contract LPAgentHook is IEulerSwapHookTarget {
         baseFee = _baseFee;
         maxFee = _maxFee;
         gasCoeff = _gasCoeff;
+        externalFee = _externalFee;
         captureRate = _captureRate;
         attractRate = _attractRate;
 
-        emit FeeParamsUpdated(_baseFee, _maxFee, _gasCoeff, _captureRate, _attractRate);
+        emit FeeParamsUpdated(_baseFee, _maxFee, _gasCoeff, _externalFee, _captureRate, _attractRate);
     }
 
     // --- Internal ---
@@ -270,8 +287,8 @@ contract LPAgentHook is IEulerSwapHookTarget {
     function getFeeParams()
         external
         view
-        returns (uint64 _baseFee, uint64 _maxFee, uint64 _gasCoeff, uint256 _captureRate, uint256 _attractRate)
+        returns (uint64 _baseFee, uint64 _maxFee, uint64 _gasCoeff, uint64 _externalFee, uint256 _captureRate, uint256 _attractRate)
     {
-        return (baseFee, maxFee, gasCoeff, captureRate, attractRate);
+        return (baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate);
     }
 }

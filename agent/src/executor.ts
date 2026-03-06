@@ -26,12 +26,23 @@ export async function execute(
 
   switch (action.type) {
     case "reconfigure": {
-      // Read current dynamic params, merge with action params
-      const currentDParams = await publicClient.readContract({
-        address: config.poolAddress,
-        abi: eulerSwapAbi,
-        functionName: "getDynamicParams",
-      });
+      // Read current dynamic params and reserves, merge with action params
+      const [currentDParams, currentReserves] = await Promise.all([
+        publicClient.readContract({
+          address: config.poolAddress,
+          abi: eulerSwapAbi,
+          functionName: "getDynamicParams",
+        }),
+        publicClient.readContract({
+          address: config.poolAddress,
+          abi: eulerSwapAbi,
+          functionName: "getReserves",
+        }),
+      ]);
+
+      const eqChanged =
+        action.params["equilibriumReserve0"] !== undefined ||
+        action.params["equilibriumReserve1"] !== undefined;
 
       const newDParams = {
         ...currentDParams,
@@ -61,10 +72,17 @@ export async function execute(
           : currentDParams.concentrationY,
       };
 
-      const initialState = {
-        reserve0: newDParams.equilibriumReserve0,
-        reserve1: newDParams.equilibriumReserve1,
-      };
+      // When eq changes (boost recompute), reset to new eq.
+      // When only prices change, preserve current pool position.
+      const initialState = eqChanged
+        ? {
+            reserve0: newDParams.equilibriumReserve0,
+            reserve1: newDParams.equilibriumReserve1,
+          }
+        : {
+            reserve0: currentReserves[0],
+            reserve1: currentReserves[1],
+          };
 
       // Must route through EVC — direct calls revert with EVC_NotAuthorized
       const reconfigureData = encodeFunctionData({
@@ -95,6 +113,7 @@ export async function execute(
           BigInt(action.params["baseFee"] as string),
           BigInt(action.params["maxFee"] as string),
           BigInt(action.params["gasCoeff"] as string),
+          BigInt(action.params["externalFee"] as string),
           BigInt(action.params["captureRate"] as string),
           BigInt(action.params["attractRate"] as string),
         ],

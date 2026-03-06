@@ -132,16 +132,11 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
       {pnl && pnl.swapCount > 0 && (
         <Row label="Volume">
           <span className="text-xs">
-            {pnl.swapCount} swaps
-            <span className="text-gray-400 ml-2">
-              {fmtVol(pnl.volume0)} {state.asset0Symbol} + {fmtVol(pnl.volume1)} {state.asset1Symbol}
+            <span className="text-gray-700">{fmtUsd(pnl.volumeUsd)}</span>
+            <span className="text-gray-400 ml-1.5">
+              ({pnl.swapCount} swaps, {fmtVol(pnl.volume0)} {state.asset0Symbol} + {fmtVol(pnl.volume1)} {state.asset1Symbol}
+              {pnl.navUsd > 0 && `, ${(pnl.volumeUsd / pnl.navUsd).toFixed(1)}x NAV`})
             </span>
-            <span className="text-gray-500 ml-2">{fmtUsd(pnl.volumeUsd)}</span>
-            {pnl.navUsd > 0 && (
-              <span className="text-gray-400 ml-2">
-                ({(pnl.volumeUsd / pnl.navUsd).toFixed(1)}x NAV)
-              </span>
-            )}
           </span>
         </Row>
       )}
@@ -209,92 +204,25 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
         </Row>
       )}
 
-      {/* Arb estimate (Uniswap ↔ EulerSwap) */}
-      {state.uniswapPrice !== undefined && state.uniswapPrice > 0 && state.marginalPrice > 0 && pnl && (() => {
-        const WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
-        const ARB_GAS = 350_000n;
-
-        // Price mismatch: positive = EulerSwap marginal > Uniswap (in asset1/asset0)
-        const mismatchPct = (state.marginalPrice / state.uniswapPrice - 1);
-        const absMismatch = Math.abs(mismatchPct);
-
-        // Fee in the arb direction
-        // esOverpriced: marginal(WETH/USDC) > uni → WETH cheap on ES → buy WETH → USDC in → hookLiveFee0In
-        // !esOverpriced: WETH expensive on ES → sell WETH → WETH in → hookLiveFee1In
-        const esOverpriced = mismatchPct > 0;
-        const eulerFeeWad = esOverpriced ? state.hookLiveFee0In : state.hookLiveFee1In;
-        const eulerFeePct = eulerFeeWad ? Number(eulerFeeWad) / 1e18 : Number(esOverpriced ? state.fee0 : state.fee1) / 1e18;
-        const uniFeePct = (pool.uniswapFeeBps ?? 5) / 10000;
-        const netEdgePct = absMismatch - eulerFeePct - uniFeePct;
-
-        // Gas cost in USD (need ETH price)
-        const a0Lower = state.asset0.toLowerCase();
-        const a1Lower = state.asset1.toLowerCase();
-        const ethPriceUsd = a1Lower === WETH ? pnl.currentPrices.asset1
-          : a0Lower === WETH ? pnl.currentPrices.asset0 : undefined;
-        const gasCostEth = Number(state.gasPrice * ARB_GAS) / 1e18;
-        const gasCostUsd = ethPriceUsd ? gasCostEth * ethPriceUsd : undefined;
+      {/* Arb estimate (computeQuote-based) */}
+      {state.arbProbe && (() => {
+        const { direction, bestProfitUsd, bestTradeUsd, gasCostUsd, edgeBps } = state.arbProbe;
         const gasGwei = Number(state.gasPrice) / 1e9;
-
-        // Max trade from limits (in USD)
-        // esOverpriced → buy WETH → USDC goes in → limited by limit0In
-        // !esOverpriced → sell WETH → WETH goes in → limited by limit1In
-        const maxTradeUsd = esOverpriced
-          ? Number(formatUnits(state.limit0In, state.asset0Decimals)) * pnl.currentPrices.asset0
-          : Number(formatUnits(state.limit1In, state.asset1Decimals)) * pnl.currentPrices.asset1;
-
-        // Edge in bps for display
-        const edgeBps = netEdgePct * 10000;
-        const totalFeeBps = (eulerFeePct + uniFeePct) * 10000;
-
-        // Arb direction label (always in terms of non-quote asset = asset1)
-        // esOverpriced (mismatchPct > 0): more asset1 per asset0 on ES → asset1 cheap → buy on ES
-        // !esOverpriced: asset1 expensive on ES (displayed price higher) → sell on ES
-        const arbToken = state.asset1Symbol;
-        const arbDir = esOverpriced ? "buy" : "sell";
-
-        if (netEdgePct <= 0) {
-          return (
-            <Row label="Arb estimate">
-              <span className="text-xs text-gray-400">
-                no edge ({arbDir} {arbToken} on ES: {(absMismatch * 10000).toFixed(1)} bps mismatch &lt; {totalFeeBps.toFixed(1)} bps fees)
-              </span>
-            </Row>
-          );
-        }
-
-        // Break-even: min trade size where edge profit > gas cost
-        // Profit ≈ netEdgePct × tradeUsd (at marginal, upper bound)
-        const breakEvenUsd = gasCostUsd !== undefined ? gasCostUsd / netEdgePct : undefined;
-
-        // Estimated max profit = edge × maxTrade - gas (upper bound, ignores price impact)
-        const grossProfit = netEdgePct * maxTradeUsd;
-        const netProfit = gasCostUsd !== undefined ? grossProfit - gasCostUsd : undefined;
+        const profitable = bestProfitUsd > 0;
 
         return (
           <Row label="Arb estimate">
             <span className="text-xs">
-              <span className={netProfit !== undefined && netProfit > 0 ? "text-emerald-700" : "text-gray-500"}>
-                {arbDir} {arbToken} on ES: {edgeBps.toFixed(1)} bps edge
+              <span className={`font-medium ${profitable ? "text-emerald-700" : bestTradeUsd > 0 ? "text-red-600" : "text-gray-400"}`}>
+                {bestTradeUsd > 0
+                  ? `${bestProfitUsd >= 0 ? "+" : ""}${fmtUsd(bestProfitUsd)}`
+                  : "no edge"}
               </span>
-              {gasCostUsd !== undefined && (
-                <span className="text-gray-400 ml-2">
-                  gas {fmtUsd(gasCostUsd)} ({gasGwei.toFixed(1)} gwei)
-                </span>
-              )}
-              {breakEvenUsd !== undefined && (
-                <span className="text-gray-400 ml-2">
-                  b/e {fmtUsd(breakEvenUsd)}
-                </span>
-              )}
-              <span className="text-gray-400 ml-2">
-                max {fmtUsd(maxTradeUsd)}
+              <span className="text-gray-400 ml-1.5">
+                ({direction}
+                {bestTradeUsd > 0 && ` — ${edgeBps.toFixed(1)} bps edge, ${fmtUsd(bestTradeUsd)} optimal`}
+                {`, ${fmtUsd(gasCostUsd)} gas @ ${gasGwei.toFixed(3)} gwei`})
               </span>
-              {netProfit !== undefined && (
-                <span className={`ml-2 font-medium ${netProfit > 0 ? "text-emerald-700" : "text-red-600"}`}>
-                  est. {netProfit >= 0 ? "+" : ""}{fmtUsd(netProfit)}
-                </span>
-              )}
             </span>
           </Row>
         );
