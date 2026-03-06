@@ -27,6 +27,40 @@ Additionally, the counter-direction (attract side) always paid baseFee, leaving 
 
 **Routing advantage**: When our price diverges from Uniswap's, traders wanting to trade in the counter-direction get a *better* price from us. We can charge more on this "attract" side and still win routing.
 
+## Why Net Edge, Not Gross Mismatch
+
+The hook must set fees so that arbers *want* to trade. Arb is the only mechanism that rebalances the pool back to market price. If the fee makes arb unprofitable, the pool stays mispriced indefinitely.
+
+An arber's P&L for a mismatch trade:
+
+```
+revenue:  mismatch                     (price difference they capture)
+costs:    gas + baseFee + externalFee  (gas, our fee floor, Uni fee on other leg)
+          + hookSurcharge              (the dynamic component we control)
+
+profit = mismatch − gas − baseFee − externalFee − hookSurcharge
+```
+
+If `hookSurcharge = captureRate × (mismatch − gas)` (the old gross formula), the arber's profit becomes:
+
+```
+profit = mismatch − gas − baseFee − externalFee − captureRate × (mismatch − gas)
+       = (1 − captureRate)(mismatch − gas) − baseFee − externalFee
+```
+
+At captureRate=0.8, baseFee=5bps, externalFee=5bps: arber needs `mismatch − gas > 50 bps` just to break even. A 33 bps mismatch at low gas yields **negative** arber profit — no one trades, pool doesn't rebalance.
+
+The fix: subtract *all* arber costs before applying captureRate:
+
+```
+netEdge = mismatch − gas − baseFee − externalFee
+hookSurcharge = captureRate × netEdge
+
+profit = netEdge − captureRate × netEdge = (1 − captureRate) × netEdge
+```
+
+Now the arber is profitable whenever `netEdge > 0`, regardless of captureRate. The LP captures `captureRate` of the exploitable edge; the arber keeps the rest as incentive. Both sides win.
+
 ## Formula
 
 ```
