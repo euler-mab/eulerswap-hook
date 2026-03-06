@@ -1,5 +1,7 @@
 # Dynamic Fee Model
 
+A deterministic cost model for EulerSwap's `getFee` hook. Despite an earlier "Bayesian" working title, there is no probabilistic inference here — the hook observes Uniswap V3 spot price (a noisy but deterministic signal), computes the arber's cost structure, and sets the fee to capture a fixed fraction of the surplus. The gas threshold adapts to `tx.gasprice`, but that's arithmetic, not Bayesian updating.
+
 ## Problem
 
 The original fee model used a linear `mismatchScale` multiplier:

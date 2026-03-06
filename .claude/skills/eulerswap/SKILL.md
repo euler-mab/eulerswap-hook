@@ -341,7 +341,7 @@ Key insight: the afterSwap hook fires with the pool **unlocked**, so the hook ca
 ### Dynamic Fee Strategy (LPAgentHook — Dynamic Gas Threshold + Attract-Side Fee)
 
 See `contracts/src/LPAgentHook.sol` for the deployed implementation.
-See `contracts/src/BAYESIAN_FEE_MODEL.md` for the full model derivation.
+See `contracts/src/DYNAMIC_FEE_MODEL.md` for the full model derivation.
 
 **Price source:** The hook reads Uniswap V3 `slot0` directly (spot/marginal price, NOT Chainlink or TWAP). This is independent of the Euler vault oracle (which may use Chainlink). The hook stores a `uniswapPool` address and calls `IUniswapV3Pool(uniswapPool).slot0()` to get `sqrtPriceX96`, then converts to a WAD-scaled price.
 
