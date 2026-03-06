@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import type { PoolConfig } from "@/lib/pools/config";
 import { usePoolState, useSwapHistory } from "@/hooks/usePoolData";
+import { usePoolPnl } from "@/hooks/usePoolPnl";
 import { swapsToPricePoints } from "@/lib/pools/format";
 import SectionCard from "@/components/create/SectionCard";
 import PoolOverview from "./PoolOverview";
@@ -18,6 +19,14 @@ export default function PoolDetail({ pool }: { pool: PoolConfig }) {
     if (!state || swaps.length === 0) return [];
     return swapsToPricePoints(swaps, state.asset0Decimals, state.asset1Decimals);
   }, [swaps, state]);
+
+  const { totalFee0, totalFee1 } = useMemo(() => {
+    let f0 = 0n, f1 = 0n;
+    for (const s of swaps) { f0 += s.fee0; f1 += s.fee1; }
+    return { totalFee0: f0, totalFee1: f1 };
+  }, [swaps]);
+
+  const { pnl } = usePoolPnl(pool, state, swaps, historyLoading);
 
   if (stateLoading && !state) {
     return <div className="text-gray-400 animate-pulse text-sm">Loading pool state...</div>;
@@ -49,7 +58,7 @@ export default function PoolDetail({ pool }: { pool: PoolConfig }) {
 
       {/* Overview */}
       <SectionCard title="Overview" defaultOpen>
-        <PoolOverview state={state} pool={pool} />
+        <PoolOverview state={state} pool={pool} totalFee0={totalFee0} totalFee1={totalFee1} pnl={pnl} />
       </SectionCard>
 
       {/* Charts */}

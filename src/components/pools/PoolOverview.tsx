@@ -4,7 +4,8 @@ import { useState } from "react";
 import { formatUnits } from "viem";
 import type { PoolConfig } from "@/lib/pools/config";
 import type { PoolState } from "@/lib/pools/types";
-import { fmtAmount, fmtFeeBps, fmtPrice, shortAddr, timeAgo } from "@/lib/pools/format";
+import type { PnlAttribution } from "@/lib/pools/pnl";
+import { fmtAmount, fmtFeeBps, fmtPrice, fmtUsd, shortAddr, timeAgo } from "@/lib/pools/format";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -25,32 +26,105 @@ function Badge({ ok, label }: { ok: boolean; label: string }) {
   );
 }
 
-export default function PoolOverview({ state, pool }: { state: PoolState; pool: PoolConfig }) {
-  const [inverted, setInverted] = useState(true); // default: show asset0/asset1 (e.g. USDC/WETH)
+interface OverviewProps {
+  state: PoolState;
+  pool: PoolConfig;
+  totalFee0?: bigint;
+  totalFee1?: bigint;
+  pnl?: PnlAttribution | null;
+}
+
+export default function PoolOverview({ state, pool, totalFee0, totalFee1, pnl }: OverviewProps) {
+  const [inverted, setInverted] = useState(true);
   const ethPrice = state.hookOraclePrice
     ? Number(formatUnits(state.hookOraclePrice, 6))
     : undefined;
 
   const r0 = Number(formatUnits(state.reserve0, state.asset0Decimals));
   const r1 = Number(formatUnits(state.reserve1, state.asset1Decimals));
-  const tvl = ethPrice && state.asset0Symbol === "USDC"
-    ? r0 + r1 * ethPrice
-    : ethPrice && state.asset1Symbol === "USDC"
-      ? r0 * ethPrice + r1
-      : undefined;
 
   const agentEth = Number(formatUnits(state.agentEthBalance, 18));
   const agentT0 = Number(formatUnits(state.agentToken0Balance, state.asset0Decimals));
   const agentT1 = Number(formatUnits(state.agentToken1Balance, state.asset1Decimals));
 
+  // TVL uses DeFiLlama prices when available, else oracle
+  const tvl = pnl
+    ? r0 * pnl.currentPrices.asset0 + r1 * pnl.currentPrices.asset1
+    : ethPrice && state.asset0Symbol === "USDC"
+      ? r0 + r1 * ethPrice
+      : ethPrice && state.asset1Symbol === "USDC"
+        ? r0 * ethPrice + r1
+        : undefined;
+
   return (
     <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-2.5 text-sm">
+      {/* NAV + P&L (from DeFiLlama) */}
+      {pnl ? (
+        <>
+          <Row label="NAV">
+            <span className={pnl.navUsd >= 0 ? "text-gray-900 font-medium" : "text-red-700 font-medium"}>
+              {fmtUsd(pnl.navUsd)}
+            </span>
+            <span className={`ml-1.5 text-xs font-medium ${pnl.totalPnl >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+              {pnl.totalPnl >= 0 ? "+" : ""}{fmtUsd(pnl.totalPnl)}
+              {" "}({pnl.returnPct >= 0 ? "+" : ""}{(pnl.returnPct * 100).toFixed(2)}%)
+            </span>
+            <span className="text-gray-400 ml-1 text-xs">
+              (init {fmtUsd(pnl.initialNavUsd)}, {pnl.priceSource})
+            </span>
+          </Row>
+
+          <Row label="P&L breakdown">
+            <span className="text-xs space-x-3">
+              <span className={pnl.feesUsd >= 0 ? "text-emerald-700" : "text-red-700"}>
+                fees {pnl.feesUsd >= 0 ? "+" : ""}{fmtUsd(pnl.feesUsd)}
+              </span>
+              {pnl.hodlDelta !== 0 && (
+                <span className={pnl.hodlDelta >= 0 ? "text-emerald-700" : "text-red-700"}>
+                  price {pnl.hodlDelta >= 0 ? "+" : ""}{fmtUsd(pnl.hodlDelta)}
+                </span>
+              )}
+              <span className={pnl.lpCost >= 0 ? "text-emerald-700" : "text-red-700"}>
+                LP cost {pnl.lpCost >= 0 ? "+" : ""}{fmtUsd(pnl.lpCost)}
+              </span>
+            </span>
+          </Row>
+        </>
+      ) : (
+        /* Fallback: simple NAV from vault positions (no DeFiLlama yet) */
+        <Row label="NAV">
+          {(() => {
+            const dep0 = Number(formatUnits(state.vaultDeposit0, state.asset0Decimals));
+            const dep1 = Number(formatUnits(state.vaultDeposit1, state.asset1Decimals));
+            const dbt0 = Number(formatUnits(state.vaultDebt0, state.asset0Decimals));
+            const dbt1 = Number(formatUnits(state.vaultDebt1, state.asset1Decimals));
+            const a1InA0 = ethPrice ?? (state.marginalPrice > 0 ? 1 / state.marginalPrice : 1);
+            const nav = (dep0 - dbt0) + (dep1 - dbt1) * a1InA0;
+            const isUsd = ["USDC", "USDT", "DAI"].includes(state.asset0Symbol);
+            return (
+              <span className={nav >= 0 ? "text-gray-900 font-medium" : "text-red-700 font-medium"}>
+                {isUsd ? fmtUsd(nav) : `${nav.toFixed(4)} ${state.asset0Symbol}`}
+                <span className="text-gray-400 ml-1 text-xs animate-pulse">loading P&L...</span>
+              </span>
+            );
+          })()}
+        </Row>
+      )}
+
       {/* Reserves */}
       <Row label="Reserves">
         {fmtAmount(state.reserve0, state.asset0Decimals)} {state.asset0Symbol} +{" "}
         {fmtAmount(state.reserve1, state.asset1Decimals)} {state.asset1Symbol}
-        {tvl !== undefined && <span className="text-gray-500 ml-1">(~${tvl.toFixed(2)})</span>}
+        {tvl !== undefined && <span className="text-gray-500 ml-1">(~{fmtUsd(tvl)})</span>}
       </Row>
+
+      {/* Trade limits */}
+      {(state.limit0In > 0n || state.limit1In > 0n) && (
+        <Row label="Trade limits">
+          {fmtAmount(state.limit0In, state.asset0Decimals)} {state.asset0Symbol} in /{" "}
+          {fmtAmount(state.limit1In, state.asset1Decimals)} {state.asset1Symbol} in
+        </Row>
+      )}
 
       {/* Marginal price — click to flip direction */}
       <Row label="Marginal price">
@@ -83,6 +157,18 @@ export default function PoolOverview({ state, pool }: { state: PoolState; pool: 
       {ethPrice !== undefined && (
         <Row label="Oracle price">
           {ethPrice.toFixed(2)} {state.asset0Symbol === "USDC" ? "USDC/WETH" : "USD"}
+        </Row>
+      )}
+
+      {/* DeFiLlama price cross-reference */}
+      {pnl && (
+        <Row label="Market price">
+          <span className="text-xs">
+            {state.asset0Symbol} ${pnl.currentPrices.asset0.toFixed(4)}
+            {" / "}
+            {state.asset1Symbol} ${pnl.currentPrices.asset1.toFixed(2)}
+          </span>
+          <span className="text-gray-400 ml-1 text-xs">(DeFiLlama)</span>
         </Row>
       )}
 

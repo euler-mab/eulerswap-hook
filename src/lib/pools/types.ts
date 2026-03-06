@@ -72,6 +72,12 @@ export interface PoolState {
   vaultDebt0: bigint;
   vaultDebt1: bigint;
 
+  // Trade limits (from getLimits)
+  limit0In: bigint;  // max asset0 that can be sold
+  limit1Out: bigint; // max asset1 that can be bought (when selling asset0)
+  limit1In: bigint;  // max asset1 that can be sold
+  limit0Out: bigint; // max asset0 that can be bought (when selling asset1)
+
   // Metadata
   fetchedAt: number;
   blockNumber: bigint;

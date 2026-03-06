@@ -93,6 +93,10 @@ export async function fetchPoolState(
       : Promise.resolve(null),
     // 13: block timestamp
     client.getBlock({ blockNumber: blockNumber }).then(b => b.timestamp),
+    // 14: getLimits(asset0 → asset1)
+    client.readContract({ address: pool.address, abi: eulerSwapAbi, functionName: "getLimits", args: [asset0, asset1] }),
+    // 15: getLimits(asset1 → asset0)
+    client.readContract({ address: pool.address, abi: eulerSwapAbi, functionName: "getLimits", args: [asset1, asset0] }),
   ]);
 
   const val = <T,>(r: PromiseSettledResult<T>, fallback: T): T =>
@@ -116,6 +120,10 @@ export async function fetchPoolState(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const decayParams = val(results[12], null) as any;
   const blockTimestamp = val(results[13], 0n) as bigint;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const limits0to1 = val(results[14], null) as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const limits1to0 = val(results[15], null) as any;
 
   // Compute marginal price using EulerSwap curve.
   // On-chain priceX/priceY are (USD_price / 10^decimals) * 1e18, so normalise to
@@ -184,6 +192,11 @@ export async function fetchPoolState(
     agentEthBalance, agentToken0Balance, agentToken1Balance,
     // Vault positions
     vaultDeposit0, vaultDeposit1, vaultDebt0, vaultDebt1,
+    // Trade limits
+    limit0In: limits0to1 ? (limits0to1[0] as bigint) : 0n,
+    limit1Out: limits0to1 ? (limits0to1[1] as bigint) : 0n,
+    limit1In: limits1to0 ? (limits1to0[0] as bigint) : 0n,
+    limit0Out: limits1to0 ? (limits1to0[1] as bigint) : 0n,
     // Meta
     fetchedAt: Date.now(), blockNumber, blockTimestamp: Number(blockTimestamp),
   };

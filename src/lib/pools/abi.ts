@@ -94,6 +94,20 @@ export const eulerSwapAbi = [
     ],
     anonymous: false,
   },
+  // getLimits — max tradeable amounts in each direction
+  {
+    name: "getLimits",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "tokenIn", type: "address" },
+      { name: "tokenOut", type: "address" },
+    ],
+    outputs: [
+      { name: "limitIn", type: "uint256" },
+      { name: "limitOut", type: "uint256" },
+    ],
+  },
 ] as const;
 
 export const evaultAbi = [
