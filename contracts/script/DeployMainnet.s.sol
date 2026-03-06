@@ -227,7 +227,7 @@ contract DeployMainnet is Script {
         // Reconfigure pool to install hook
         IEulerSwap.DynamicParams memory dParams = pool.getDynamicParams();
         dParams.swapHook = address(hook);
-        dParams.swapHookedOperations = EULER_SWAP_HOOK_GET_FEE | EULER_SWAP_HOOK_AFTER_SWAP;
+        dParams.swapHookedOperations = EULER_SWAP_HOOK_GET_FEE;
 
         (uint112 r0, uint112 r1,) = pool.getReserves();
 

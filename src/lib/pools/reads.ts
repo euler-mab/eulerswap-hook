@@ -156,7 +156,6 @@ export async function fetchPoolState(
     feeRecipient: staticParams.feeRecipient as Address,
     marginalPrice, equilibriumPrice, isInstalled: installed,
     // Hook
-    hookPaused: feeParams ? feeParams[3] : undefined,
     hookBaseFee: feeParams ? feeParams[0] : undefined,
     hookMaxFee: feeParams ? feeParams[1] : undefined,
     hookMismatchScale: feeParams ? feeParams[2] : undefined,

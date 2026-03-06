@@ -223,7 +223,6 @@ export const hookAbi = [
       { name: "_baseFee", type: "uint64" },
       { name: "_maxFee", type: "uint64" },
       { name: "_mismatchScale", type: "uint256" },
-      { name: "_paused", type: "bool" },
     ],
   },
   {

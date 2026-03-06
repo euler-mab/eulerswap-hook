@@ -94,41 +94,12 @@ export async function execute(
         args: [
           BigInt(action.params["baseFee"] as string),
           BigInt(action.params["maxFee"] as string),
-          BigInt(action.params["minFee"] as string),
           BigInt(action.params["mismatchScale"] as string),
         ],
         account,
         chain: walletClient.chain,
       });
       recordRateLimitedAction();
-      break;
-    }
-
-    case "setDecayParams": {
-      txHash = await walletClient.writeContract({
-        address: config.hookAddress,
-        abi: hookAbi,
-        functionName: "setDecayParams",
-        args: [
-          BigInt(action.params["surcharge"] as string),
-          Number(action.params["period"] as string),
-        ],
-        account,
-        chain: walletClient.chain,
-      });
-      recordRateLimitedAction();
-      break;
-    }
-
-    case "setPaused": {
-      txHash = await walletClient.writeContract({
-        address: config.hookAddress,
-        abi: hookAbi,
-        functionName: "setPaused",
-        args: [action.params["paused"] as boolean],
-        account,
-        chain: walletClient.chain,
-      });
       break;
     }
 

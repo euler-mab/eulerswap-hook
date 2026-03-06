@@ -71,14 +71,8 @@ export default function StrategyPanel({ state }: { state: PoolState }) {
           </h4>
           <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-2.5 text-sm">
             <Row label="Base fee">{fmtFeeBps(state.hookBaseFee)}</Row>
-            <Row label="Min fee">{fmtFeeBps(state.hookMinFee!)}</Row>
             <Row label="Max fee">{fmtFeeBps(state.hookMaxFee!)}</Row>
             <Row label="Mismatch scale">{state.hookMismatchScale!.toString()}</Row>
-            <Row label="Paused">
-              <span className={state.hookPaused ? "text-red-600" : "text-emerald-700"}>
-                {state.hookPaused ? "yes" : "no"}
-              </span>
-            </Row>
           </div>
         </div>
       )}

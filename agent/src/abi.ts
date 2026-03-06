@@ -276,20 +276,6 @@ export const erc20Abi = [
 
 export const hookAbi = [
   {
-    name: "getTradeStats",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [
-      { name: "_tradeCount", type: "uint256" },
-      { name: "_volume0", type: "uint256" },
-      { name: "_volume1", type: "uint256" },
-      { name: "_lastAsset0In", type: "bool" },
-      { name: "_lastSize", type: "uint256" },
-      { name: "_lastBlock", type: "uint256" },
-    ],
-  },
-  {
     name: "getFeeParams",
     type: "function",
     stateMutability: "view",
@@ -297,9 +283,7 @@ export const hookAbi = [
     outputs: [
       { name: "_baseFee", type: "uint64" },
       { name: "_maxFee", type: "uint64" },
-      { name: "_minFee", type: "uint64" },
       { name: "_mismatchScale", type: "uint256" },
-      { name: "_paused", type: "bool" },
     ],
   },
   {
@@ -309,45 +293,9 @@ export const hookAbi = [
     inputs: [
       { name: "_baseFee", type: "uint64" },
       { name: "_maxFee", type: "uint64" },
-      { name: "_minFee", type: "uint64" },
       { name: "_mismatchScale", type: "uint256" },
     ],
     outputs: [],
-  },
-  {
-    name: "setPaused",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "_paused", type: "bool" }],
-    outputs: [],
-  },
-  {
-    name: "oraclePrice",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    name: "setDecayParams",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "_surcharge", type: "uint64" },
-      { name: "_period", type: "uint32" },
-    ],
-    outputs: [],
-  },
-  {
-    name: "getDecayParams",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [
-      { name: "_surcharge", type: "uint64" },
-      { name: "_period", type: "uint32" },
-      { name: "_lastTradeTimestamp", type: "uint256" },
-    ],
   },
 ] as const;
 

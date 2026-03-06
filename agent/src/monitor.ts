@@ -1,5 +1,5 @@
 import type { PublicClient, Address } from "viem";
-import type { AgentConfig, PoolSnapshot, HookStats, HookFeeParams, HookDecayParams, VaultDebtInfo, RegistryInfo } from "./types.js";
+import type { AgentConfig, PoolSnapshot, HookFeeParams, VaultDebtInfo, RegistryInfo } from "./types.js";
 import { eulerSwapAbi, evaultAbi, priceOracleAbi, hookAbi, registryAbi } from "./abi.js";
 import { WAD } from "./types.js";
 
@@ -260,26 +260,6 @@ export async function getPoolSnapshot(
   };
 }
 
-export async function getHookStats(
-  client: PublicClient,
-  config: AgentConfig
-): Promise<HookStats> {
-  const result = await client.readContract({
-    address: config.hookAddress,
-    abi: hookAbi,
-    functionName: "getTradeStats",
-  });
-
-  return {
-    tradeCount: result[0],
-    cumulativeVolume0: result[1],
-    cumulativeVolume1: result[2],
-    lastTradeAsset0In: result[3],
-    lastTradeSize: result[4],
-    lastTradeBlock: result[5],
-  };
-}
-
 export async function getVaultDebtInfo(
   client: PublicClient,
   config: AgentConfig
@@ -413,26 +393,7 @@ export async function getHookFeeParams(
   return {
     baseFee: result[0],
     maxFee: result[1],
-    minFee: result[2],
-    mismatchScale: result[3],
-    paused: result[4],
-  };
-}
-
-export async function getHookDecayParams(
-  client: PublicClient,
-  config: AgentConfig
-): Promise<HookDecayParams> {
-  const result = await client.readContract({
-    address: config.hookAddress,
-    abi: hookAbi,
-    functionName: "getDecayParams",
-  });
-
-  return {
-    surcharge: result[0],
-    period: Number(result[1]),
-    lastTradeTimestamp: Number(result[2]),
+    mismatchScale: result[2],
   };
 }
 

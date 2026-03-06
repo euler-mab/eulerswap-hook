@@ -34,7 +34,6 @@ export function evaluate(
 ): RuleResult[] {
   const results: RuleResult[] = [];
 
-  results.push(checkEmergencyPause(snapshot, feeParams));
   results.push(checkPriceRecenter(snapshot, aggQuote, decimals));
   if (vaultDebt) {
     results.push(checkInterestRateRebalance(snapshot, feeParams, vaultDebt, config));
@@ -181,8 +180,8 @@ function checkPriceRecenter(
  * Severity tiers based on utilization:
  *   < 70% (below kink):  no action
  *   70-85% (near kink):  mild fee asymmetry — widen min/max by 2 bps
- *   85-95% (above kink): strong asymmetry — minFee=1bps, maxFee=3×baseFee
- *   > 95% (critical):    maximum asymmetry — minFee=1bps, maxFee=500bps
+ *   85-95% (above kink): strong asymmetry — maxFee=3×baseFee
+ *   > 95% (critical):    maximum asymmetry — maxFee=500bps
  */
 function checkInterestRateRebalance(
   snapshot: PoolSnapshot,
@@ -208,39 +207,30 @@ function checkInterestRateRebalance(
   }
 
   // Determine severity and compute new fee params
-  let newMinFee: bigint;
   let newMaxFee: bigint;
   let severity: string;
 
   if (worstUtilization >= UTILIZATION_CRITICAL) {
-    // Critical: maximum asymmetry
-    newMinFee = 1n * BPS;        // 1 bps floor
-    newMaxFee = 500n * BPS;      // 500 bps ceiling
+    newMaxFee = 500n * BPS;
     severity = "CRITICAL";
   } else if (worstUtilization >= UTILIZATION_HIGH) {
-    // High: strong asymmetry
-    newMinFee = 1n * BPS;
-    newMaxFee = feeParams.baseFee * 3n;  // 3× baseFee
-    if (newMaxFee < 100n * BPS) newMaxFee = 100n * BPS;  // at least 100 bps
+    newMaxFee = feeParams.baseFee * 3n;
+    if (newMaxFee < 100n * BPS) newMaxFee = 100n * BPS;
     severity = "HIGH";
   } else {
-    // Mild: widen spread by 2 bps each direction
-    newMinFee = feeParams.minFee > 2n * BPS ? feeParams.minFee - 2n * BPS : 1n * BPS;
     newMaxFee = feeParams.maxFee + 2n * BPS;
     severity = "MILD";
   }
 
-  // Enforce ordering: minFee ≤ baseFee ≤ maxFee
-  if (newMinFee > feeParams.baseFee) newMinFee = feeParams.baseFee;
   if (newMaxFee < feeParams.baseFee) newMaxFee = feeParams.baseFee;
-  if (newMaxFee > WAD) newMaxFee = WAD - 1n;  // must be < 100%
+  if (newMaxFee > WAD) newMaxFee = WAD - 1n;
 
-  // Skip if fees are already at or beyond these levels
-  if (feeParams.minFee <= newMinFee && feeParams.maxFee >= newMaxFee) {
+  // Skip if maxFee is already sufficient
+  if (feeParams.maxFee >= newMaxFee) {
     return {
       name: "interestRebalance",
       triggered: false,
-      reason: `${severity}: utilization ${formatPct(worstUtilization)}, but fees already sufficient (min=${formatBps(feeParams.minFee)}bps, max=${formatBps(feeParams.maxFee)}bps)`,
+      reason: `${severity}: utilization ${formatPct(worstUtilization)}, but maxFee already sufficient (${formatBps(feeParams.maxFee)}bps)`,
     };
   }
 
@@ -257,39 +247,11 @@ function checkInterestRateRebalance(
       reason: `Interest rate rebalance (${severity}): widen fee spread to attract rebalancing flow`,
       params: {
         baseFee: feeParams.baseFee.toString(),
-        minFee: newMinFee.toString(),
         maxFee: newMaxFee.toString(),
         mismatchScale: feeParams.mismatchScale.toString(),
       },
     },
   };
-}
-
-/// Rule 3: Emergency pause
-/// If oracle price is zero (stale/broken) and pool is not already paused, pause it.
-function checkEmergencyPause(
-  snapshot: PoolSnapshot,
-  feeParams: HookFeeParams
-): RuleResult {
-  if (feeParams.paused) {
-    return { name: "emergencyPause", triggered: false, reason: "already paused" };
-  }
-
-  // Oracle returning 0 means it's broken or stale
-  if (snapshot.oraclePrice === 0n) {
-    return {
-      name: "emergencyPause",
-      triggered: true,
-      reason: "oracle returned zero — likely stale or misconfigured",
-      action: {
-        type: "setPaused",
-        reason: "Emergency pause: oracle returned zero",
-        params: { paused: true },
-      },
-    };
-  }
-
-  return { name: "emergencyPause", triggered: false, reason: "oracle healthy" };
 }
 
 /// Rule 3: Gas budget check
@@ -340,15 +302,12 @@ export function isSafe(
   if (rec.type === "setFeeParams") {
     const baseFee = BigInt(rec.params["baseFee"] as string || "0");
     const maxFee = BigInt(rec.params["maxFee"] as string || "0");
-    const minFee = BigInt(rec.params["minFee"] as string || "0");
     const mismatchScale = BigInt(rec.params["mismatchScale"] as string || "0");
 
-    // All fee params must be present
-    if (!rec.params["baseFee"] || !rec.params["maxFee"] || !rec.params["minFee"] || !rec.params["mismatchScale"]) {
-      return { safe: false, reason: "setFeeParams requires all 4 params: baseFee, maxFee, minFee, mismatchScale" };
+    if (!rec.params["baseFee"] || !rec.params["maxFee"] || !rec.params["mismatchScale"]) {
+      return { safe: false, reason: "setFeeParams requires all 3 params: baseFee, maxFee, mismatchScale" };
     }
 
-    // Bounds checks
     if (baseFee < config.minBaseFee || baseFee > config.maxBaseFee) {
       return { safe: false, reason: `baseFee ${baseFee} outside bounds [${config.minBaseFee}, ${config.maxBaseFee}]` };
     }
@@ -358,10 +317,8 @@ export function isSafe(
     if (mismatchScale > 100n * WAD) {
       return { safe: false, reason: `mismatchScale ${mismatchScale} exceeds 100x cap` };
     }
-
-    // Fee ordering: min ≤ base ≤ max
-    if (!(minFee <= baseFee && baseFee <= maxFee)) {
-      return { safe: false, reason: `fee ordering violated: min(${minFee}) ≤ base(${baseFee}) ≤ max(${maxFee})` };
+    if (baseFee > maxFee) {
+      return { safe: false, reason: `fee ordering violated: base(${baseFee}) > max(${maxFee})` };
     }
   }
 
@@ -426,30 +383,6 @@ export function isSafe(
         return { safe: false, reason: `equilibriumReserve1 change too large: ${eq1} vs current ${snapshot.equilibriumReserve1} (max ${MAX_RECENTER_CHANGE}x)` };
       }
     }
-  }
-
-  if (rec.type === "setDecayParams") {
-    if (!rec.params["surcharge"] || !rec.params["period"]) {
-      return { safe: false, reason: "setDecayParams requires surcharge and period" };
-    }
-    const surcharge = BigInt(rec.params["surcharge"] as string);
-    const period = Number(rec.params["period"] as string);
-
-    if (surcharge > WAD) {
-      return { safe: false, reason: `surcharge ${surcharge} exceeds 100%` };
-    }
-    // Surcharge should be reasonable — cap at 500 bps (5%)
-    if (surcharge > 500n * BPS) {
-      return { safe: false, reason: `surcharge ${surcharge} exceeds 500 bps cap` };
-    }
-    // Decay period should be between 12 seconds (1 block) and 600 seconds (10 min)
-    if (period < 12 || period > 600) {
-      return { safe: false, reason: `period ${period} outside bounds [12, 600] seconds` };
-    }
-  }
-
-  if (rec.type === "setPaused") {
-    return { safe: false, reason: "Claude cannot pause/unpause — only rules engine or owner" };
   }
 
   if (rec.type === "externalSwap") {

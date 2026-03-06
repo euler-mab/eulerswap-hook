@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
-import {IEulerSwapHookTarget, EULER_SWAP_HOOK_GET_FEE, EULER_SWAP_HOOK_AFTER_SWAP} from
+import {IEulerSwapHookTarget, EULER_SWAP_HOOK_GET_FEE} from
     "../eulerswap/src/interfaces/IEulerSwapHookTarget.sol";
 import {IEulerSwap} from "../eulerswap/src/interfaces/IEulerSwap.sol";
 import {IEVault} from "evk/EVault/IEVault.sol";
@@ -25,10 +25,9 @@ interface IUniswapV3Pool {
 }
 
 /// @title LPAgentHook — Dynamic fee hook for autonomous LP management
-/// @notice Implements getFee and afterSwap for EulerSwap.
-///         getFee: reads Uniswap V3 spot price, computes mismatch vs pool marginal price,
+/// @notice Implements getFee for EulerSwap.
+///         Reads Uniswap V3 spot price, computes mismatch vs pool marginal price,
 ///         elevates fee on the arb direction to capture LVR. Counter-direction pays baseFee.
-///         afterSwap: tracks trade stats for monitoring.
 ///         Owner can update fee parameters; agent EOA updates via owner calls.
 contract LPAgentHook is IEulerSwapHookTarget {
     using FullMath for uint256;
@@ -54,23 +53,9 @@ contract LPAgentHook is IEulerSwapHookTarget {
     uint64 public baseFee; // base fee in WAD (e.g. 5e14 = 5bps)
     uint64 public maxFee; // maximum fee cap
     uint256 public mismatchScale; // fraction of mismatch to capture (WAD-scaled, e.g. 0.8e18 = 80%)
-    bool public paused; // kill switch
-
-    // --- Trade stats (updated by afterSwap) ---
-    uint256 public tradeCount;
-    uint256 public cumulativeVolume0;
-    uint256 public cumulativeVolume1;
-    bool public lastTradeAsset0In;
-    uint256 public lastTradeSize;
-    uint256 public lastTradeBlock;
-    uint256 public lastTradeTimestamp;
 
     // --- Events ---
     event FeeParamsUpdated(uint64 baseFee, uint64 maxFee, uint256 mismatchScale);
-    event Paused(bool paused);
-    event TradeRecorded(
-        uint256 tradeCount, bool asset0In, uint256 amountIn, uint256 amountOut, uint64 feeApplied
-    );
 
     // --- Errors ---
     error Unauthorized();
@@ -138,8 +123,6 @@ contract LPAgentHook is IEulerSwapHookTarget {
         override
         returns (uint64 fee)
     {
-        if (paused) return maxFee;
-
         uint256 computedFee = uint256(baseFee);
 
         // --- Uniswap mismatch (directional fee elevation) ---
@@ -177,32 +160,13 @@ contract LPAgentHook is IEulerSwapHookTarget {
         fee = uint64(computedFee);
     }
 
-    /// @notice Track trade stats after each swap
-    function afterSwap(
-        uint256 amount0In,
-        uint256 amount1In,
-        uint256 amount0Out,
-        uint256 amount1Out,
-        uint256 fee0,
-        uint256 fee1,
-        address,
-        address,
-        uint112,
-        uint112
-    ) external override onlyPool {
-        bool asset0In = amount0In > 0;
-
-        tradeCount++;
-        cumulativeVolume0 += amount0In + amount0Out;
-        cumulativeVolume1 += amount1In + amount1Out;
-        lastTradeAsset0In = asset0In;
-        lastTradeSize = asset0In ? amount0In : amount1In;
-        lastTradeBlock = block.number;
-        lastTradeTimestamp = block.timestamp;
-
-        uint64 feeApplied = asset0In ? uint64(fee0) : uint64(fee1);
-
-        emit TradeRecorded(tradeCount, asset0In, asset0In ? amount0In : amount1In, asset0In ? amount1Out : amount0Out, feeApplied);
+    /// @notice Not used — swap data available via pool's Swap event
+    function afterSwap(uint256, uint256, uint256, uint256, uint256, uint256, address, address, uint112, uint112)
+        external
+        pure
+        override
+    {
+        revert("not implemented");
     }
 
     // --- Owner management ---
@@ -216,11 +180,6 @@ contract LPAgentHook is IEulerSwapHookTarget {
         mismatchScale = _mismatchScale;
 
         emit FeeParamsUpdated(_baseFee, _maxFee, _mismatchScale);
-    }
-
-    function setPaused(bool _paused) external onlyOwner {
-        paused = _paused;
-        emit Paused(_paused);
     }
 
     // --- Internal ---
@@ -287,26 +246,11 @@ contract LPAgentHook is IEulerSwapHookTarget {
 
     // --- View helpers for agent ---
 
-    function getTradeStats()
-        external
-        view
-        returns (
-            uint256 _tradeCount,
-            uint256 _volume0,
-            uint256 _volume1,
-            bool _lastAsset0In,
-            uint256 _lastSize,
-            uint256 _lastBlock
-        )
-    {
-        return (tradeCount, cumulativeVolume0, cumulativeVolume1, lastTradeAsset0In, lastTradeSize, lastTradeBlock);
-    }
-
     function getFeeParams()
         external
         view
-        returns (uint64 _baseFee, uint64 _maxFee, uint256 _mismatchScale, bool _paused)
+        returns (uint64 _baseFee, uint64 _maxFee, uint256 _mismatchScale)
     {
-        return (baseFee, maxFee, mismatchScale, paused);
+        return (baseFee, maxFee, mismatchScale);
     }
 }

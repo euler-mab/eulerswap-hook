@@ -86,15 +86,14 @@ async function main() {
   const pollLoop = async () => {
     try {
       // Read state (including vault debt for interest-rate awareness)
-      const [snapshot, stats, feeParams, vaultDebt, aggQuote] = await Promise.all([
+      const [snapshot, feeParams, vaultDebt, aggQuote] = await Promise.all([
         monitor.getPoolSnapshot(publicClient, config),
-        monitor.getHookStats(publicClient, config),
         monitor.getHookFeeParams(publicClient, config),
         monitor.getVaultDebtInfo(publicClient, config).catch(() => undefined),
         oracle.getAggregatorQuote(publicClient, asset0, asset1).catch(() => null),
       ]);
 
-      metrics.recordSnapshot(snapshot, stats);
+      metrics.recordSnapshot(snapshot);
 
       // Evaluate rules (CowSwap mid-price used for recentering decisions)
       const gasToday = metrics.getGasSpentToday();
@@ -165,11 +164,9 @@ async function main() {
   // --- Claude review loop ---
   const claudeLoop = async () => {
     try {
-      const [snapshot, stats, feeParams, decayParams, vaultDebt, registryInfo] = await Promise.all([
+      const [snapshot, feeParams, vaultDebt, registryInfo] = await Promise.all([
         monitor.getPoolSnapshot(publicClient, config),
-        monitor.getHookStats(publicClient, config),
         monitor.getHookFeeParams(publicClient, config),
-        monitor.getHookDecayParams(publicClient, config).catch(() => undefined),
         monitor.getVaultDebtInfo(publicClient, config).catch(() => undefined),
         config.registryAddress
           ? monitor.getRegistryInfo(publicClient, config).catch(() => undefined)
@@ -196,14 +193,12 @@ async function main() {
         config,
         snapshot,
         feeParams,
-        stats,
         recentActions,
         gasToday,
         aggQuote,
         decimals,
         vaultDebt,
         funding,
-        decayParams,
         lastReview,
         registryInfo,
       );

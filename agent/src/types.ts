@@ -54,27 +54,10 @@ export interface PoolSnapshot {
   mismatch: bigint;
 }
 
-export interface HookStats {
-  tradeCount: bigint;
-  cumulativeVolume0: bigint;
-  cumulativeVolume1: bigint;
-  lastTradeAsset0In: boolean;
-  lastTradeSize: bigint;
-  lastTradeBlock: bigint;
-}
-
 export interface HookFeeParams {
   baseFee: bigint;
   maxFee: bigint;
-  minFee: bigint;
   mismatchScale: bigint;
-  paused: boolean;
-}
-
-export interface HookDecayParams {
-  surcharge: bigint;        // WAD-scaled (e.g. 10e14 = 10 bps)
-  period: number;           // seconds
-  lastTradeTimestamp: number;
 }
 
 // --- Vault debt/utilization ---
@@ -127,8 +110,6 @@ export interface RegistryInfo {
 export type ActionType =
   | "reconfigure"
   | "setFeeParams"
-  | "setDecayParams"
-  | "setPaused"
   | "externalSwap";
 
 export interface Action {
@@ -173,13 +154,9 @@ export interface ClaudeReview {
 
 export interface AgentMetrics {
   startTime: number;
-  totalTrades: bigint;
-  totalVolume0: bigint;
-  totalVolume1: bigint;
   totalGasSpent: bigint; // in wei
   totalReconfigures: number;
   snapshots: PoolSnapshot[];
-  statsHistory: HookStats[]; // parallel array — statsHistory[i] was read alongside snapshots[i]
   actions: ExecutedAction[];
   reviews: ClaudeReview[];
 }

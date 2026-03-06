@@ -16,10 +16,8 @@ function PoolCard({ pool }: { pool: PoolConfig }) {
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-medium">{pool.name}</h3>
         {state && (
-          <span className={`text-xs px-1.5 py-0.5 rounded ${
-            state.hookPaused ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"
-          }`}>
-            {state.hookPaused ? "paused" : "active"}
+          <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700">
+            active
           </span>
         )}
       </div>

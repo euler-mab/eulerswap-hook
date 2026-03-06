@@ -77,7 +77,7 @@ contract LPAgentHookTest is EulerSwapTestBase {
         // 5. Reconfigure pool to install hook
         IEulerSwap.DynamicParams memory dParams = pool.getDynamicParams();
         dParams.swapHook = address(hook);
-        dParams.swapHookedOperations = EULER_SWAP_HOOK_GET_FEE | EULER_SWAP_HOOK_AFTER_SWAP;
+        dParams.swapHookedOperations = EULER_SWAP_HOOK_GET_FEE;
 
         IEulerSwap.InitialState memory initialState =
             IEulerSwap.InitialState({reserve0: dParams.equilibriumReserve0, reserve1: dParams.equilibriumReserve1});
@@ -157,15 +157,6 @@ contract LPAgentHookTest is EulerSwapTestBase {
         assertEq(counterFee, BASE_FEE, "counter-direction must stay at baseFee");
     }
 
-    function test_getFee_returns_maxFee_when_paused() public {
-        hook.setPaused(true);
-
-        (uint112 r0, uint112 r1,) = pool.getReserves();
-        uint64 fee = hook.getFee(true, r0, r1, false);
-
-        assertEq(fee, MAX_FEE, "paused should return maxFee");
-    }
-
     function test_getFee_clamped_to_maxFee() public {
         // Large mismatch with large scale → clamped to maxFee
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(2e18)); // 100% mismatch
@@ -234,50 +225,6 @@ contract LPAgentHookTest is EulerSwapTestBase {
         assertEq(counterFee, 100e14, "counter side = baseFee");
     }
 
-    // --- afterSwap tests ---
-
-    function test_afterSwap_tracks_stats() public {
-        address swapper = makeAddr("swapper");
-        _fundAndSwap(swapper, true, 1e18);
-
-        assertEq(hook.tradeCount(), 1, "trade count should be 1");
-        assertTrue(hook.cumulativeVolume0() > 0, "volume0 should be tracked");
-        assertTrue(hook.cumulativeVolume1() > 0, "volume1 should be tracked");
-        assertEq(hook.lastTradeBlock(), block.number, "last trade block");
-    }
-
-    function test_afterSwap_multiple_trades() public {
-        address swapper = makeAddr("swapper");
-        _fundAndSwap(swapper, true, 1e18);
-        _fundAndSwap(swapper, false, 1e18);
-
-        assertEq(hook.tradeCount(), 2, "trade count should be 2");
-    }
-
-    function test_afterSwap_precise_stats() public {
-        address swapper = makeAddr("swapper");
-
-        _fundAndSwap(swapper, true, 1e18);
-
-        assertEq(hook.tradeCount(), 1);
-        assertTrue(hook.lastTradeAsset0In(), "last trade should be asset0 in");
-        assertApproxEqRel(hook.lastTradeSize(), 1e18, 0.01e18, "last trade size ~1e18");
-        assertEq(hook.lastTradeBlock(), block.number);
-        assertApproxEqRel(hook.cumulativeVolume0(), 1e18, 0.01e18, "volume0 ~1e18");
-        assertTrue(hook.cumulativeVolume1() > 0, "volume1 includes output");
-
-        uint256 vol0After1 = hook.cumulativeVolume0();
-        uint256 vol1After1 = hook.cumulativeVolume1();
-
-        _fundAndSwap(swapper, false, 2e18);
-
-        assertEq(hook.tradeCount(), 2);
-        assertFalse(hook.lastTradeAsset0In(), "last trade should be asset1 in");
-        assertApproxEqRel(hook.lastTradeSize(), 2e18, 0.02e18, "last trade size ~2e18");
-        assertTrue(hook.cumulativeVolume0() > vol0After1, "volume0 increased");
-        assertTrue(hook.cumulativeVolume1() > vol1After1, "volume1 increased");
-    }
-
     // --- Access control tests ---
 
     function test_setFeeParams_onlyOwner() public {
@@ -287,15 +234,6 @@ contract LPAgentHookTest is EulerSwapTestBase {
         vm.prank(makeAddr("random"));
         vm.expectRevert(LPAgentHook.Unauthorized.selector);
         hook.setFeeParams(30e14, 200e14, 20e18);
-    }
-
-    function test_setPaused_onlyOwner() public {
-        hook.setPaused(true);
-        assertTrue(hook.paused());
-
-        vm.prank(makeAddr("random"));
-        vm.expectRevert(LPAgentHook.Unauthorized.selector);
-        hook.setPaused(true);
     }
 
     function test_setFeeParams_validates_ordering() public {
@@ -311,19 +249,11 @@ contract LPAgentHookTest is EulerSwapTestBase {
 
     // --- View helpers ---
 
-    function test_getTradeStats() public view {
-        (uint256 count, uint256 vol0, uint256 vol1,,,) = hook.getTradeStats();
-        assertEq(count, 0);
-        assertEq(vol0, 0);
-        assertEq(vol1, 0);
-    }
-
     function test_getFeeParams() public view {
-        (uint64 base, uint64 max, uint256 scale, bool isPaused) = hook.getFeeParams();
+        (uint64 base, uint64 max, uint256 scale) = hook.getFeeParams();
         assertEq(base, BASE_FEE);
         assertEq(max, MAX_FEE);
         assertEq(scale, MISMATCH_SCALE);
-        assertFalse(isPaused);
     }
 
     // --- Swap integration ---
@@ -335,8 +265,7 @@ contract LPAgentHookTest is EulerSwapTestBase {
         address swapper = makeAddr("swapper");
         _fundAndSwap(swapper, true, 1e18);
         _fundAndSwap(swapper, false, 1e18);
-
-        assertEq(hook.tradeCount(), 2);
+        // Swaps succeed without reverting — fee hook is active
     }
 
     // --- Event emission ---
@@ -347,17 +276,10 @@ contract LPAgentHookTest is EulerSwapTestBase {
         hook.setFeeParams(30e14, 200e14, 20e18);
     }
 
-    function test_setPaused_emits_event() public {
-        vm.expectEmit(true, true, true, true);
-        emit LPAgentHook.Paused(true);
-        hook.setPaused(true);
-    }
-
     // --- Access control ---
 
-    function test_afterSwap_rejects_non_pool() public {
-        vm.prank(makeAddr("random"));
-        vm.expectRevert(LPAgentHook.OnlyPool.selector);
+    function test_afterSwap_reverts() public {
+        vm.expectRevert("not implemented");
         hook.afterSwap(1e18, 0, 0, 1e18, 25e14, 0, address(0), address(0), 0, 0);
     }
 
@@ -366,16 +288,4 @@ contract LPAgentHookTest is EulerSwapTestBase {
         hook.beforeSwap(0, 0, address(0), address(0));
     }
 
-    // --- Pause toggle ---
-
-    function test_setPaused_unpause_restores_normal_fee() public {
-        (uint112 r0, uint112 r1,) = pool.getReserves();
-
-        hook.setPaused(true);
-        assertEq(hook.getFee(true, r0, r1, false), MAX_FEE, "paused should return maxFee");
-
-        hook.setPaused(false);
-        uint64 feeAfter = hook.getFee(true, r0, r1, false);
-        assertApproxEqAbs(feeAfter, BASE_FEE, 1e12, "unpaused should return ~baseFee");
-    }
 }

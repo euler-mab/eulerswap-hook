@@ -43,7 +43,6 @@ export interface PoolState {
   isInstalled: boolean;
 
   // Hook state
-  hookPaused?: boolean;
   hookBaseFee?: bigint;
   hookMaxFee?: bigint;
   hookMismatchScale?: bigint;

@@ -1,20 +1,15 @@
 import type {
   AgentMetrics,
   PoolSnapshot,
-  HookStats,
   ExecutedAction,
   ClaudeReview,
 } from "./types.js";
 
 let metrics: AgentMetrics = {
   startTime: Date.now(),
-  totalTrades: 0n,
-  totalVolume0: 0n,
-  totalVolume1: 0n,
   totalGasSpent: 0n,
   totalReconfigures: 0,
   snapshots: [],
-  statsHistory: [],
   actions: [],
   reviews: [],
 };
@@ -24,26 +19,18 @@ const MAX_HISTORY = 1000; // keep last N entries
 export function reset(): void {
   metrics = {
     startTime: Date.now(),
-    totalTrades: 0n,
-    totalVolume0: 0n,
-    totalVolume1: 0n,
     totalGasSpent: 0n,
     totalReconfigures: 0,
     snapshots: [],
-    statsHistory: [],
     actions: [],
     reviews: [],
   };
 }
 
-export function recordSnapshot(snap: PoolSnapshot, stats?: HookStats): void {
+export function recordSnapshot(snap: PoolSnapshot): void {
   metrics.snapshots.push(snap);
-  if (stats) {
-    metrics.statsHistory.push(stats);
-  }
   if (metrics.snapshots.length > MAX_HISTORY) {
     metrics.snapshots.shift();
-    metrics.statsHistory.shift();
   }
 }
 
@@ -86,7 +73,6 @@ export function getRecentActions(n: number = 10): ExecutedAction[] {
 /**
  * Compute realized per-block volatility from oracle price changes between snapshots.
  * Returns σ in basis points — the standard deviation of per-block oracle price moves.
- * This is the key input for calibrating decaySurcharge.
  */
 export function getRealizedVol(): { volBps: number; avgBlocksBetweenPolls: number; sampleSize: number } | null {
   const snaps = metrics.snapshots;
@@ -175,100 +161,3 @@ export function getTrendSummary(): string | null {
   Agent actions in period: ${actionsInPeriod}`;
 }
 
-/**
- * Analyze flow quality by comparing (snapshot, stats) pairs between polls.
- *
- * Key heuristics:
- * - Trades that coincide with mismatch DECREASING are likely arb (restoring alignment)
- * - Trades that coincide with mismatch INCREASING are likely informed/retail (creating new imbalance)
- * - High trade count in short intervals with mismatch resolution = arb-dominated
- * - Large single trades that move reserves significantly = likely informed
- */
-export function getFlowSummary(): string | null {
-  const snaps = metrics.snapshots;
-  const stats = metrics.statsHistory;
-  // Need at least 5 paired intervals to infer anything
-  if (snaps.length < 5 || stats.length < 5) return null;
-
-  // Use last 20 intervals (or all if fewer)
-  const n = Math.min(20, snaps.length, stats.length);
-  const recentSnaps = snaps.slice(-n);
-  const recentStats = stats.slice(-n);
-
-  let arbIntervals = 0;       // trades happened + mismatch decreased
-  let retailIntervals = 0;    // trades happened + mismatch increased or stable
-  let quietIntervals = 0;     // no trades
-  let totalTrades = 0;
-  let totalVolume0 = 0n;
-  let totalVolume1 = 0n;
-  let arbVolume0 = 0n;
-  let sameDirectionRuns = 0;  // consecutive intervals with same trade direction
-  let lastDirection: boolean | null = null;
-  let currentRun = 0;
-
-  for (let i = 1; i < n; i++) {
-    const prevStat = recentStats[i - 1]!;
-    const currStat = recentStats[i]!;
-    const prevSnap = recentSnaps[i - 1]!;
-    const currSnap = recentSnaps[i]!;
-
-    const deltaTrades = currStat.tradeCount - prevStat.tradeCount;
-    const deltaVol0 = currStat.cumulativeVolume0 - prevStat.cumulativeVolume0;
-    const deltaVol1 = currStat.cumulativeVolume1 - prevStat.cumulativeVolume1;
-
-    if (deltaTrades <= 0n) {
-      quietIntervals++;
-      continue;
-    }
-
-    totalTrades += Number(deltaTrades);
-    totalVolume0 += deltaVol0;
-    totalVolume1 += deltaVol1;
-
-    // Did mismatch increase or decrease?
-    const mismatchBefore = Number(prevSnap.mismatch);
-    const mismatchAfter = Number(currSnap.mismatch);
-    const mismatchDecreased = mismatchAfter < mismatchBefore * 0.8; // >20% drop = significant
-
-    if (mismatchDecreased) {
-      arbIntervals++;
-      arbVolume0 += deltaVol0;
-    } else {
-      retailIntervals++;
-    }
-
-    // Track directional consistency (same-direction runs = informed/structural flow)
-    const dir = currStat.lastTradeAsset0In;
-    if (lastDirection !== null && dir === lastDirection) {
-      currentRun++;
-    } else {
-      if (currentRun >= 3) sameDirectionRuns++;
-      currentRun = 1;
-    }
-    lastDirection = dir;
-  }
-  if (currentRun >= 3) sameDirectionRuns++;
-
-  const activeIntervals = arbIntervals + retailIntervals;
-  if (activeIntervals === 0) return null;
-
-  const arbPct = (arbIntervals / activeIntervals * 100).toFixed(0);
-  const avgTradeSize = activeIntervals > 0 && totalTrades > 0
-    ? Number(totalVolume0) / totalTrades
-    : 0;
-  const arbVolPct = totalVolume0 > 0n
-    ? (Number(arbVolume0) * 100 / Number(totalVolume0)).toFixed(0)
-    : "0";
-
-  const periodMin = Math.round(
-    (recentSnaps[n - 1]!.timestamp - recentSnaps[0]!.timestamp) / 60
-  );
-
-  return `Over last ${periodMin} min (${n - 1} intervals):
-  Trade velocity: ${totalTrades} trades (${(totalTrades / Math.max(periodMin, 1) * 60).toFixed(1)}/hr)
-  Active intervals: ${activeIntervals}/${n - 1} (${quietIntervals} quiet)
-  Arb-like intervals: ${arbIntervals} (${arbPct}%) — trades that resolved mismatch
-  Retail-like intervals: ${retailIntervals} — trades that created/maintained mismatch
-  Arb volume share: ~${arbVolPct}% of total volume
-  Directional runs (≥3 same direction): ${sameDirectionRuns}${sameDirectionRuns > 0 ? " — possible structural/informed flow" : ""}`;
-}

@@ -3,8 +3,6 @@ import type {
   AgentConfig,
   PoolSnapshot,
   HookFeeParams,
-  HookDecayParams,
-  HookStats,
   ExecutedAction,
   ClaudeReview,
   ClaudeRecommendation,
@@ -15,7 +13,7 @@ import type {
 import type { AggregatorQuote } from "./oracle.js";
 import type { FundingSnapshot } from "./funding.js";
 import { WAD, BPS, fmtToken } from "./types.js";
-import { getTrendSummary, getFlowSummary, getRealizedVol, getMetrics } from "./metrics.js";
+import { getTrendSummary, getRealizedVol, getMetrics } from "./metrics.js";
 
 let client: Anthropic | null = null;
 
@@ -30,20 +28,18 @@ export async function review(
   config: AgentConfig,
   snapshot: PoolSnapshot,
   feeParams: HookFeeParams,
-  stats: HookStats,
   recentActions: ExecutedAction[],
   gasSpentToday: bigint,
   aggQuote: AggregatorQuote | null = null,
   decimals?: AssetDecimals,
   vaultDebt?: VaultDebtInfo,
   funding?: FundingSnapshot | null,
-  decayParams?: HookDecayParams,
   lastReview?: ClaudeReview | null,
   registryInfo?: RegistryInfo,
 ): Promise<ClaudeReview> {
   const anthropic = getClient(config);
 
-  const context = buildContext(snapshot, feeParams, stats, recentActions, gasSpentToday, aggQuote, decimals, vaultDebt, funding, decayParams, lastReview, registryInfo);
+  const context = buildContext(snapshot, feeParams, recentActions, gasSpentToday, aggQuote, decimals, vaultDebt, funding, lastReview, registryInfo);
 
   const systemPrompt = buildSystemPrompt(config, snapshot);
 
@@ -110,17 +106,17 @@ Euler vaults. If the LP deposited 10 ETH but sets equilibriumReserve0 to 50 ETH,
 borrows 40 ETH. This multiplies liquidity depth within the range, generating more fees —
 but creates borrow costs (carry) and liquidation risk.
 
-### Layer 4: Dynamic Fees (Dutch Auction)
-Every swap is a potential arb extracting value. The hook runs a Dutch auction: the fee
-starts high after each trade and decays over time. Arbs pay a fee close to their expected
-profit. Retail trades in the same block as an arb pay just the baseFee.
+### Layer 4: Dynamic Fees (Uniswap V3 Mismatch)
+The hook reads Uniswap V3 slot0 as a market reference. When the pool's marginal price
+diverges from Uniswap, the fee is elevated on the arb direction (the side exploiting the
+mismatch). The counter-direction always pays baseFee — never more, never less.
 
 ### Your Job
 You manage ALL of these layers:
 - **Equilibrium price** (priceX/priceY): recenter when the market moves
 - **Price range** (minReserve0/minReserve1): set boundaries, shift when approaching limits
 - **Leverage** (equilibriumReserve0/1 vs real deposits): dial up for more depth, down when carry is bad
-- **Dynamic fees** (baseFee, surcharge, period): calibrate to capture arb value, attract retail
+- **Dynamic fees** (baseFee, maxFee, mismatchScale): calibrate to capture arb value, attract retail
 - **Rebalancing**: fee asymmetry, external swaps when reserves are heavily imbalanced
 
 **P&L components** (in priority order):
@@ -134,99 +130,30 @@ An empty recommendations array is always valid and often optimal.
 
 ## How the Dynamic Fee Works
 
-The hook computes fees in two layers, clamped to [minFee, maxFee]:
+The hook reads Uniswap V3 slot0 as a market reference, clamped to [baseFee, maxFee]:
 
-### Layer 1: Time-Decay Surcharge (primary arb protection)
-  fee = baseFee + decaySurcharge × max(0, decayPeriod − elapsed) / decayPeriod
+  fee = baseFee + mismatchScale × |uniswapPrice − marginalPrice| / uniswapPrice
 
-The hook tracks lastTradeBlock. On each swap:
-- **Same block as previous trade** (lastTradeBlock == block.number): NO surcharge.
-  The arb already traded, these are retail — charge just baseFee.
-- **New block** (lastTradeBlock < block.number): FULL surcharge, decayed by time since
-  last trade. If elapsed < decayPeriod, surcharge = decaySurcharge × (period − elapsed) / period.
-  If elapsed ≥ decayPeriod (pool idle for a while), no surcharge — the oracle has had
-  time to update, so the first trade isn't necessarily arb.
-
-This requires NO oracle reads — pure block-number + time signal. Cheap gas, maximal arb protection.
-
-### Layer 2: Oracle Mismatch (optional directional asymmetry)
-When mismatchScale > 0, the hook reads the oracle and adds directional fee adjustment:
-- Side that exploits mispricing: +scaledMismatch (arb tax)
-- Side that restores alignment: −scaledMismatch (retail incentive)
-
-This costs extra gas per swap for the oracle read. Set mismatchScale = 0 to disable
-and rely purely on the time-decay. Only enable when directional signals are valuable.
-
-When paused, all trades pay maxFee.
+Key behavior:
+- **Arb direction** (side that exploits the mismatch): elevated fee captures LVR
+- **Counter-direction** (opposite side): always pays baseFee — never more
+- **mismatchScale = 0**: flat baseFee for all swaps (no oracle reads, saves gas)
 
 ## What Each Parameter Controls
 
-**Core fee params** (setFeeParams):
-- baseFee: the resting fee after decay. Lower = more competitive. Typical: 5-50 bps.
-- minFee: floor. Prevents negative fees. Typical: 1-10 bps.
-- maxFee: ceiling. Caps total fee including surcharge. Typical: 50-500 bps.
-- mismatchScale: oracle mismatch sensitivity. 0 = disabled (saves gas). Typical: 0-20x.
+**Core fee params** (setFeeParams — all 3 required):
+- baseFee: the resting fee for non-arb swaps. Lower = more competitive. Typical: 5-50 bps.
+- maxFee: ceiling. Caps total fee. Typical: 50-500 bps.
+- mismatchScale: fraction of mismatch to capture (WAD-scaled). 0 = disabled. Typical: 0.5-20x.
 
-**Decay params** (setDecayParams — both required):
-- surcharge: WAD-scaled surcharge (same encoding as fees). 10 bps = "${(10n * BPS).toString()}"
-- period: integer seconds (NOT WAD-scaled). 120 = "${120}"
+## MEV Protection
 
-## MEV Protection & Flow Quality
-
-### How the two layers interact
-Time-decay is the workhorse — it captures most arb value without any oracle dependency.
-The oracle mismatch is an optional refinement (mismatchScale > 0) that adds directionality
-but costs gas for oracle reads. Most pools should run with mismatchScale = 0.
-
-### Understanding the Dutch auction
-The decay mechanism is a **Dutch auction** for block-first trades:
-1. After a trade, the surcharge resets to full value
-2. Each subsequent block (12s), the surcharge decays: surcharge × (period − elapsed) / period
-3. An arb trades when the surcharge drops below their expected profit
-
-**This means decaySurcharge must be calibrated to the pair's per-block volatility (σ_block).**
-- If σ_block ≈ 10 bps but surcharge = 100 bps, arbs wait ~9 blocks (108 seconds) for the
-  surcharge to decay enough. The pool sits with a stale price and NO ONE trades.
-- If σ_block ≈ 10 bps and surcharge = 10 bps, arbs trade in the first available block.
-  They pay most of their profit as a fee. The pool stays fresh.
-
-### Calibrating decaySurcharge from realized volatility
-The context includes a "Realized Volatility" section with measured per-block σ in bps.
-Use this to set decaySurcharge:
-- **decaySurcharge ≈ 1.0–1.5× σ_block** — captures most arb profit without stalling the pool.
-  The "Suggested decaySurcharge" value in the context uses 1.2× σ as a starting point.
-- **Too high** (>> σ): auction takes multiple blocks → stale pool → no trades → bad.
-- **Too low** (<< σ): arbs trade cheaply → you're leaving money on the table.
-- **Adjust based on flow quality**: if arb % is high and arb-interval volume is large,
-  the surcharge is too low. If trade velocity is low, it might be too high.
-
-### Calibrating decayPeriod
-- **decayPeriod = 120** (10 blocks) is a good default for actively traded pools.
-  After 1 block (12s), surcharge is 90% of max — strong protection.
-  After 2 min of inactivity, surcharge is zero — don't penalize fresh activity.
-- **Shorter (60s)**: more aggressive decay, pool goes unprotected faster.
-- **Longer (300s)**: surcharge persists longer during quiet periods.
-- Must be > 12 (one block time), or the surcharge fully decays by the next block and
-  has no effect.
-
-### Ensuring maxFee doesn't clip the surcharge
-maxFee must be ≥ baseFee + decaySurcharge, otherwise the surcharge gets clamped and you
-lose arb protection. Check: if baseFee = 25 bps and surcharge = 10 bps, maxFee must be ≥ 35 bps.
-
-### Reading the Flow Quality data
-The context includes a Flow Quality section (when enough data exists) showing:
-- **Arb-like intervals**: polls where trades resolved mismatch. High % = most volume is arb.
-- **Retail-like intervals**: polls where trades created/maintained mismatch.
-- **Arb volume share**: what fraction of volume is likely arb.
-- **Directional runs**: consecutive same-direction trading = structural/informed flow.
-
-### Strategy implications
-- **High arb % (>70%)**: decaySurcharge may be too low — arbs are trading through cheaply.
-  Increase decaySurcharge or extend decayPeriod.
-- **High retail % (>50%)**: Good — the pool is attracting organic flow. Keep fees competitive.
-- **High directional runs**: Structural flow in one direction. This isn't arb — it's informed
-  traders or market regime shift. Consider recentering equilibrium rather than fighting it.
-- **Low trade velocity**: Not enough flow. Lower baseFee to attract volume.
+The Uniswap V3 oracle provides directional arb detection:
+- When pool marginal price diverges from Uniswap, arbs will trade in the direction
+  that exploits the mismatch. The hook elevates fees on that direction.
+- Counter-direction (retail flow restoring alignment) always pays baseFee.
+- Worst case from oracle manipulation: baseFee (acceptable).
+- Gas cost: ~500 warm (arb txs that already touched Uniswap), ~5000 cold (retail).
 
 ## Price Range Management
 
@@ -303,7 +230,6 @@ The formulas:
 
 - baseFee: ${(Number(config.minBaseFee) / Number(BPS)).toFixed(0)}-${(Number(config.maxBaseFee) / Number(BPS)).toFixed(0)} bps
 - maxFee: must be < 100% (${WAD.toString()})
-- minFee: must be ≤ baseFee
 - mismatchScale: max 100x (${(100n * WAD).toString()})
 - concentration: ${(Number(config.minConcentration) / 1e18).toFixed(2)}-${(Number(config.maxConcentration) / 1e18).toFixed(2)}
 - equilibrium changes: max 3x per recenter
@@ -389,7 +315,7 @@ Respond with ONLY valid JSON:
 {
   "recommendations": [
     {
-      "type": "setFeeParams" | "setDecayParams" | "reconfigure" | "externalSwap",
+      "type": "setFeeParams" | "reconfigure" | "externalSwap",
       "params": { ... },
       "reasoning": "...",
       "confidence": 0.0-1.0
@@ -404,15 +330,10 @@ Respond with ONLY valid JSON:
 All values are strings of integers (no decimals, no floats).
 1 basis point = ${BPS.toString()}.
 
-**setFeeParams** (all 4 required):
+**setFeeParams** (all 3 required):
   baseFee: WAD-scaled. 25 bps = "${(25n * BPS).toString()}"
-  minFee: WAD-scaled. 5 bps = "${(5n * BPS).toString()}"
   maxFee: WAD-scaled. 200 bps = "${(200n * BPS).toString()}"
   mismatchScale: WAD-scaled multiplier. 10x = "${(10n * WAD).toString()}"
-
-**setDecayParams** (both required):
-  surcharge: WAD-scaled. 10 bps = "${(10n * BPS).toString()}"
-  period: plain integer seconds (NOT WAD-scaled). 120 = "120"
 
 **reconfigure** (only include fields you want to change):
   concentrationX, concentrationY: WAD-scaled. 0.40 = "${(40n * WAD / 100n).toString()}"
@@ -502,14 +423,12 @@ function boundarySection(s: PoolSnapshot): string {
 function buildContext(
   snapshot: PoolSnapshot,
   feeParams: HookFeeParams,
-  stats: HookStats,
   recentActions: ExecutedAction[],
   gasSpentToday: bigint,
   aggQuote: AggregatorQuote | null,
   decimals?: AssetDecimals,
   vaultDebt?: VaultDebtInfo,
   funding?: FundingSnapshot | null,
-  decayParams?: HookDecayParams,
   lastReview?: ClaudeReview | null,
   registryInfo?: RegistryInfo,
 ): string {
@@ -539,7 +458,6 @@ function buildContext(
   // NAV: deposits - debts in UoA
   let navSection = "";
   let carrySection = "";
-  let feeRevenueSection = "";
 
   if (vaultDebt) {
     const depositValue = toUoa0(vaultDebt.deposit0) + toUoa1(vaultDebt.deposit1);
@@ -562,26 +480,13 @@ function buildContext(
   Supply APY: asset0=${supplyApy0.toFixed(1)}%, asset1=${supplyApy1.toFixed(1)}%`;
   }
 
-  // Fee revenue estimate from cumulative volume
-  const metricsData = getMetrics();
-  const runtimeSec = (Date.now() - metricsData.startTime) / 1000;
-  if (runtimeSec > 60 && stats.cumulativeVolume0 > 0n) {
-    const avgFeeWad = (feeParams.baseFee + feeParams.minFee) / 2n; // conservative estimate
-    const dailyVol0Uoa = toUoa0(stats.cumulativeVolume0) * 86400 / runtimeSec;
-    const dailyVol1Uoa = toUoa1(stats.cumulativeVolume1) * 86400 / runtimeSec;
-    const dailyFeeRev = (dailyVol0Uoa + dailyVol1Uoa) * Number(avgFeeWad) / 1e18;
-    feeRevenueSection = `\nEstimated daily fee revenue: ${fmtUsd(dailyFeeRev)} (from ${fmtUsd(dailyVol0Uoa + dailyVol1Uoa)}/day volume)`;
-  }
-
   // --- Trend summary ---
   const trend = getTrendSummary();
-  const flow = getFlowSummary();
 
   return `
 ## Position Delta
 Net delta: ${fmtUsd(deltaUsd)} (${deltaUsd > 0 ? "LONG" : deltaUsd < 0 ? "SHORT" : "NEUTRAL"} asset0)
-Reserve imbalance: asset0 ${imbal0Pct >= 0 ? "+" : ""}${imbal0Pct.toFixed(1)}%, asset1 ${imbal1Pct >= 0 ? "+" : ""}${imbal1Pct.toFixed(1)}% vs equilibrium${navSection}${carrySection}${feeRevenueSection}
-
+Reserve imbalance: asset0 ${imbal0Pct >= 0 ? "+" : ""}${imbal0Pct.toFixed(1)}%, asset1 ${imbal1Pct >= 0 ? "+" : ""}${imbal1Pct.toFixed(1)}% vs equilibrium${navSection}${carrySection}
 ## Pool State
 Reserves: ${fmtR0(snapshot.reserve0)} / ${fmtR1(snapshot.reserve1)}
 Equilibrium: ${fmtR0(snapshot.equilibriumReserve0)} / ${fmtR1(snapshot.equilibriumReserve1)}
@@ -594,28 +499,15 @@ ${boundarySection(snapshot)}
 
 ## Hook Fee Params
   baseFee: ${fmtBps(feeParams.baseFee)}
-  minFee: ${fmtBps(feeParams.minFee)}
   maxFee: ${fmtBps(feeParams.maxFee)}
   mismatchScale: ${fmtWad(feeParams.mismatchScale)}
-  paused: ${feeParams.paused}
-${decayParams ? `
-## Decay Params (Arb Protection)
-  surcharge: ${fmtBps(decayParams.surcharge)}
-  period: ${decayParams.period}s
-  lastTrade: ${decayParams.lastTradeTimestamp > 0 ? `${Math.floor(Date.now() / 1000) - decayParams.lastTradeTimestamp}s ago` : "never"}` : ""}
 ${(() => {
   const vol = getRealizedVol();
   return vol ? `
-## Realized Volatility (for decay calibration)
+## Realized Volatility
   Per-block σ: ${vol.volBps.toFixed(1)} bps
-  Suggested decaySurcharge: ${Math.max(1, Math.round(vol.volBps * 1.2))} bps (1.2× σ)
   Sample: ${vol.sampleSize} intervals, ~${vol.avgBlocksBetweenPolls.toFixed(0)} blocks between polls` : "";
 })()}
-
-## Trade Stats
-  Total trades: ${stats.tradeCount.toString()}
-  Volume: ${fmtR0(stats.cumulativeVolume0)} / ${fmtR1(stats.cumulativeVolume1)}
-  Last trade: ${stats.lastTradeAsset0In ? "asset0 in" : "asset1 in"}, size ${stats.lastTradeAsset0In ? fmtR0(stats.lastTradeSize) : fmtR1(stats.lastTradeSize)}
 
 Gas spent today: ${fmtEth(gasSpentToday)}
 Recent actions: ${recentActions.length > 0 ? recentActions.map((a) => `${a.type}: ${a.reason} (${a.success ? "OK" : "FAILED"})`).join("; ") : "none"}
@@ -654,7 +546,6 @@ ${registryInfo ? `
   Validity bond: ${(Number(registryInfo.validityBond) / 1e18).toFixed(6)} ETH
   Total pools in registry: ${registryInfo.totalPoolsInRegistry.toString()}${!registryInfo.registered ? "\n  WARNING: Pool is NOT registered — not discoverable via registry API" : ""}` : ""}
 ${trend ? `\n## Trend\n${trend}` : ""}
-${flow ? `\n## Flow Quality\n${flow}` : ""}
 ${lastReview && lastReview.recommendations.length > 0 ? `
 ## Previous Review (${Math.round((Date.now() / 1000 - lastReview.timestamp) / 60)} min ago)
   Recommendations: ${lastReview.recommendations.map(r => `${r.type}(${r.confidence.toFixed(1)}): ${r.reasoning}`).join("; ")}
