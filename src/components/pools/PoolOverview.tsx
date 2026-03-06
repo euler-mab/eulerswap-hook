@@ -194,9 +194,11 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
         const absMismatch = Math.abs(mismatchPct);
 
         // Fee in the arb direction
-        const esOverpriced = mismatchPct > 0; // ES overprices asset1 → arber sells asset1 on ES
-        const eulerFeeWad = esOverpriced ? state.hookLiveFee1In : state.hookLiveFee0In;
-        const eulerFeePct = eulerFeeWad ? Number(eulerFeeWad) / 1e18 : Number(esOverpriced ? state.fee1 : state.fee0) / 1e18;
+        // esOverpriced: marginal(WETH/USDC) > uni → WETH cheap on ES → buy WETH → USDC in → hookLiveFee0In
+        // !esOverpriced: WETH expensive on ES → sell WETH → WETH in → hookLiveFee1In
+        const esOverpriced = mismatchPct > 0;
+        const eulerFeeWad = esOverpriced ? state.hookLiveFee0In : state.hookLiveFee1In;
+        const eulerFeePct = eulerFeeWad ? Number(eulerFeeWad) / 1e18 : Number(esOverpriced ? state.fee0 : state.fee1) / 1e18;
         const uniFeePct = (pool.uniswapFeeBps ?? 5) / 10000;
         const netEdgePct = absMismatch - eulerFeePct - uniFeePct;
 
@@ -210,9 +212,11 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
         const gasGwei = Number(state.gasPrice) / 1e9;
 
         // Max trade from limits (in USD)
+        // esOverpriced → buy WETH → USDC goes in → limited by limit0In
+        // !esOverpriced → sell WETH → WETH goes in → limited by limit1In
         const maxTradeUsd = esOverpriced
-          ? Number(formatUnits(state.limit1In, state.asset1Decimals)) * pnl.currentPrices.asset1
-          : Number(formatUnits(state.limit0In, state.asset0Decimals)) * pnl.currentPrices.asset0;
+          ? Number(formatUnits(state.limit0In, state.asset0Decimals)) * pnl.currentPrices.asset0
+          : Number(formatUnits(state.limit1In, state.asset1Decimals)) * pnl.currentPrices.asset1;
 
         // Edge in bps for display
         const edgeBps = netEdgePct * 10000;
