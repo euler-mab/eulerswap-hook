@@ -507,6 +507,144 @@ export function computeY0(p: Params): number {
   return p.yr * computeBoostY(p);
 }
 
+// --- Additive boost ---
+// x0 = xr + BX  (works for any xr >= 0, including zero)
+// See docs/additive-boost-derivation.md for full derivation.
+
+/**
+ * Additive boost for X side: BX such that H_XX = 1 at x = xb.
+ * Returns BX (can be ≤ 0 if insufficient equity). Does NOT handle Z-debt.
+ */
+export function computeAdditiveBoostX(p: Params): number {
+  const { px, py, xr, yr, xd, yd, vyx, vzx, vzy, zr, rx, cx, rXX, rXY } = p;
+  const zd = computeZd(p);
+  if (zd > 0) {
+    // Z-debt: fall back to multiplicative (additive Z-debt not yet derived)
+    return computeX0(p) - xr;
+  }
+
+  const pzx = computePzx(p);
+  const sx = computeSx(rx, cx);
+  const PX = computePX(cx, sx);
+  const R = 1 + rx;
+  const pXyxb = (py / px) / R;  // X per Y at boundary
+  const pxy = px / py;
+  const ZXC = vzx * zr * pzx + rXX;
+  const ZXY = vzy * zr * pzx + rXY;
+
+  // --- bXL11: CXX = 0, yXdelta > yd (primary) ---
+  const denom11 = (sx - 1) * (R - vyx * PX);
+  if (Math.abs(denom11) < 1e-30) return 0;
+
+  const num11 = vyx * (yr - yd) * pXyxb * sx * R
+    + xr * (vyx * (sx - 1) * PX + R)
+    + (ZXC - xd) * sx * R;
+  const BX_11 = num11 / denom11;
+
+  // Validity: CXX = 0 and yXdelta > yd
+  const x0_11 = xr + BX_11;
+  const yXdelta_11 = pxy * x0_11 * (sx - 1) * PX / sx;
+  if (BX_11 > xr / (sx - 1) && yXdelta_11 > yd) {
+    return BX_11;
+  }
+
+  // --- bXL01: CXX = 0, yXdelta ≤ yd (H_XY phase) ---
+  if (ZXY > 0) {
+    const BX_01 = (yd * pXyxb - ZXY) * sx * R / ((sx - 1) * PX) - xr;
+    if (BX_01 > xr / (sx - 1) && BX_01 > 0) {
+      return BX_01;
+    }
+  }
+
+  // --- bXL10: CXX > 0, yXdelta > yd (low leverage, xd > 0) ---
+  if (xd > 0) {
+    const A10 = vyx * (sx - 1) * PX / (sx * R);
+    if (A10 > 0) {
+      const BX_10 = (xd - ZXC - vyx * yr * pXyxb) / A10 - xr;
+      const x0_10 = xr + BX_10;
+      const yXdelta_10 = pxy * x0_10 * (sx - 1) * PX / sx;
+      if (BX_10 > 0 && BX_10 < xr / (sx - 1) && yXdelta_10 > yd) {
+        return BX_10;
+      }
+    }
+  }
+
+  // --- bXL00: no leverage boost ---
+  return 0;
+}
+
+/**
+ * Additive boost for Y side: BY such that H_YY = 1 at y = yb.
+ * Returns BY (can be ≤ 0 if insufficient equity). Does NOT handle Z-debt.
+ */
+export function computeAdditiveBoostY(p: Params): number {
+  const { px, py, xr, yr, xd, yd, vxy, vzx, vzy, zr, ry, cy, rYX, rYY } = p;
+  const zd = computeZd(p);
+  if (zd > 0) {
+    return computeY0(p) - yr;
+  }
+
+  const pzx = computePzx(p);
+  const pzy = pzx * (px / py);
+  const sy = computeSy(ry, cy);
+  const PY = computePY(cy, sy);
+  const Ry = 1 + ry;
+  const pYxyb = (px / py) / Ry;  // Y per X at boundary
+  const pyx = py / px;
+  const ZYC = vzy * zr * pzy + rYY;
+  const ZYX = vzx * zr * pzy + rYX;
+
+  // --- bYL11: CYY = 0, xYdelta > xd (primary) ---
+  const denom11 = (sy - 1) * (Ry - vxy * PY);
+  if (Math.abs(denom11) < 1e-30) return 0;
+
+  const num11 = vxy * (xr - xd) * pYxyb * sy * Ry
+    + yr * (vxy * (sy - 1) * PY + Ry)
+    + (ZYC - yd) * sy * Ry;
+  const BY_11 = num11 / denom11;
+
+  // Validity: CYY = 0 and xYdelta > xd
+  const y0_11 = yr + BY_11;
+  const xYdelta_11 = pyx * y0_11 * (sy - 1) * PY / sy;
+  if (BY_11 > yr / (sy - 1) && xYdelta_11 > xd) {
+    return BY_11;
+  }
+
+  // --- bYL01: CYY = 0, xYdelta ≤ xd (H_YX phase) ---
+  if (ZYX > 0) {
+    const BY_01 = (xd * pYxyb - ZYX) * sy * Ry / ((sy - 1) * PY) - yr;
+    if (BY_01 > yr / (sy - 1) && BY_01 > 0) {
+      return BY_01;
+    }
+  }
+
+  // --- bYL10: CYY > 0, xYdelta > xd (low leverage, yd > 0) ---
+  if (yd > 0) {
+    const A10 = vxy * (sy - 1) * PY / (sy * Ry);
+    if (A10 > 0) {
+      const BY_10 = (yd - ZYC - vxy * xr * pYxyb) / A10 - yr;
+      const y0_10 = yr + BY_10;
+      const xYdelta_10 = pyx * y0_10 * (sy - 1) * PY / sy;
+      if (BY_10 > 0 && BY_10 < yr / (sy - 1) && xYdelta_10 > xd) {
+        return BY_10;
+      }
+    }
+  }
+
+  // --- bYL00: no leverage boost ---
+  return 0;
+}
+
+/** Additive virtual X reserve: x0 = max(0, xr + BX). Works for xr = 0. */
+export function computeX0Additive(p: Params): number {
+  return Math.max(0, p.xr + computeAdditiveBoostX(p));
+}
+
+/** Additive virtual Y reserve: y0 = max(0, yr + BY). Works for yr = 0. */
+export function computeY0Additive(p: Params): number {
+  return Math.max(0, p.yr + computeAdditiveBoostY(p));
+}
+
 // --- Range boundaries ---
 
 /** Lower boundary of virtual X reserve: xb = v / s_X. Works for both x0 and xr. */
