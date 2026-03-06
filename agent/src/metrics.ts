@@ -109,6 +109,40 @@ export function getRealizedVol(): { volBps: number; avgBlocksBetweenPolls: numbe
   return { volBps, avgBlocksBetweenPolls, sampleSize: returns.length };
 }
 
+/**
+ * Estimate gasThreshold: minimum mismatch for profitable arb.
+ *
+ * gasThreshold ≈ swapGasCost_ETH / (poolDepth_ETH × 2)
+ *
+ * An arb needs the fee savings to exceed gas cost. With a pool of depth D (in ETH),
+ * a mismatch of m produces an arb profit ≈ m × D. Setting fee = m captures all of it,
+ * so the arb is unprofitable if m × D < gasCost, i.e. m < gasCost / D.
+ *
+ * @param gasPriceGwei Current gas price in gwei
+ * @param swapGasUnits Gas units for an arb swap (~150,000)
+ * @param poolDepthEth Total pool depth in ETH terms (both sides)
+ * @returns gasThreshold as WAD-scaled value
+ */
+export function computeGasThreshold(
+  gasPriceGwei: number,
+  swapGasUnits: number = 150_000,
+  poolDepthEth: number = 450,
+): bigint {
+  const gasCostEth = gasPriceGwei * swapGasUnits * 1e-9;
+  const threshold = gasCostEth / (poolDepthEth * 2);
+  // Convert to WAD (1e18), clamp to [1 bps, 200 bps]
+  const thresholdWad = Math.max(1e14, Math.min(200e14, threshold * 1e18));
+  return BigInt(Math.round(thresholdWad));
+}
+
+/**
+ * Default capture rate: 80% of arb profit above threshold.
+ * This leaves 20% for the arber as incentive to execute, while capturing most LVR.
+ */
+export function computeCaptureRate(): bigint {
+  return BigInt("800000000000000000"); // 0.8e18 = 80%
+}
+
 /** Compute a trend summary from recent snapshots for Claude context */
 export function getTrendSummary(): string | null {
   const snaps = metrics.snapshots;

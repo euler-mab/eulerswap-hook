@@ -52,10 +52,11 @@ contract LPAgentHook is IEulerSwapHookTarget {
     // --- Fee parameters (owner-updatable) ---
     uint64 public baseFee; // base fee in WAD (e.g. 5e14 = 5bps)
     uint64 public maxFee; // maximum fee cap
-    uint256 public mismatchScale; // fraction of mismatch to capture (WAD-scaled, e.g. 0.8e18 = 80%)
+    uint64 public gasThreshold; // WAD: min mismatch for profitable arb (e.g. 30bps = 30e14)
+    uint256 public captureRate; // WAD: fraction of arb profit above threshold to capture (e.g. 0.8e18 = 80%)
 
     // --- Events ---
-    event FeeParamsUpdated(uint64 baseFee, uint64 maxFee, uint256 mismatchScale);
+    event FeeParamsUpdated(uint64 baseFee, uint64 maxFee, uint64 gasThreshold, uint256 captureRate);
 
     // --- Errors ---
     error Unauthorized();
@@ -77,14 +78,16 @@ contract LPAgentHook is IEulerSwapHookTarget {
         address _uniswapPool,
         uint64 _baseFee,
         uint64 _maxFee,
-        uint256 _mismatchScale
+        uint64 _gasThreshold,
+        uint256 _captureRate
     ) {
         pool = _pool;
         owner = _owner;
         uniswapPool = _uniswapPool;
         baseFee = _baseFee;
         maxFee = _maxFee;
-        mismatchScale = _mismatchScale;
+        gasThreshold = _gasThreshold;
+        captureRate = _captureRate;
 
         // Cache vault and asset addresses from pool's static params
         IEulerSwap.StaticParams memory sParams = IEulerSwap(_pool).getStaticParams();
@@ -106,12 +109,13 @@ contract LPAgentHook is IEulerSwapHookTarget {
 
     /// @notice Dynamic fee using Uniswap V3 spot price as market reference.
     ///
-    /// When mismatchScale > 0: reads Uniswap V3 slot0 to get current market price,
-    /// compares to the EulerSwap curve's marginal price, and elevates the fee on the
-    /// arb direction (the side that exploits the mismatch). The counter-direction pays
-    /// baseFee — never less. This captures LVR without penalizing retail flow.
+    /// Reads Uniswap V3 slot0 to get current market price, compares to the EulerSwap
+    /// curve's marginal price. If the mismatch exceeds gasThreshold (the no-arb zone
+    /// where gas costs exceed arb profit), elevates the fee on the arb direction by
+    /// captureRate × (mismatch - gasThreshold). Below gasThreshold, all swaps pay baseFee.
     ///
-    /// Set mismatchScale = 0 to disable and use flat baseFee for all swaps.
+    /// This captures LVR on arb trades without penalizing retail flow that arrives
+    /// within the gas band.
     ///
     /// @param asset0IsInput True if asset0 is being sent to the pool
     /// @param reserve0 Current reserve of asset0
@@ -125,11 +129,11 @@ contract LPAgentHook is IEulerSwapHookTarget {
     {
         uint256 computedFee = uint256(baseFee);
 
-        // --- Uniswap mismatch (directional fee elevation) ---
-        // Reads Uniswap V3 slot0 for current market price. If our pool's marginal price
-        // diverges, elevate the fee on the arb direction. The opposite direction is unaffected.
-        // Gas: ~500 warm (arb txs that already touched Uniswap), ~5000 cold (retail).
-        if (mismatchScale > 0) {
+        // --- Bayesian fee: threshold + capture ---
+        // Reads Uniswap V3 slot0 for current market price. If mismatch exceeds
+        // gasThreshold, the trade is likely arb — capture a fraction of the excess.
+        // Below gasThreshold, all trades pay baseFee (likely retail).
+        if (captureRate > 0) {
             uint256 uniPrice = _getUniswapPrice();
             if (uniPrice > 0) {
                 uint256 marginalPrice = _getMarginalPrice(reserve0, reserve1);
@@ -147,9 +151,9 @@ contract LPAgentHook is IEulerSwapHookTarget {
                     isArbDirection = asset0IsInput;
                 }
 
-                // Only elevate on arb direction; counter-direction stays at baseFee
-                if (isArbDirection) {
-                    computedFee += (mismatchScale * mismatch) / WAD;
+                // Only elevate on arb direction above gas threshold
+                if (isArbDirection && mismatch > uint256(gasThreshold)) {
+                    computedFee += (captureRate * (mismatch - uint256(gasThreshold))) / WAD;
                 }
             }
         }
@@ -171,15 +175,16 @@ contract LPAgentHook is IEulerSwapHookTarget {
 
     // --- Owner management ---
 
-    function setFeeParams(uint64 _baseFee, uint64 _maxFee, uint256 _mismatchScale) external onlyOwner {
+    function setFeeParams(uint64 _baseFee, uint64 _maxFee, uint64 _gasThreshold, uint256 _captureRate) external onlyOwner {
         require(_baseFee <= _maxFee, "invalid fee ordering");
         require(_maxFee < uint64(WAD), "max fee >= 100%");
 
         baseFee = _baseFee;
         maxFee = _maxFee;
-        mismatchScale = _mismatchScale;
+        gasThreshold = _gasThreshold;
+        captureRate = _captureRate;
 
-        emit FeeParamsUpdated(_baseFee, _maxFee, _mismatchScale);
+        emit FeeParamsUpdated(_baseFee, _maxFee, _gasThreshold, _captureRate);
     }
 
     // --- Internal ---
@@ -249,8 +254,8 @@ contract LPAgentHook is IEulerSwapHookTarget {
     function getFeeParams()
         external
         view
-        returns (uint64 _baseFee, uint64 _maxFee, uint256 _mismatchScale)
+        returns (uint64 _baseFee, uint64 _maxFee, uint64 _gasThreshold, uint256 _captureRate)
     {
-        return (baseFee, maxFee, mismatchScale);
+        return (baseFee, maxFee, gasThreshold, captureRate);
     }
 }

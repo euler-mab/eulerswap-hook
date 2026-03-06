@@ -43,8 +43,9 @@ contract UpgradeHooks is Script {
             deployer,
             UNI_USDC_WETH,
             5e14,    // baseFee: 5 bps
-            120e14,  // maxFee: 120 bps
-            0.8e18   // mismatchScale: 80% capture
+            3500e14, // maxFee: 3500 bps
+            30e14,   // gasThreshold: 30 bps (no-arb zone)
+            0.8e18   // captureRate: 80% of excess mismatch
         );
         console.log("USDC/WETH hook:", address(hook1));
         _installHook(USDC_WETH_POOL, USDC_WETH_ACCOUNT, address(hook1));
@@ -54,9 +55,10 @@ contract UpgradeHooks is Script {
             USDC_USDT_POOL,
             deployer,
             UNI_USDC_USDT,
-            3e14,    // baseFee: 3 bps
+            5e13,    // baseFee: 0.5 bps
             50e14,   // maxFee: 50 bps
-            0.8e18   // mismatchScale: 80% capture
+            5e14,    // gasThreshold: 5 bps (stables have tight no-arb zone)
+            0.8e18   // captureRate: 80% of excess mismatch
         );
         console.log("USDC/USDT hook:", address(hook2));
         _installHook(USDC_USDT_POOL, USDC_USDT_ACCOUNT, address(hook2));

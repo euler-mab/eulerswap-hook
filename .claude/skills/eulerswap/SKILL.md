@@ -338,34 +338,51 @@ function afterSwap(
 
 Key insight: the afterSwap hook fires with the pool **unlocked**, so the hook can call `reconfigure()` directly (no EVC routing needed). This is how you build continuous releverage without external keepers.
 
-### Dynamic Fee Strategy (LPAgentHook pattern)
+### Dynamic Fee Strategy (LPAgentHook — Bayesian Gas-Threshold Model)
 
-See `contracts/src/LPAgentHook.sol` for a complete example:
+See `contracts/src/LPAgentHook.sol` for the deployed implementation.
+See `contracts/src/BAYESIAN_FEE_MODEL.md` for the full model derivation.
+
+**Price source:** The hook reads Uniswap V3 `slot0` directly (spot/marginal price, NOT Chainlink or TWAP). This is independent of the Euler vault oracle (which may use Chainlink). The hook stores a `uniswapPool` address and calls `IUniswapV3Pool(uniswapPool).slot0()` to get `sqrtPriceX96`, then converts to a WAD-scaled price.
+
+**Fee formula:**
+```
+mismatch = |uniswapPrice − marginalPrice| / uniswapPrice
+fee = baseFee + captureRate × max(mismatch − gasThreshold, 0)
+```
+
+- `gasThreshold` (WAD): minimum mismatch for profitable arb (the "no-arb zone")
+- `captureRate` (WAD): fraction of excess mismatch to capture (e.g. 0.8e18 = 80%)
+- Below gasThreshold → all swaps pay baseFee (likely retail)
+- Above gasThreshold, arb direction → elevated fee captures LVR
+- Counter-direction → always baseFee
 
 ```solidity
-function getFee(
-    bool asset0IsInput,
-    uint112 reserve0, uint112 reserve1,
-    bool readOnly
-) external returns (uint64 fee) {
-    // 1. Get oracle price
-    uint256 oraclePrice = getOraclePrice();
+function getFee(bool asset0IsInput, uint112 reserve0, uint112 reserve1, bool)
+    external view returns (uint64 fee)
+{
+    uint256 computedFee = uint256(baseFee);
 
-    // 2. Compute pool marginal price from reserves
-    uint256 marginalPrice = uint256(reserve1) * 1e18 / reserve0;
+    if (captureRate > 0) {
+        uint256 uniPrice = _getUniswapPrice();       // Uniswap V3 slot0
+        uint256 marginalPrice = _getMarginalPrice(reserve0, reserve1);
+        uint256 mismatch = |uniPrice - marginalPrice| / uniPrice;
 
-    // 3. Compute mismatch
-    uint256 mismatch = oraclePrice > marginalPrice
-        ? (oraclePrice - marginalPrice) * 1e18 / oraclePrice
-        : (marginalPrice - oraclePrice) * 1e18 / oraclePrice;
+        if (isArbDirection && mismatch > uint256(gasThreshold)) {
+            computedFee += (captureRate * (mismatch - uint256(gasThreshold))) / WAD;
+        }
+    }
 
-    // 4. Asymmetric fee: charge more on underpriced side
-    uint256 rawFee = baseFee + mismatch * mismatchScale / 1e18;
-
-    // 5. Clamp to [minFee, maxFee]
-    return uint64(rawFee > maxFee ? maxFee : rawFee < minFee ? minFee : rawFee);
+    if (computedFee > uint256(maxFee)) computedFee = uint256(maxFee);
+    return uint64(computedFee);
 }
 ```
+
+**Parameters** (setFeeParams — all 4 required):
+- `baseFee` (uint64): resting fee. Typical: 5-50 bps.
+- `maxFee` (uint64): hard ceiling. Typical: 50-3500 bps.
+- `gasThreshold` (uint64): no-arb zone width. Typical: 5-50 bps.
+- `captureRate` (uint256): capture fraction. Typical: 0.5-1.0 (WAD-scaled).
 
 ## Leverage via Euler Vaults
 
@@ -477,7 +494,7 @@ Deploy pool with desired `rx`, `ry`, `cx`, `cy`. Collect fees passively. No hook
 Set `swapHookedOperations = AFTER_SWAP`. Hook calls `reconfigure()` to re-center after every swap. Achieves L=2 leverage with residual IL ≈ σ²T/4.
 
 ### Dynamic Fee (getFee hook)
-Set `swapHookedOperations = GET_FEE`. Hook reads oracle, computes fee based on price mismatch. Charge more on the underpriced side to extract MEV.
+Set `swapHookedOperations = GET_FEE`. Hook reads Uniswap V3 `slot0` (spot price), computes fee based on mismatch vs pool marginal price. Charges more on the arb direction (underpriced side) to extract MEV. The Uniswap price source is independent of the Euler vault oracle.
 
 ### Combined (getFee + afterSwap)
 Set `swapHookedOperations = GET_FEE | AFTER_SWAP`. Dynamic fees + releverage. This is the "Yield Basis" ideal — high fees on arb, low fees on retail, continuous re-centering.
@@ -659,17 +676,19 @@ Resolution order: direct mapping → ERC4626 vault recursion → fallback oracle
 
 ### Using Oracles in Hooks
 
+**Important:** The hook's price source for dynamic fees is separate from the Euler vault oracle used for health checks. The deployed `LPAgentHook` reads **Uniswap V3 `slot0` directly** (spot/marginal price) — it does NOT use the Euler vault oracle (which is typically Chainlink). This gives the tightest possible mismatch signal for fee computation.
+
 ```solidity
-// In a getFee hook — compare oracle vs pool price
-// getQuote is decimal-aware: inAmount in base decimals, returns quote decimals
-// Using same inAmount (WAD) for both tokens, then taking ratio, preserves
-// the decimal scaling so it matches the pool's marginal price formula
-uint256 price0 = IPriceOracle(oracle).getQuote(1e18, asset0, unitOfAccount);
-uint256 price1 = IPriceOracle(oracle).getQuote(1e18, asset1, unitOfAccount);
-uint256 oraclePrice = (price0 * 1e18) / price1;  // same units as marginal
-uint256 poolPrice = uint256(reserve1) * 1e18 / reserve0;
-uint256 mismatch = abs(oraclePrice - poolPrice) * 1e18 / oraclePrice;
+// LPAgentHook reads Uniswap V3 spot price directly:
+(uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(uniswapPool).slot0();
+uint256 priceWad = (sqrtPriceX96 * sqrtPriceX96).mulDiv(WAD, Q192);
+
+// Compare against pool's marginal price from curve:
+uint256 marginalPrice = _getMarginalPrice(reserve0, reserve1);
+uint256 mismatch = abs(uniPrice - marginalPrice) * WAD / uniPrice;
 ```
+
+The Euler vault oracle adapters (Chainlink, Pyth, etc.) listed above are used for **vault health checks**, not for hook fee computation.
 
 For pull-based oracles (Pyth/Redstone), update price feeds atomically in the same EVC batch before querying.
 
@@ -794,8 +813,8 @@ address pool = factory.deployPool(
 );
 
 // 2. Deploy hook — constructor reads pool.getStaticParams()
-//    mismatchScale is uint256 (not uint64) — realistic values like 10e18 overflow uint64
-LPAgentHook hook = new LPAgentHook(pool, owner, baseFee, maxFee, minFee, mismatchScale);
+//    captureRate is uint256 (not uint64) — WAD-scaled values like 0.8e18 overflow uint64
+LPAgentHook hook = new LPAgentHook(pool, owner, uniswapPool, baseFee, maxFee, gasThreshold, captureRate);
 
 // 3. Reconfigure pool to install hook (must go through EVC)
 DynamicParams memory dp = IEulerSwap(pool).getDynamicParams();

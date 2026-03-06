@@ -134,8 +134,9 @@ contract DeployForkTest is Script {
             deployer,   // owner = deployer (agent EOA for fork testing)
             0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640, // Uniswap V3 USDC/WETH 0.05%
             5e14,       // baseFee: 5 bps
-            120e14,     // maxFee: 120 bps
-            0.8e18      // mismatchScale: 80% capture
+            3500e14,    // maxFee: 3500 bps
+            30e14,      // gasThreshold: 30 bps
+            0.8e18      // captureRate: 80%
         );
         console.log("Hook deployed at:", address(hook));
 

@@ -248,7 +248,8 @@ function checkInterestRateRebalance(
       params: {
         baseFee: feeParams.baseFee.toString(),
         maxFee: newMaxFee.toString(),
-        mismatchScale: feeParams.mismatchScale.toString(),
+        gasThreshold: feeParams.gasThreshold.toString(),
+        captureRate: feeParams.captureRate.toString(),
       },
     },
   };
@@ -302,10 +303,11 @@ export function isSafe(
   if (rec.type === "setFeeParams") {
     const baseFee = BigInt(rec.params["baseFee"] as string || "0");
     const maxFee = BigInt(rec.params["maxFee"] as string || "0");
-    const mismatchScale = BigInt(rec.params["mismatchScale"] as string || "0");
+    const gasThreshold = BigInt(rec.params["gasThreshold"] as string || "0");
+    const captureRate = BigInt(rec.params["captureRate"] as string || "0");
 
-    if (!rec.params["baseFee"] || !rec.params["maxFee"] || !rec.params["mismatchScale"]) {
-      return { safe: false, reason: "setFeeParams requires all 3 params: baseFee, maxFee, mismatchScale" };
+    if (!rec.params["baseFee"] || !rec.params["maxFee"] || !rec.params["gasThreshold"] || !rec.params["captureRate"]) {
+      return { safe: false, reason: "setFeeParams requires all 4 params: baseFee, maxFee, gasThreshold, captureRate" };
     }
 
     if (baseFee < config.minBaseFee || baseFee > config.maxBaseFee) {
@@ -314,8 +316,11 @@ export function isSafe(
     if (maxFee > WAD) {
       return { safe: false, reason: `maxFee ${maxFee} exceeds 100%` };
     }
-    if (mismatchScale > 100n * WAD) {
-      return { safe: false, reason: `mismatchScale ${mismatchScale} exceeds 100x cap` };
+    if (gasThreshold > 500n * BPS) {
+      return { safe: false, reason: `gasThreshold ${gasThreshold} exceeds 500 bps cap` };
+    }
+    if (captureRate > 2n * WAD) {
+      return { safe: false, reason: `captureRate ${captureRate} exceeds 2x (200%) cap` };
     }
     if (baseFee > maxFee) {
       return { safe: false, reason: `fee ordering violated: base(${baseFee}) > max(${maxFee})` };

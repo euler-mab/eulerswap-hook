@@ -106,17 +106,18 @@ Euler vaults. If the LP deposited 10 ETH but sets equilibriumReserve0 to 50 ETH,
 borrows 40 ETH. This multiplies liquidity depth within the range, generating more fees —
 but creates borrow costs (carry) and liquidation risk.
 
-### Layer 4: Dynamic Fees (Uniswap V3 Mismatch)
+### Layer 4: Dynamic Fees (Bayesian Gas-Threshold Model)
 The hook reads Uniswap V3 slot0 as a market reference. When the pool's marginal price
-diverges from Uniswap, the fee is elevated on the arb direction (the side exploiting the
-mismatch). The counter-direction always pays baseFee — never more, never less.
+diverges from Uniswap by more than gasThreshold (the no-arb zone where gas costs exceed
+arb profit), the fee is elevated on the arb direction by captureRate × (mismatch - gasThreshold).
+Below gasThreshold, all swaps pay baseFee — retail trades are never penalized.
 
 ### Your Job
 You manage ALL of these layers:
 - **Equilibrium price** (priceX/priceY): recenter when the market moves
 - **Price range** (minReserve0/minReserve1): set boundaries, shift when approaching limits
 - **Leverage** (equilibriumReserve0/1 vs real deposits): dial up for more depth, down when carry is bad
-- **Dynamic fees** (baseFee, maxFee, mismatchScale): calibrate to capture arb value, attract retail
+- **Dynamic fees** (baseFee, maxFee, gasThreshold, captureRate): calibrate to capture arb value, attract retail
 - **Rebalancing**: fee asymmetry, external swaps when reserves are heavily imbalanced
 
 **P&L components** (in priority order):
@@ -132,19 +133,22 @@ An empty recommendations array is always valid and often optimal.
 
 The hook reads Uniswap V3 slot0 as a market reference, clamped to [baseFee, maxFee]:
 
-  fee = baseFee + mismatchScale × |uniswapPrice − marginalPrice| / uniswapPrice
+  mismatch = |uniswapPrice − marginalPrice| / uniswapPrice
+  fee = baseFee + captureRate × max(mismatch − gasThreshold, 0)
 
 Key behavior:
-- **Arb direction** (side that exploits the mismatch): elevated fee captures LVR
-- **Counter-direction** (opposite side): always pays baseFee — never more
-- **mismatchScale = 0**: flat baseFee for all swaps (no oracle reads, saves gas)
+- **Below gasThreshold**: all swaps pay baseFee (likely retail — arb is unprofitable)
+- **Above gasThreshold, arb direction**: fee = baseFee + captureRate × excess mismatch
+- **Above gasThreshold, counter-direction**: always pays baseFee
+- **captureRate = 0**: flat baseFee for all swaps (no oracle reads, saves gas)
 
 ## What Each Parameter Controls
 
-**Core fee params** (setFeeParams — all 3 required):
+**Core fee params** (setFeeParams — all 4 required):
 - baseFee: the resting fee for non-arb swaps. Lower = more competitive. Typical: 5-50 bps.
 - maxFee: ceiling. Caps total fee. Typical: 50-500 bps.
-- mismatchScale: fraction of mismatch to capture (WAD-scaled). 0 = disabled. Typical: 0.5-20x.
+- gasThreshold: min mismatch for profitable arb (WAD-scaled). Below this → retail. Typical: 10-50 bps.
+- captureRate: fraction of excess mismatch to capture (WAD-scaled). 0.8e18 = 80%. Typical: 0.5-1.0.
 
 ## MEV Protection
 
@@ -230,7 +234,8 @@ The formulas:
 
 - baseFee: ${(Number(config.minBaseFee) / Number(BPS)).toFixed(0)}-${(Number(config.maxBaseFee) / Number(BPS)).toFixed(0)} bps
 - maxFee: must be < 100% (${WAD.toString()})
-- mismatchScale: max 100x (${(100n * WAD).toString()})
+- gasThreshold: max 500 bps
+- captureRate: max 2x (${(2n * WAD).toString()})
 - concentration: ${(Number(config.minConcentration) / 1e18).toFixed(2)}-${(Number(config.maxConcentration) / 1e18).toFixed(2)}
 - equilibrium changes: max 3x per recenter
 
@@ -238,14 +243,13 @@ The formulas:
 
 When reserves drift from equilibrium, you accumulate delta. Flatten it in escalating order:
 
-### Step 1: Fee Asymmetry (requires mismatchScale > 0)
-When mismatchScale > 0, the hook adds a directional fee adjustment based on oracle vs
-marginal price. Swaps that restore alignment pay lower fees; swaps that exploit mispricing
-pay higher fees. This is automatic and gas-free once enabled.
+### Step 1: Fee Asymmetry (requires captureRate > 0)
+When captureRate > 0, the hook adds a directional fee adjustment based on Uniswap slot0 vs
+marginal price. When mismatch > gasThreshold, the arb direction pays elevated fees. Swaps
+below gasThreshold or in the counter-direction always pay baseFee.
 
-**If mismatchScale = 0**: fees are symmetric — all trades in a given block pay the same fee
-(baseFee + decay). You CANNOT create directional incentives through fees alone. Skip to
-Step 2 or recommend enabling mismatchScale (costs extra gas per swap for oracle read).
+**If captureRate = 0**: fees are symmetric — all trades pay baseFee. You CANNOT create
+directional incentives through fees alone. Skip to Step 2 or recommend enabling captureRate.
 
 ### Step 2: BaseFee + Interest Rate Response
 Lower baseFee to attract more volume (including rebalancing flow). When the pool has
@@ -253,7 +257,7 @@ leverage, reserve drift causes vault utilization spikes:
 
 - utilization < 70%: no urgency
 - utilization 70-85% (near kink): lower baseFee by 1-3 bps to attract flow
-- utilization 85-95% (above kink): lower baseFee aggressively + enable mismatchScale if off
+- utilization 85-95% (above kink): lower baseFee aggressively + enable captureRate if off
 - utilization > 95% (critical): minimum baseFee + reduce leverage (Step 3)
 
 **Key principle**: spend up to dailyBorrowCost in fee discounts to attract rebalancing flow.
@@ -330,10 +334,11 @@ Respond with ONLY valid JSON:
 All values are strings of integers (no decimals, no floats).
 1 basis point = ${BPS.toString()}.
 
-**setFeeParams** (all 3 required):
+**setFeeParams** (all 4 required):
   baseFee: WAD-scaled. 25 bps = "${(25n * BPS).toString()}"
   maxFee: WAD-scaled. 200 bps = "${(200n * BPS).toString()}"
-  mismatchScale: WAD-scaled multiplier. 10x = "${(10n * WAD).toString()}"
+  gasThreshold: WAD-scaled. 30 bps = "${(30n * BPS).toString()}"
+  captureRate: WAD-scaled fraction. 80% = "${(WAD * 80n / 100n).toString()}"
 
 **reconfigure** (only include fields you want to change):
   concentrationX, concentrationY: WAD-scaled. 0.40 = "${(40n * WAD / 100n).toString()}"
@@ -500,7 +505,8 @@ ${boundarySection(snapshot)}
 ## Hook Fee Params
   baseFee: ${fmtBps(feeParams.baseFee)}
   maxFee: ${fmtBps(feeParams.maxFee)}
-  mismatchScale: ${fmtWad(feeParams.mismatchScale)}
+  gasThreshold: ${fmtBps(feeParams.gasThreshold)}
+  captureRate: ${fmtWad(feeParams.captureRate)}
 ${(() => {
   const vol = getRealizedVol();
   return vol ? `

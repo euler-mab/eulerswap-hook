@@ -57,7 +57,8 @@ export interface PoolSnapshot {
 export interface HookFeeParams {
   baseFee: bigint;
   maxFee: bigint;
-  mismatchScale: bigint;
+  gasThreshold: bigint;
+  captureRate: bigint;
 }
 
 // --- Vault debt/utilization ---

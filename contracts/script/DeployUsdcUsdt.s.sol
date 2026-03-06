@@ -180,9 +180,10 @@ contract DeployUsdcUsdt is Script {
             poolAddr,
             deployer,
             0x3416cF6C708Da44DB2624D63ea0AAef7113527C6, // Uniswap V3 USDC/USDT 0.01%
-            3e14,   // baseFee: 3 bps
+            5e13,   // baseFee: 0.5 bps
             50e14,  // maxFee: 50 bps
-            0.8e18  // mismatchScale: 80% capture
+            5e14,   // gasThreshold: 5 bps
+            0.8e18  // captureRate: 80%
         );
         console.log("Hook deployed at:", address(hook));
 

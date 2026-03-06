@@ -393,7 +393,8 @@ export async function getHookFeeParams(
   return {
     baseFee: result[0],
     maxFee: result[1],
-    mismatchScale: result[2],
+    gasThreshold: result[2],
+    captureRate: result[3],
   };
 }
 
