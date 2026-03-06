@@ -4,8 +4,8 @@ import { useState } from "react";
 import { formatUnits } from "viem";
 import type { PoolConfig } from "@/lib/pools/config";
 import type { PoolState } from "@/lib/pools/types";
-import type { PnlAttribution } from "@/lib/pools/pnl";
-import { fmtAmount, fmtFeeBps, fmtPrice, fmtUsd, shortAddr, timeAgo } from "@/lib/pools/format";
+import type { PnlAttribution, TwrResult } from "@/lib/pools/pnl";
+import { fmtAmount, fmtFeeBps, fmtPrice, fmtUsd, shortAddr } from "@/lib/pools/format";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -31,12 +31,11 @@ interface OverviewProps {
   pool: PoolConfig;
   pnl?: PnlAttribution | null;
   pnlError?: string | null;
+  twrResult?: TwrResult | null;
 }
 
-export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewProps) {
+export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: OverviewProps) {
   const [inverted, setInverted] = useState(true);
-  const ethPrice = undefined; // TODO: use DeFiLlama price if needed
-
   const r0 = Number(formatUnits(state.reserve0, state.asset0Decimals));
   const r1 = Number(formatUnits(state.reserve1, state.asset1Decimals));
 
@@ -44,14 +43,10 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
   const agentT0 = Number(formatUnits(state.agentToken0Balance, state.asset0Decimals));
   const agentT1 = Number(formatUnits(state.agentToken1Balance, state.asset1Decimals));
 
-  // TVL uses DeFiLlama prices when available, else oracle
+  // TVL uses DeFiLlama prices when available
   const tvl = pnl
     ? r0 * pnl.currentPrices.asset0 + r1 * pnl.currentPrices.asset1
-    : ethPrice && state.asset0Symbol === "USDC"
-      ? r0 + r1 * ethPrice
-      : ethPrice && state.asset1Symbol === "USDC"
-        ? r0 * ethPrice + r1
-        : undefined;
+    : undefined;
 
   return (
     <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-2.5 text-sm">
@@ -67,6 +62,11 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
             <span className="text-gray-400 ml-1 text-xs">
               (invested {fmtUsd(pnl.netInvestedUsd)}, {pnl.flowCount} flows)
             </span>
+            {twrResult && twrResult.durationDays > 1 && (
+              <span className="text-gray-400 ml-1 text-xs">
+                ({twrResult.annualizedReturn >= 0 ? "+" : ""}{(twrResult.annualizedReturn * 100).toFixed(1)}% ann., {Math.round(twrResult.durationDays)}d)
+              </span>
+            )}
           </>
         ) : (
           (() => {
@@ -74,7 +74,7 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
             const dep1 = Number(formatUnits(state.vaultDeposit1, state.asset1Decimals));
             const dbt0 = Number(formatUnits(state.vaultDebt0, state.asset0Decimals));
             const dbt1 = Number(formatUnits(state.vaultDebt1, state.asset1Decimals));
-            const a1InA0 = ethPrice ?? (state.marginalPrice > 0 ? 1 / state.marginalPrice : 1);
+            const a1InA0 = state.marginalPrice > 0 ? 1 / state.marginalPrice : 1;
             const nav = (dep0 - dbt0) + (dep1 - dbt1) * a1InA0;
             const isUsd = ["USDC", "USDT", "DAI"].includes(state.asset0Symbol);
             return (
@@ -88,7 +88,7 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
       </Row>
 
       {/* P&L breakdown */}
-      {pnl && (pnl.feesUsd > 0 || pnl.lpCost !== 0) && (
+      {pnl && (pnl.feesUsd > 0 || pnl.ilUsd !== 0 || pnl.interestUsd !== 0) && (
         <Row label="P&L breakdown">
           <span className="text-xs space-x-3">
             {pnl.feesUsd > 0 && (
@@ -96,9 +96,16 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
                 fees +{fmtUsd(pnl.feesUsd)}
               </span>
             )}
-            <span className={pnl.lpCost >= 0 ? "text-emerald-700" : "text-red-700"}>
-              IL + interest {pnl.lpCost >= 0 ? "+" : ""}{fmtUsd(pnl.lpCost)}
-            </span>
+            {pnl.ilUsd !== 0 && (
+              <span className={pnl.ilUsd >= 0 ? "text-emerald-700" : "text-red-700"}>
+                IL {pnl.ilUsd >= 0 ? "+" : ""}{fmtUsd(pnl.ilUsd)}
+              </span>
+            )}
+            {pnl.interestUsd !== 0 && (
+              <span className={pnl.interestUsd >= 0 ? "text-emerald-700" : "text-red-700"}>
+                interest {pnl.interestUsd >= 0 ? "+" : ""}{fmtUsd(pnl.interestUsd)}
+              </span>
+            )}
           </span>
         </Row>
       )}
@@ -145,13 +152,6 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
         ) : "—"}
       </Row>
 
-      {/* Oracle price */}
-      {ethPrice !== undefined && (
-        <Row label="Oracle price">
-          {ethPrice.toFixed(2)} {state.asset0Symbol === "USDC" ? "USDC/WETH" : "USD"}
-        </Row>
-      )}
-
       {/* DeFiLlama price cross-reference */}
       {pnl && (
         <Row label="Market price">
@@ -166,8 +166,8 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
 
       {/* Hook status */}
       <Row label="Hook">
-        {state.hookPaused !== undefined ? (
-          <Badge ok={!state.hookPaused} label={state.hookPaused ? "paused" : "active"} />
+        {state.hookBaseFee !== undefined ? (
+          <Badge ok={true} label="active" />
         ) : (
           <span className="text-gray-400">none</span>
         )}
@@ -177,11 +177,6 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
       {state.hookLiveFee0In !== undefined && (
         <Row label="Current fee">
           {fmtFeeBps(state.hookLiveFee0In)} ({state.asset0Symbol} in) / {fmtFeeBps(state.hookLiveFee1In!)} ({state.asset1Symbol} in)
-          {state.hookDecaySurcharge !== undefined && state.hookLastTradeTimestamp !== undefined && state.hookLastTradeTimestamp > 0 && (
-            <span className="text-gray-400 ml-1">
-              (last trade {timeAgo(state.hookLastTradeTimestamp)})
-            </span>
-          )}
         </Row>
       )}
 
@@ -190,7 +185,7 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
         {fmtFeeBps(state.fee0)} / {fmtFeeBps(state.fee1)}
         {state.hookBaseFee !== undefined && (
           <span className="text-gray-500 ml-1">
-            (hook: {fmtFeeBps(state.hookBaseFee)} base, {fmtFeeBps(state.hookMinFee!)} min, {fmtFeeBps(state.hookMaxFee!)} max)
+            (hook: {fmtFeeBps(state.hookBaseFee)} base, {fmtFeeBps(state.hookMaxFee!)} max)
           </span>
         )}
       </Row>

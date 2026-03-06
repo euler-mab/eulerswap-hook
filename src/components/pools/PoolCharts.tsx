@@ -6,6 +6,7 @@ import {
 } from "recharts";
 import type { PricePoint } from "@/lib/pools/types";
 import type { PoolState } from "@/lib/pools/types";
+import type { PnlTimePoint } from "@/lib/pools/pnl";
 import { downsample } from "@/lib/pools/format";
 
 const AXIS = { stroke: "#d1d5db", tick: { fill: "#6b7280", fontSize: 12 }, tickLine: false };
@@ -28,11 +29,12 @@ function Legend({ items }: { items: { color: string; label: string }[] }) {
   );
 }
 
-type ChartTab = "price" | "fees" | "reserves";
+type ChartTab = "price" | "pnl" | "fees" | "reserves";
 
 interface Props {
   pricePoints: PricePoint[];
   state: PoolState;
+  pnlTimeSeries?: PnlTimePoint[] | null;
 }
 
 function fmtNum(v: number): string {
@@ -42,27 +44,41 @@ function fmtNum(v: number): string {
   return v.toFixed(4);
 }
 
+function fmtUsdTick(v: number): string {
+  const sign = v < 0 ? "-" : "";
+  const abs = Math.abs(v);
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1)}k`;
+  return `${sign}$${abs.toFixed(0)}`;
+}
+
 function fmtTime(ts: number): string {
   if (!ts) return "";
   const d = new Date(ts * 1000);
   return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${d.getMinutes().toString().padStart(2, "0")}`;
 }
 
-export default function PoolCharts({ pricePoints, state }: Props) {
+export default function PoolCharts({ pricePoints, state, pnlTimeSeries }: Props) {
+  const hasPnl = pnlTimeSeries && pnlTimeSeries.length >= 2;
   const [tab, setTab] = useState<ChartTab>("price");
 
   const data = useMemo(() => downsample(pricePoints, 2000), [pricePoints]);
 
-  if (data.length < 2) {
+  if (data.length < 2 && !hasPnl) {
     return <div className="text-xs text-gray-400">Not enough data points for charts</div>;
   }
 
-  const useTimestamp = data[0].timestamp > 0;
+  const useTimestamp = data.length > 0 && data[0].timestamp > 0;
   const xKey = useTimestamp ? "timestamp" : "blockNumber";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const xFormatter = useTimestamp ? (v: any) => fmtTime(v) : (v: any) => `#${v}`;
 
-  const tabs: [ChartTab, string][] = [["price", "Price"], ["fees", "Fees"], ["reserves", "Reserves"]];
+  const tabs: [ChartTab, string][] = [
+    ["price", "Price"],
+    ...(hasPnl ? [["pnl", "P&L"] as [ChartTab, string]] : []),
+    ["fees", "Fees"],
+    ["reserves", "Reserves"],
+  ];
 
   return (
     <div className="space-y-4">
@@ -82,7 +98,7 @@ export default function PoolCharts({ pricePoints, state }: Props) {
       </div>
 
       {/* Price chart */}
-      {tab === "price" && (
+      {tab === "price" && data.length >= 2 && (
         <section>
           <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">
             Marginal Price ({state.asset1Symbol}/{state.asset0Symbol})
@@ -102,8 +118,47 @@ export default function PoolCharts({ pricePoints, state }: Props) {
         </section>
       )}
 
+      {/* P&L chart */}
+      {tab === "pnl" && hasPnl && (
+        <section>
+          <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">
+            Cumulative P&L (USD)
+          </h3>
+          <div className="rounded-lg border border-gray-200 bg-white p-3">
+            <ResponsiveContainer width="100%" height={280}>
+              <LineChart data={pnlTimeSeries}>
+                <CartesianGrid {...GRID} />
+                <XAxis dataKey="timestamp" {...AXIS} tickFormatter={fmtTime} minTickGap={40} />
+                <YAxis {...AXIS} tickFormatter={fmtUsdTick} />
+                <Tooltip
+                  {...TIP}
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  labelFormatter={(v: any) => fmtTime(v)}
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  formatter={(v: any, name: any) => {
+                    const val = v as number;
+                    const label = name === "cumulativeFeesUsd" ? "Fees"
+                      : name === "cumulativeIlUsd" ? "IL"
+                      : "Net";
+                    return [`$${val.toFixed(2)}`, label];
+                  }}
+                />
+                <Line type="monotone" dataKey="cumulativeFeesUsd" stroke="#34d399" dot={false} strokeWidth={1.5} name="cumulativeFeesUsd" />
+                <Line type="monotone" dataKey="cumulativeIlUsd" stroke="#ef4444" dot={false} strokeWidth={1.5} name="cumulativeIlUsd" />
+                <Line type="monotone" dataKey="cumulativeNetUsd" stroke="#3b82f6" dot={false} strokeWidth={1.5} name="cumulativeNetUsd" />
+              </LineChart>
+            </ResponsiveContainer>
+            <Legend items={[
+              { color: "#34d399", label: "Fees" },
+              { color: "#ef4444", label: "IL" },
+              { color: "#3b82f6", label: "Net" },
+            ]} />
+          </div>
+        </section>
+      )}
+
       {/* Fees chart */}
-      {tab === "fees" && (
+      {tab === "fees" && data.length >= 2 && (
         <section>
           <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">
             Cumulative Fees
@@ -129,7 +184,7 @@ export default function PoolCharts({ pricePoints, state }: Props) {
       )}
 
       {/* Reserves chart */}
-      {tab === "reserves" && (
+      {tab === "reserves" && data.length >= 2 && (
         <section>
           <h3 className="text-xs font-medium uppercase tracking-widest text-gray-400 mb-3">
             Pool Reserves
