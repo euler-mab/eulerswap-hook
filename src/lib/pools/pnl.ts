@@ -1,89 +1,75 @@
 import { formatUnits } from "viem";
 import type { Address } from "viem";
-import type { PoolConfig } from "./config";
-import type { PoolState, SwapEvent } from "./types";
-import { fetchPricesAt, fetchCurrentPrices } from "./prices";
+import type { PoolState, SwapEvent, VaultFlow } from "./types";
+import { fetchCurrentPrices } from "./prices";
 
 /** P&L attribution breakdown, all denominated in USD */
 export interface PnlAttribution {
   /** Current NAV in USD */
   navUsd: number;
-  /** Initial NAV in USD (at deploy-time prices) */
-  initialNavUsd: number;
-  /** Total P&L = navUsd - initialNavUsd */
+  /** Total external capital deployed (deposits - withdrawals) in USD at current prices */
+  netInvestedUsd: number;
+  /** Total P&L = navUsd - netInvestedUsd */
   totalPnl: number;
   /** Accumulated swap fees in USD (valued at current prices) */
   feesUsd: number;
-  /** Hodl value: what initial deposits would be worth at current prices */
-  hodlValueUsd: number;
-  /** Hodl delta: hodlValue - initialNav (pure price change on initial capital) */
-  hodlDelta: number;
-  /** LP cost: totalPnl - fees - hodlDelta (captures IL + net interest) */
+  /** LP cost: totalPnl - fees (captures IL + net interest - price change on equity) */
   lpCost: number;
-  /** Return percentage: totalPnl / initialNavUsd */
+  /** Return percentage: totalPnl / netInvestedUsd */
   returnPct: number;
-  /** Price source used */
-  priceSource: "defillama" | "oracle" | "marginal";
-  /** Deploy-time token prices in USD */
-  deployPrices: { asset0: number; asset1: number };
   /** Current token prices in USD */
   currentPrices: { asset0: number; asset1: number };
+  /** Number of external capital flow events detected */
+  flowCount: number;
 }
 
-/** Immutable deploy-time data (fetched once, never changes) */
-export interface DeploySnapshot {
-  timestamp: number;
-  price0: number;
-  price1: number;
-  initDep0: number;
-  initDep1: number;
-  initialNavUsd: number;
+/** Cached capital flow data (fetched once, immutable) */
+export interface CapitalSnapshot {
+  /** Net external deposits per asset (deposits - withdrawals) in raw human units */
+  netDeposit0: number;
+  netDeposit1: number;
+  /** Number of flow events */
+  flowCount: number;
 }
 
 /**
- * Fetch deploy-time prices and compute initial NAV. Called once per pool.
+ * Build capital snapshot from on-chain vault flow events.
+ * Nets deposits and withdrawals per asset.
  */
-export async function fetchDeploySnapshot(
-  pool: PoolConfig,
-  state: PoolState,
-  deployTimestamp: number,
-): Promise<DeploySnapshot> {
-  const tokens = [state.asset0, state.asset1] as Address[];
-  const priceMap = await fetchPricesAt(tokens, deployTimestamp);
+export function buildCapitalSnapshot(
+  flows: VaultFlow[],
+  asset0Decimals: number,
+  asset1Decimals: number,
+): CapitalSnapshot {
+  let netDeposit0 = 0;
+  let netDeposit1 = 0;
 
-  const a0 = state.asset0.toLowerCase();
-  const a1 = state.asset1.toLowerCase();
-  const price0 = priceMap.get(a0)?.price;
-  const price1 = priceMap.get(a1)?.price;
+  for (const f of flows) {
+    const decimals = f.vaultIndex === 0 ? asset0Decimals : asset1Decimals;
+    const amount = Number(formatUnits(f.assets, decimals));
+    const signed = f.direction === "deposit" ? amount : -amount;
 
-  if (price0 === undefined || price1 === undefined) {
-    throw new Error(`DeFiLlama missing deploy-time price for ${price0 === undefined ? state.asset0Symbol : state.asset1Symbol}`);
+    if (f.vaultIndex === 0) netDeposit0 += signed;
+    else netDeposit1 += signed;
   }
 
-  const initDep0 = pool.initialDeposit0 !== undefined
-    ? Number(formatUnits(pool.initialDeposit0, state.asset0Decimals))
-    : 0;
-  const initDep1 = pool.initialDeposit1 !== undefined
-    ? Number(formatUnits(pool.initialDeposit1, state.asset1Decimals))
-    : 0;
-
-  return {
-    timestamp: deployTimestamp,
-    price0,
-    price1,
-    initDep0,
-    initDep1,
-    initialNavUsd: initDep0 * price0 + initDep1 * price1,
-  };
+  return { netDeposit0, netDeposit1, flowCount: flows.length };
 }
 
 /**
- * Compute P&L attribution using cached deploy snapshot and fresh current prices.
+ * Compute P&L attribution using on-chain capital flows and current prices.
+ *
+ * P&L = NAV - netInvested
+ *     = (vaultEquity × currentPrices) - (netDeposits × currentPrices)
+ *
+ * Attribution:
+ *   fees    = swap fees earned (from event logs)
+ *   lpCost  = totalPnl - fees (residual: IL + net interest + price impact)
  */
 export async function computePnl(
   state: PoolState,
   swaps: SwapEvent[],
-  deploy: DeploySnapshot,
+  capital: CapitalSnapshot,
 ): Promise<PnlAttribution> {
   const tokens = [state.asset0, state.asset1] as Address[];
   const currentPriceMap = await fetchCurrentPrices(tokens);
@@ -104,8 +90,11 @@ export async function computePnl(
   const dbt1 = Number(formatUnits(state.vaultDebt1, state.asset1Decimals));
   const navUsd = (dep0 - dbt0) * currentPrice0 + (dep1 - dbt1) * currentPrice1;
 
+  // Net invested = external capital in - external capital out (at current prices)
+  const netInvestedUsd = capital.netDeposit0 * currentPrice0 + capital.netDeposit1 * currentPrice1;
+
   // Total P&L
-  const totalPnl = navUsd - deploy.initialNavUsd;
+  const totalPnl = navUsd - netInvestedUsd;
 
   // Accumulated fees (valued at current prices)
   let totalFee0 = 0;
@@ -116,26 +105,19 @@ export async function computePnl(
   }
   const feesUsd = totalFee0 * currentPrice0 + totalFee1 * currentPrice1;
 
-  // Hodl value: what initial deposits would be worth at current prices
-  const hodlValueUsd = deploy.initDep0 * currentPrice0 + deploy.initDep1 * currentPrice1;
-  const hodlDelta = hodlValueUsd - deploy.initialNavUsd;
+  // LP cost = residual (IL + net interest + any untracked flows)
+  const lpCost = totalPnl - feesUsd;
 
-  // LP cost = residual (IL + net interest)
-  const lpCost = totalPnl - feesUsd - hodlDelta;
-
-  const returnPct = deploy.initialNavUsd > 0 ? totalPnl / deploy.initialNavUsd : 0;
+  const returnPct = netInvestedUsd > 0 ? totalPnl / netInvestedUsd : 0;
 
   return {
     navUsd,
-    initialNavUsd: deploy.initialNavUsd,
+    netInvestedUsd,
     totalPnl,
     feesUsd,
-    hodlValueUsd,
-    hodlDelta,
     lpCost,
     returnPct,
-    priceSource: "defillama",
-    deployPrices: { asset0: deploy.price0, asset1: deploy.price1 },
     currentPrices: { asset0: currentPrice0, asset1: currentPrice1 },
+    flowCount: capital.flowCount,
   };
 }

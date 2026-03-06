@@ -162,6 +162,33 @@ export const evaultAbi = [
   },
 ] as const;
 
+// ERC4626 vault events for tracking capital flows
+export const vaultEventAbi = [
+  {
+    type: "event",
+    name: "Deposit",
+    inputs: [
+      { name: "caller", type: "address", indexed: true },
+      { name: "owner", type: "address", indexed: true },
+      { name: "assets", type: "uint256", indexed: false },
+      { name: "shares", type: "uint256", indexed: false },
+    ],
+    anonymous: false,
+  },
+  {
+    type: "event",
+    name: "Withdraw",
+    inputs: [
+      { name: "caller", type: "address", indexed: true },
+      { name: "receiver", type: "address", indexed: true },
+      { name: "owner", type: "address", indexed: true },
+      { name: "assets", type: "uint256", indexed: false },
+      { name: "shares", type: "uint256", indexed: false },
+    ],
+    anonymous: false,
+  },
+] as const;
+
 export const erc20Abi = [
   {
     name: "balanceOf",
@@ -188,20 +215,6 @@ export const erc20Abi = [
 
 export const hookAbi = [
   {
-    name: "getTradeStats",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [
-      { name: "_tradeCount", type: "uint256" },
-      { name: "_volume0", type: "uint256" },
-      { name: "_volume1", type: "uint256" },
-      { name: "_lastAsset0In", type: "bool" },
-      { name: "_lastSize", type: "uint256" },
-      { name: "_lastBlock", type: "uint256" },
-    ],
-  },
-  {
     name: "getFeeParams",
     type: "function",
     stateMutability: "view",
@@ -209,17 +222,9 @@ export const hookAbi = [
     outputs: [
       { name: "_baseFee", type: "uint64" },
       { name: "_maxFee", type: "uint64" },
-      { name: "_minFee", type: "uint64" },
       { name: "_mismatchScale", type: "uint256" },
       { name: "_paused", type: "bool" },
     ],
-  },
-  {
-    name: "oraclePrice",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
   },
   {
     name: "getFee",
@@ -232,17 +237,6 @@ export const hookAbi = [
       { name: "", type: "bool" },
     ],
     outputs: [{ name: "fee", type: "uint64" }],
-  },
-  {
-    name: "getDecayParams",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [
-      { name: "_surcharge", type: "uint64" },
-      { name: "_period", type: "uint32" },
-      { name: "_lastTradeTimestamp", type: "uint256" },
-    ],
   },
 ] as const;
 

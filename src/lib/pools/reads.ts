@@ -1,7 +1,7 @@
 import { type Address, type PublicClient, formatUnits, parseAbiItem } from "viem";
 import { eulerSwapAbi, evaultAbi, erc20Abi, hookAbi } from "./abi";
 import { TOKEN_META, type PoolConfig } from "./config";
-import type { PoolState, SwapEvent } from "./types";
+import type { PoolState, SwapEvent, VaultFlow } from "./types";
 
 const ZERO = "0x0000000000000000000000000000000000000000" as Address;
 
@@ -71,31 +71,19 @@ export async function fetchPoolState(
     hasHook
       ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getFeeParams" })
       : Promise.resolve(null),
-    // 8: hook trade stats
-    hasHook
-      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getTradeStats" })
-      : Promise.resolve(null),
-    // 9: hook oracle price
-    hasHook
-      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "oraclePrice" })
-      : Promise.resolve(null),
-    // 10: hook live fee for asset0-in
+    // 8: hook live fee for asset0-in
     hasHook
       ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getFee", args: [true, reserves[0], reserves[1], false] })
       : Promise.resolve(null),
-    // 11: hook live fee for asset1-in
+    // 9: hook live fee for asset1-in
     hasHook
       ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getFee", args: [false, reserves[0], reserves[1], false] })
       : Promise.resolve(null),
-    // 12: hook decay params
-    hasHook
-      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getDecayParams" })
-      : Promise.resolve(null),
-    // 13: block timestamp
+    // 10: block timestamp
     client.getBlock({ blockNumber: blockNumber }).then(b => b.timestamp),
-    // 14: getLimits(asset0 → asset1)
+    // 11: getLimits(asset0 → asset1)
     client.readContract({ address: pool.address, abi: eulerSwapAbi, functionName: "getLimits", args: [asset0, asset1] }),
-    // 15: getLimits(asset1 → asset0)
+    // 12: getLimits(asset1 → asset0)
     client.readContract({ address: pool.address, abi: eulerSwapAbi, functionName: "getLimits", args: [asset1, asset0] }),
   ]);
 
@@ -112,18 +100,13 @@ export async function fetchPoolState(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const feeParams = val(results[7], null) as any;
+  const liveFee0In = val(results[8], null) as bigint | null;
+  const liveFee1In = val(results[9], null) as bigint | null;
+  const blockTimestamp = val(results[10], 0n) as bigint;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tradeStats = val(results[8], null) as any;
-  const oraclePrice = val(results[9], null) as bigint | null;
-  const liveFee0In = val(results[10], null) as bigint | null;
-  const liveFee1In = val(results[11], null) as bigint | null;
+  const limits0to1 = val(results[11], null) as any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const decayParams = val(results[12], null) as any;
-  const blockTimestamp = val(results[13], 0n) as bigint;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const limits0to1 = val(results[14], null) as any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const limits1to0 = val(results[15], null) as any;
+  const limits1to0 = val(results[12], null) as any;
 
   // Compute marginal price using EulerSwap curve.
   // On-chain priceX/priceY are (USD_price / 10^decimals) * 1e18, so normalise to
@@ -173,21 +156,12 @@ export async function fetchPoolState(
     feeRecipient: staticParams.feeRecipient as Address,
     marginalPrice, equilibriumPrice, isInstalled: installed,
     // Hook
-    hookPaused: feeParams ? feeParams[4] : undefined,
+    hookPaused: feeParams ? feeParams[3] : undefined,
     hookBaseFee: feeParams ? feeParams[0] : undefined,
     hookMaxFee: feeParams ? feeParams[1] : undefined,
-    hookMinFee: feeParams ? feeParams[2] : undefined,
-    hookMismatchScale: feeParams ? feeParams[3] : undefined,
-    hookTradeCount: tradeStats ? tradeStats[0] : undefined,
-    hookVolume0: tradeStats ? tradeStats[1] : undefined,
-    hookVolume1: tradeStats ? tradeStats[2] : undefined,
-    hookLastBlock: tradeStats ? tradeStats[5] : undefined,
-    hookOraclePrice: oraclePrice ?? undefined,
+    hookMismatchScale: feeParams ? feeParams[2] : undefined,
     hookLiveFee0In: liveFee0In ?? undefined,
     hookLiveFee1In: liveFee1In ?? undefined,
-    hookDecaySurcharge: decayParams ? decayParams[0] : undefined,
-    hookDecayPeriod: decayParams ? Number(decayParams[1]) : undefined,
-    hookLastTradeTimestamp: decayParams ? Number(decayParams[2]) : undefined,
     // Wallet
     agentEthBalance, agentToken0Balance, agentToken1Balance,
     // Vault positions
@@ -245,6 +219,89 @@ export async function fetchSwapEvents(
     cursor = end + 1n;
   }
   return events;
+}
+
+/** ERC4626 event ABIs for getLogs */
+const depositEventAbi = parseAbiItem(
+  "event Deposit(address indexed caller, address indexed owner, uint256 assets, uint256 shares)"
+);
+const withdrawEventAbi = parseAbiItem(
+  "event Withdraw(address indexed caller, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)"
+);
+
+/**
+ * Fetch external capital flows (deposits/withdrawals) for a pool's euler account.
+ * Scans ERC4626 Deposit/Withdraw events on both supply vaults, then filters out
+ * any events that occur in the same transaction as a Swap (those are pool operations).
+ */
+export async function fetchVaultFlows(
+  client: PublicClient,
+  pool: PoolConfig,
+  supplyVault0: Address,
+  supplyVault1: Address,
+  eulerAccount: Address,
+  swapTxHashes: Set<string>,
+  fromBlock: bigint,
+  toBlock: bigint,
+  maxBlockRange = 10_000n,
+): Promise<VaultFlow[]> {
+  const flows: VaultFlow[] = [];
+
+  const vaults: { address: Address; index: 0 | 1 }[] = [];
+  if (supplyVault0 !== ZERO) vaults.push({ address: supplyVault0, index: 0 });
+  if (supplyVault1 !== ZERO) vaults.push({ address: supplyVault1, index: 1 });
+
+  for (const vault of vaults) {
+    let cursor = fromBlock;
+    while (cursor <= toBlock) {
+      const end = cursor + maxBlockRange > toBlock ? toBlock : cursor + maxBlockRange;
+
+      const [deposits, withdrawals] = await Promise.all([
+        client.getLogs({
+          address: vault.address,
+          event: depositEventAbi,
+          args: { owner: eulerAccount },
+          fromBlock: cursor,
+          toBlock: end,
+        }),
+        client.getLogs({
+          address: vault.address,
+          event: withdrawEventAbi,
+          args: { owner: eulerAccount },
+          fromBlock: cursor,
+          toBlock: end,
+        }),
+      ]);
+
+      for (const log of deposits) {
+        if (swapTxHashes.has(log.transactionHash)) continue; // swap-induced
+        flows.push({
+          blockNumber: log.blockNumber,
+          transactionHash: log.transactionHash,
+          vaultIndex: vault.index,
+          direction: "deposit",
+          assets: log.args.assets!,
+        });
+      }
+
+      for (const log of withdrawals) {
+        if (swapTxHashes.has(log.transactionHash)) continue; // swap-induced
+        flows.push({
+          blockNumber: log.blockNumber,
+          transactionHash: log.transactionHash,
+          vaultIndex: vault.index,
+          direction: "withdraw",
+          assets: log.args.assets!,
+        });
+      }
+
+      cursor = end + 1n;
+    }
+  }
+
+  // Sort by block number
+  flows.sort((a, b) => Number(a.blockNumber - b.blockNumber));
+  return flows;
 }
 
 /** Fetch block timestamps for a set of block numbers (deduplicated) */

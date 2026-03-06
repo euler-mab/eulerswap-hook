@@ -15,9 +15,6 @@ export interface PoolConfig {
   description?: string;
   /** Block number from which to start fetching historical events */
   deployBlock: bigint;
-  /** Initial deposits at deployment (raw bigint amounts) for P&L tracking */
-  initialDeposit0?: bigint;
-  initialDeposit1?: bigint;
 }
 
 export const POOLS: PoolConfig[] = [
@@ -29,8 +26,6 @@ export const POOLS: PoolConfig[] = [
     name: "USDC/WETH #1",
     description: "Dynamic fee hook, test pool",
     deployBlock: 24591724n,
-    initialDeposit0: 42_510_000n,    // 42.51 USDC
-    initialDeposit1: 20_000_000_000_000_000n, // 0.02 WETH
   },
   {
     address: "0x719529e99b7b272c5ef4CE07C30d15BC57CD68A8",
@@ -40,8 +35,6 @@ export const POOLS: PoolConfig[] = [
     name: "USDC/USDT #1",
     description: "One-sided USDC equity, ±1% range, dynamic fee hook",
     deployBlock: 24593397n,
-    initialDeposit0: 500_000_000n,   // 500 USDC
-    initialDeposit1: 0n,
   },
 ];
 

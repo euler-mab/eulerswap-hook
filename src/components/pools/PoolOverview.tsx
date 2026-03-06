@@ -35,9 +35,7 @@ interface OverviewProps {
 
 export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewProps) {
   const [inverted, setInverted] = useState(true);
-  const ethPrice = state.hookOraclePrice
-    ? Number(formatUnits(state.hookOraclePrice, 6))
-    : undefined;
+  const ethPrice = undefined; // TODO: use DeFiLlama price if needed
 
   const r0 = Number(formatUnits(state.reserve0, state.asset0Decimals));
   const r1 = Number(formatUnits(state.reserve1, state.asset1Decimals));
@@ -57,42 +55,21 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
 
   return (
     <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-2.5 text-sm">
-      {/* NAV + P&L (from DeFiLlama) */}
-      {pnl ? (
-        <>
-          <Row label="NAV">
-            <span className={pnl.navUsd >= 0 ? "text-gray-900 font-medium" : "text-red-700 font-medium"}>
-              {fmtUsd(pnl.navUsd)}
-            </span>
+      {/* NAV + P&L */}
+      <Row label="NAV">
+        {pnl ? (
+          <>
+            <span className="text-gray-900 font-medium">{fmtUsd(pnl.navUsd)}</span>
             <span className={`ml-1.5 text-xs font-medium ${pnl.totalPnl >= 0 ? "text-emerald-700" : "text-red-700"}`}>
               {pnl.totalPnl >= 0 ? "+" : ""}{fmtUsd(pnl.totalPnl)}
-              {" "}({pnl.returnPct >= 0 ? "+" : ""}{(pnl.returnPct * 100).toFixed(2)}%)
+              {pnl.netInvestedUsd > 0 && ` (${pnl.returnPct >= 0 ? "+" : ""}${(pnl.returnPct * 100).toFixed(2)}%)`}
             </span>
             <span className="text-gray-400 ml-1 text-xs">
-              (init {fmtUsd(pnl.initialNavUsd)}, {pnl.priceSource})
+              (invested {fmtUsd(pnl.netInvestedUsd)}, {pnl.flowCount} flows)
             </span>
-          </Row>
-
-          <Row label="P&L breakdown">
-            <span className="text-xs space-x-3">
-              <span className={pnl.feesUsd >= 0 ? "text-emerald-700" : "text-red-700"}>
-                fees {pnl.feesUsd >= 0 ? "+" : ""}{fmtUsd(pnl.feesUsd)}
-              </span>
-              {pnl.hodlDelta !== 0 && (
-                <span className={pnl.hodlDelta >= 0 ? "text-emerald-700" : "text-red-700"}>
-                  price {pnl.hodlDelta >= 0 ? "+" : ""}{fmtUsd(pnl.hodlDelta)}
-                </span>
-              )}
-              <span className={pnl.lpCost >= 0 ? "text-emerald-700" : "text-red-700"}>
-                LP cost {pnl.lpCost >= 0 ? "+" : ""}{fmtUsd(pnl.lpCost)}
-              </span>
-            </span>
-          </Row>
-        </>
-      ) : (
-        /* Fallback: simple NAV from vault positions (no DeFiLlama yet) */
-        <Row label="NAV">
-          {(() => {
+          </>
+        ) : (
+          (() => {
             const dep0 = Number(formatUnits(state.vaultDeposit0, state.asset0Decimals));
             const dep1 = Number(formatUnits(state.vaultDeposit1, state.asset1Decimals));
             const dbt0 = Number(formatUnits(state.vaultDebt0, state.asset0Decimals));
@@ -101,14 +78,28 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
             const nav = (dep0 - dbt0) + (dep1 - dbt1) * a1InA0;
             const isUsd = ["USDC", "USDT", "DAI"].includes(state.asset0Symbol);
             return (
-              <span className={nav >= 0 ? "text-gray-900 font-medium" : "text-red-700 font-medium"}>
+              <span className="text-gray-900 font-medium">
                 {isUsd ? fmtUsd(nav) : `${nav.toFixed(4)} ${state.asset0Symbol}`}
-                {pnlError
-                  ? <span className="text-red-500 ml-1 text-xs" title={pnlError}>P&L unavailable</span>
-                  : <span className="text-gray-400 ml-1 text-xs animate-pulse">loading P&L...</span>}
               </span>
             );
-          })()}
+          })()
+        )}
+        {pnlError && <span className="text-red-500 ml-1 text-xs" title={pnlError}>price unavailable</span>}
+      </Row>
+
+      {/* P&L breakdown */}
+      {pnl && (pnl.feesUsd > 0 || pnl.lpCost !== 0) && (
+        <Row label="P&L breakdown">
+          <span className="text-xs space-x-3">
+            {pnl.feesUsd > 0 && (
+              <span className="text-emerald-700">
+                fees +{fmtUsd(pnl.feesUsd)}
+              </span>
+            )}
+            <span className={pnl.lpCost >= 0 ? "text-emerald-700" : "text-red-700"}>
+              IL + interest {pnl.lpCost >= 0 ? "+" : ""}{fmtUsd(pnl.lpCost)}
+            </span>
+          </span>
         </Row>
       )}
 
@@ -203,19 +194,6 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
           </span>
         )}
       </Row>
-
-      {/* Trade stats */}
-      {state.hookTradeCount !== undefined && (
-        <Row label="Trades">
-          {state.hookTradeCount.toString()} swaps
-          {state.hookVolume0 !== undefined && (
-            <span className="text-gray-500 ml-1">
-              (vol: {fmtAmount(state.hookVolume0, state.asset0Decimals)} {state.asset0Symbol} +{" "}
-              {fmtAmount(state.hookVolume1!, state.asset1Decimals)} {state.asset1Symbol})
-            </span>
-          )}
-        </Row>
-      )}
 
       {/* Vault deposits */}
       {(state.vaultDeposit0 > 0n || state.vaultDeposit1 > 0n) && (

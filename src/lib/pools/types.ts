@@ -46,20 +46,10 @@ export interface PoolState {
   hookPaused?: boolean;
   hookBaseFee?: bigint;
   hookMaxFee?: bigint;
-  hookMinFee?: bigint;
   hookMismatchScale?: bigint;
-  hookTradeCount?: bigint;
-  hookVolume0?: bigint;
-  hookVolume1?: bigint;
-  hookLastBlock?: bigint;
-  hookOraclePrice?: bigint;
   // Live fees from hook.getFee (computed at current block)
   hookLiveFee0In?: bigint; // fee when asset0 is input
   hookLiveFee1In?: bigint; // fee when asset1 is input
-  // Decay params
-  hookDecaySurcharge?: bigint;
-  hookDecayPeriod?: number;
-  hookLastTradeTimestamp?: number;
 
   // Agent wallet balances
   agentEthBalance: bigint;
@@ -100,6 +90,19 @@ export interface SwapEvent {
   fee1: bigint;
   reserve0: bigint;
   reserve1: bigint;
+}
+
+/** External capital flow (deposit or withdrawal) to/from a vault */
+export interface VaultFlow {
+  blockNumber: bigint;
+  transactionHash: string;
+  timestamp?: number;
+  /** Which vault (supply0 or supply1) */
+  vaultIndex: 0 | 1;
+  /** "deposit" = capital in, "withdraw" = capital out */
+  direction: "deposit" | "withdraw";
+  /** Raw asset amount */
+  assets: bigint;
 }
 
 /** Derived chart data point from swap events */
