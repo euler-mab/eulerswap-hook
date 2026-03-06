@@ -7,6 +7,13 @@ import type { PoolState } from "@/lib/pools/types";
 import type { PnlAttribution, TwrResult } from "@/lib/pools/pnl";
 import { fmtAmount, fmtFeeBps, fmtPrice, fmtUsd, shortAddr } from "@/lib/pools/format";
 
+function fmtVol(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(2)}k`;
+  if (n >= 1) return n.toFixed(2);
+  return n.toFixed(4);
+}
+
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <>
@@ -115,6 +122,24 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
             {pnl.interestUsd !== 0 && (
               <span className={pnl.interestUsd >= 0 ? "text-emerald-700" : "text-red-700"}>
                 interest {pnl.interestUsd >= 0 ? "+" : ""}{fmtUsd(pnl.interestUsd)}
+              </span>
+            )}
+          </span>
+        </Row>
+      )}
+
+      {/* Volume stats */}
+      {pnl && pnl.swapCount > 0 && (
+        <Row label="Volume">
+          <span className="text-xs">
+            {pnl.swapCount} swaps
+            <span className="text-gray-400 ml-2">
+              {fmtVol(pnl.volume0)} {state.asset0Symbol} + {fmtVol(pnl.volume1)} {state.asset1Symbol}
+            </span>
+            <span className="text-gray-500 ml-2">{fmtUsd(pnl.volumeUsd)}</span>
+            {pnl.navUsd > 0 && (
+              <span className="text-gray-400 ml-2">
+                ({(pnl.volumeUsd / pnl.navUsd).toFixed(1)}x NAV)
               </span>
             )}
           </span>

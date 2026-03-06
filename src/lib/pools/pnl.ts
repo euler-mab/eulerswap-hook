@@ -23,6 +23,13 @@ export interface PnlAttribution {
   currentPrices: { asset0: number; asset1: number };
   /** Number of external capital flow events detected */
   flowCount: number;
+  /** Number of swaps */
+  swapCount: number;
+  /** Total volume per asset (raw human units) */
+  volume0: number;
+  volume1: number;
+  /** Total volume in USD (input side, at current prices) */
+  volumeUsd: number;
 }
 
 /** Cached capital flow data (fetched once, immutable) */
@@ -106,6 +113,10 @@ export async function computePnl(
   let totalFee1 = 0;
   let totalRebal0 = 0;
   let totalRebal1 = 0;
+  let totalVol0 = 0;
+  let totalVol1 = 0;
+  let volIn0 = 0;
+  let volIn1 = 0;
   for (const s of swaps) {
     const f0 = Number(formatUnits(s.fee0, state.asset0Decimals));
     const f1 = Number(formatUnits(s.fee1, state.asset1Decimals));
@@ -118,9 +129,16 @@ export async function computePnl(
     // Rebalancing = net position change from swap (amountIn excludes fee in EulerSwap)
     totalRebal0 += (in0 - out0);
     totalRebal1 += (in1 - out1);
+    // Volume: track total per asset (in + out) for raw display, input-only for USD
+    totalVol0 += in0 + out0;
+    totalVol1 += in1 + out1;
+    volIn0 += in0;
+    volIn1 += in1;
   }
   const feesUsd = totalFee0 * currentPrice0 + totalFee1 * currentPrice1;
   const rebalUsd = totalRebal0 * currentPrice0 + totalRebal1 * currentPrice1;
+  // Volume USD: input side only to avoid double-counting
+  const volumeUsd = volIn0 * currentPrice0 + volIn1 * currentPrice1;
 
   // Interest = residual (totalPnl - fees - rebalancing = net vault interest)
   const interestUsd = totalPnl - feesUsd - rebalUsd;
@@ -137,6 +155,10 @@ export async function computePnl(
     returnPct,
     currentPrices: { asset0: currentPrice0, asset1: currentPrice1 },
     flowCount: capital.flowCount,
+    swapCount: swaps.length,
+    volume0: totalVol0,
+    volume1: totalVol1,
+    volumeUsd,
   };
 }
 
