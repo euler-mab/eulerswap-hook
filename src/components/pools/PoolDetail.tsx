@@ -20,12 +20,6 @@ export default function PoolDetail({ pool }: { pool: PoolConfig }) {
     return swapsToPricePoints(swaps, state.asset0Decimals, state.asset1Decimals);
   }, [swaps, state]);
 
-  const { totalFee0, totalFee1 } = useMemo(() => {
-    let f0 = 0n, f1 = 0n;
-    for (const s of swaps) { f0 += s.fee0; f1 += s.fee1; }
-    return { totalFee0: f0, totalFee1: f1 };
-  }, [swaps]);
-
   const { pnl, error: pnlError } = usePoolPnl(pool, state, swaps, historyLoading);
 
   if (stateLoading && !state) {
