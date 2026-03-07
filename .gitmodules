@@ -22,3 +22,6 @@
 [submodule "contracts/euler-orderflow-router"]
 	path = contracts/euler-orderflow-router
 	url = https://github.com/euler-xyz/euler-orderflow-router.git
+[submodule ".claude/skills/openzeppelin-skills"]
+	path = .claude/skills/openzeppelin-skills
+	url = https://github.com/OpenZeppelin/openzeppelin-skills.git
