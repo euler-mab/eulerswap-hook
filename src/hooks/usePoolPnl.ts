@@ -66,43 +66,34 @@ export function usePoolPnl(
         if (!swapsLoading && !cacheRef.current) {
           setLoading(true);
           const client = getClient();
-          const currentBlock = await client.getBlockNumber();
-
           const swapTxHashes = new Set(swaps.map(s => s.transactionHash));
 
-          const flows = await fetchVaultFlows(
-            client,
-            pool,
-            state!.supplyVault0,
-            state!.supplyVault1,
-            pool.eulerAccount,
-            swapTxHashes,
-            pool.deployBlock,
-            currentBlock,
-          );
+          // Fetch independent data in parallel: vault flows, deploy block timestamp, current block
+          const [currentBlock, deployTimestamp] = await Promise.all([
+            client.getBlockNumber(),
+            client.getBlock({ blockNumber: pool.deployBlock }).then(b => Number(b.timestamp)),
+          ]);
 
-          const capital = buildCapitalSnapshot(
-            flows,
-            state!.asset0Decimals,
-            state!.asset1Decimals,
-          );
-
-          const deployTimestamp = await client.getBlock({ blockNumber: pool.deployBlock })
-            .then(b => Number(b.timestamp));
-
-          const [priceChart0, priceChart1] = await Promise.all([
+          // Vault flows need currentBlock; price charts need deployTimestamp — both now available
+          const [flows, priceChart0, priceChart1] = await Promise.all([
+            fetchVaultFlows(
+              client, pool, state!.supplyVault0, state!.supplyVault1,
+              pool.eulerAccount, swapTxHashes, pool.deployBlock, currentBlock,
+            ),
             fetchPriceChart(state!.asset0 as Address, deployTimestamp),
             fetchPriceChart(state!.asset1 as Address, deployTimestamp),
           ]);
 
-          const timeSeries = buildPnlTimeSeries(
-            swaps,
-            priceChart0,
-            priceChart1,
-            state!.asset0Decimals,
-            state!.asset1Decimals,
+          const capital = buildCapitalSnapshot(
+            flows, state!.asset0Decimals, state!.asset1Decimals,
           );
 
+          const timeSeries = buildPnlTimeSeries(
+            swaps, priceChart0, priceChart1,
+            state!.asset0Decimals, state!.asset1Decimals,
+          );
+
+          // Fetch flow block timestamps for TWR (only if flows exist)
           const flowBlockNums = flows.map(f => f.blockNumber);
           if (flowBlockNums.length > 0) {
             const timestamps = await fetchBlockTimestamps(client, flowBlockNums);
@@ -112,21 +103,13 @@ export function usePoolPnl(
           }
 
           const twrRes = computeTwr(
-            flows,
-            swaps,
-            priceChart0,
-            priceChart1,
-            state!.asset0Decimals,
-            state!.asset1Decimals,
+            flows, swaps, priceChart0, priceChart1,
+            state!.asset0Decimals, state!.asset1Decimals,
           );
 
           cacheRef.current = {
-            capital,
-            flows,
-            priceChart0,
-            priceChart1,
-            pnlTimeSeries: timeSeries,
-            twrResult: twrRes,
+            capital, flows, priceChart0, priceChart1,
+            pnlTimeSeries: timeSeries, twrResult: twrRes,
           };
 
           if (!cancelled) {
