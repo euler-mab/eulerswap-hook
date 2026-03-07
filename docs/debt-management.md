@@ -388,25 +388,36 @@ making it fully autonomous.
 
 **Trigger (afterSwap):** After every swap, the hook reads vault debt. If
 debt in either asset exceeds a threshold (e.g. 50% of NAV), the hook:
-1. Computes delta from debt level: `delta = min(2*debt*py/x0, maxDelta)`
+1. Sets delta generously (e.g. `auctionDelta` config param, ~50 bps).
+   Doesn't need to match debt precisely — the fee auction handles pricing.
 2. Reconfigures pool off-market: sets `equilibrium = current reserves`,
    shifts py by delta (see §CurveLib.verify Analysis for why this works)
 3. Sets `auctionActive = true`, `auctionStart = block.timestamp`
 
-**Fee (getFee):** When `auctionActive`, returns `baseFee` for the debt-
-repaying direction (NOT captureRate-based — the arber IS the arb direction)
-and `maxFee` for the debt-worsening direction. Fee decay is optional —
-the arb is immediately profitable at delta > ~18 bps because the arber's
-average improvement (delta/2) exceeds baseFee + uniFee + gas:
-```
-arber profit = delta/2 - baseFee - uniFee - gas/notional
-             = 9bps - 3bps - 5bps - ~0 = ~1 bps at delta=18bps
-```
-If fee decay is desired (for sub-threshold deltas or as a fallback):
+**Fee (getFee):** When `auctionActive`, returns a **time-decaying fee** for
+the debt-repaying direction and `maxFee` for the debt-worsening direction.
+The fee starts high (near the full price improvement) and decays until an
+arber finds it profitable:
 ```
 elapsed = block.timestamp - auctionStart
 auctionFee = max(startFee - decayRate * elapsed, 0)
 ```
+The arber trades when:
+```
+fee < delta/2 - uniFee - gas/notional - profit_margin
+```
+So the clearing fee settles at:
+```
+fee_clearing ≈ delta/2 - uniFee - gas/notional - epsilon
+```
+
+**Why fee auction, not fixed fee:** A fixed baseFee bakes in assumptions
+about gas costs and arber competition. If gas spikes, arbers won't trade.
+If gas drops, the LP overpays. The fee auction self-tunes:
+- High gas → fee must decay further → LP pays more (unavoidable)
+- Low gas → fee settles high → LP pays less (captures the surplus)
+- Delta sizing doesn't matter much — larger delta = higher clearing fee,
+  LP cost stays ≈ uniFee + gas/notional regardless
 
 **Resolution (afterSwap):** After each swap during the auction:
 - If debt < threshold → clear `auctionActive`, reconfigure back to market
@@ -441,36 +452,46 @@ auctionFee = max(startFee - decayRate * elapsed, 0)
 
 ### Cost analysis
 
-The fundamental constraint: any arb-based mechanism costs the LP at least
-as much as a direct swap, because the arber incurs the same external
-exchange fee (Uni 5 bps) plus needs profit margin:
+The fee auction minimizes the autonomy premium. The LP's net cost is:
 
 ```
 LP net cost = price improvement given − fee captured
-            = (arber's Uni fee + arber's profit) + fee captured − fee captured
-            = arber's Uni fee + arber's profit
-            ≥ Uni fee = direct swap cost
+            = delta/2 − fee_clearing
+            ≈ delta/2 − (delta/2 − uniFee − gas/notional − epsilon)
+            = uniFee + gas/notional + epsilon
 ```
 
-At minimum viable delta (~18 bps, where arber barely profits over gas):
+This converges to approximately **direct swap cost** because the fee
+captures all of the price improvement except the arber's irreducible
+external costs (Uni fee, gas, minimal profit margin).
 
 | Component | Value |
 |-----------|-------|
-| Arber average improvement | delta/2 = 9 bps |
-| Pool fee captured (baseFee) | 3 bps |
-| LP net cost per $ debt | 6 bps |
+| Arber average improvement | delta/2 (e.g. 25 bps at delta=50bps) |
+| Fee captured (auction-discovered) | ~19-20 bps |
+| LP net cost per $ debt | ~5-6 bps |
 | Direct swap cost per $ debt | 5 bps |
-| **Autonomy premium** | **1 bps (20%)** |
+| **Autonomy premium** | **~0-1 bps** |
 
-At $16k/day debt accumulation: **~$1.60/day** for autonomous debt clearing.
-Clearly worth the resilience benefit.
+The premium is small because the auction discovers the minimum price the
+market will accept. Competitive arbers bid the fee up (by trading at
+higher fee levels), leaving the LP paying close to Uni fee + gas.
+
+At $16k/day debt accumulation: **< $1.60/day** for autonomous clearing.
+
+**Key insight: delta sizing is now non-critical.** With a fixed fee, delta
+must be precisely calibrated (too small → no trades, too large → overpay).
+With fee decay, delta just needs to be "big enough" for arbers to have
+room. The fee adjusts to absorb any excess. This makes the mechanism
+robust across gas regimes and volatility environments.
 
 ### Capacity
 
-At delta=18bps with x0=$635k:
-- Debt repaid per reconfigure: `x0 * delta / 2 ≈ $572`
-- Multiple reconfigures possible per day (each swap can trigger)
-- Actual debt: ~$16k/day → needs ~28 reconfigures/day
+At delta=50bps with real reserves (no boost during auction):
+- Max debt repaid per auction: depends on real reserve depth (~$3k now)
+- With generous delta, each auction clears more debt per trade
+- Multiple auction cycles possible per day (each swap can trigger)
+- Actual debt: ~$16k/day → may need several cycles
 - Rate limiting not strictly needed (only fires when debt > threshold)
 
 ### Open concerns
@@ -491,8 +512,8 @@ cost unexpectedly — consider whether this is acceptable.
 **3. getFee direction override.** The debt-repaying trade corrects the
 deliberate mispricing, so it's the "arb direction" from the current hook's
 perspective. getFee must recognize auction mode and override: return the
-decaying auction fee instead of captureRate-based fee. One approach: check
-`auctionActive` first, return time-based fee before computing mismatch.
+time-decaying auction fee instead of captureRate-based fee. Check
+`auctionActive` first, return decay-based fee before computing mismatch.
 
 **4. Manipulation via forced debt.** An attacker could deliberately create
 debt (via a large swap) to trigger the auction, then profit from the off-
@@ -607,9 +628,14 @@ InitialState: `{ reserve0: reserve0, reserve1: reserve1 }`
 
 ### Minimum viable debt
 
-At delta=18bps (arber barely profits: delta/2 - baseFee - uniFee > 0):
-- Debt repaid per auction: `reserve1 * delta / 2 ≈ $572` at current scale
-- Below ~$256 debt, the arb isn't worth gas costs — too small to trigger
+With fee decay, the minimum delta is set by arber profitability at fee=0:
+```
+delta/2 > uniFee + gas/notional
+delta > 2 * (5bps + ~0) ≈ 10 bps
+```
+At delta=50bps (generous), arbers are clearly profitable. The debt
+threshold should be set high enough that the auction is worth triggering
+(gas cost of reconfigure + first arb trade vs debt repaid).
 
 ### Depth during auction
 
