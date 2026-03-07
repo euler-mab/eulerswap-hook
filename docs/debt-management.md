@@ -389,17 +389,24 @@ making it fully autonomous.
 **Trigger (afterSwap):** After every swap, the hook reads vault debt. If
 debt in either asset exceeds a threshold (e.g. 50% of NAV), the hook:
 1. Computes delta from debt level: `delta = min(2*debt*py/x0, maxDelta)`
-2. Reconfigures pool off-market (shifts py to attract debt-repaying asset)
+2. Reconfigures pool off-market: sets `equilibrium = current reserves`,
+   shifts py by delta (see §CurveLib.verify Analysis for why this works)
 3. Sets `auctionActive = true`, `auctionStart = block.timestamp`
 
-**Fee (getFee):** When `auctionActive`, the hook returns a time-decaying
-fee for the debt-repaying direction instead of the normal Mode 2 formula:
+**Fee (getFee):** When `auctionActive`, returns `baseFee` for the debt-
+repaying direction (NOT captureRate-based — the arber IS the arb direction)
+and `maxFee` for the debt-worsening direction. Fee decay is optional —
+the arb is immediately profitable at delta > ~18 bps because the arber's
+average improvement (delta/2) exceeds baseFee + uniFee + gas:
+```
+arber profit = delta/2 - baseFee - uniFee - gas/notional
+             = 9bps - 3bps - 5bps - ~0 = ~1 bps at delta=18bps
+```
+If fee decay is desired (for sub-threshold deltas or as a fallback):
 ```
 elapsed = block.timestamp - auctionStart
 auctionFee = max(startFee - decayRate * elapsed, 0)
 ```
-The debt-worsening direction gets maxFee (blocked). Normal Mode 2 trades
-that don't affect debt can proceed at normal fees.
 
 **Resolution (afterSwap):** After each swap during the auction:
 - If debt < threshold → clear `auctionActive`, reconfigure back to market
@@ -520,78 +527,135 @@ makes verification fail:
 The curve shifts "past" the current position. Simply changing py with the
 same x0/y0 always violates the invariant.
 
-### The solution: fit the curve to current reserves
+### Why curve-fitting (reducing x0/y0) doesn't work
 
-Instead of using full additive boost x0/y0, choose **reduced** x0_new/y0_new
-such that the new curve passes through the current reserves at the off-market
-py. The depth reduction during the auction is irrelevant — we only need
-enough depth for the arb trade, not full market-making depth.
+An earlier version of this analysis proposed reducing x0/y0 to fit the new
+curve through current reserves. This is **wrong** — it reverses the pricing
+direction.
 
-**Branch 2 (WETH debt, increase py):**
+The marginal price on Branch 2 is `px * y² / (py * y0²)`. Reducing y0 to
+pass CurveLib.verify overwhelms the small py increase:
 
-Given current reserves (x_cur, y_cur) and target py_off, solve for x0_new
-and y0_new such that:
 ```
-x_cur = x0_new + py_off*(y0_new - y_cur)*y0_new / (y_cur * px)
-```
-
-One degree of freedom. Maximize y0_new (arb depth) with x0_new → 0:
-```
-y0_max = (y_cur + sqrt(y_cur² + 4*x_cur*y_cur*px/py_off)) / 2
+Example: y_cur=200, y0_old=317, y0_new=250, py_off=1.002*py_old
+marginal_new / marginal_old = (py_old/py_new) * (y0_old/y0_new)²
+                            = (1/1.002) * (317/250)²
+                            = 0.998 * 1.607
+                            = 1.604
 ```
 
-**Example** (x_cur=640k USDC, y_cur=310 WETH, py_off=2004):
-```
-y0_max ≈ 505 WETH → available arb depth = 195 WETH ≈ $390k
+The pool is now 60% more expensive in WETH terms — it **underprices** WETH
+by a large margin. Arbers would BUY WETH from the pool (wrong direction),
+increasing debt instead of repaying it.
+
+The fundamental issue: y0 appears squared in the marginal price. Any
+meaningful reduction in y0 produces a much larger pricing effect than the
+small py shift we need for off-market pricing.
+
+### The solution: set equilibrium = current reserves
+
+Instead of reducing x0/y0, set `equilibriumReserve0 = reserve0` and
+`equilibriumReserve1 = reserve1`. This leverages a key property of
+CurveLib.verify (lines 39-40):
+
+```solidity
+if (newReserve0 >= p.equilibriumReserve0) {
+    if (newReserve1 >= p.equilibriumReserve1) return true;
 ```
 
-Typical debt per cycle: ~$16k. Available depth is 24x more than needed.
+When reserves ARE at equilibrium, verify **always passes** — no curve
+equation is even evaluated. The reserves are trivially "above and to the
+right" of the equilibrium point.
 
-**Branch 1 (USDC debt, decrease py):** Symmetric. Solve for x0_new:
+**Off-market pricing comes purely from the py shift.** At equilibrium, the
+marginal price is simply `py/px`:
+
 ```
-y_cur = y0_new + px*(x0_new - x_cur)*x0_new / (x_cur * py_off)
+marginal = py_off / px = py_market * (1 + delta) / px
 ```
 
-### Practical formula for the hook
+This is `delta` above market — exactly what we want. The arber sells WETH
+to the pool (repaying debt) until the marginal price returns to market.
 
-The hook needs to compute x0_new, y0_new onchain. For Branch 2:
+### Full reconfigure for auction
 
-1. Choose y0_new = y_cur + debt_WETH (enough depth to absorb the arb)
-2. Solve for x0_new:
 ```
-x0_new = x_cur - py_off*(y0_new - y_cur)*y0_new / (y_cur * px)
+equilibriumReserve0 = reserve0    (current USDC reserve)
+equilibriumReserve1 = reserve1    (current WETH reserve)
+priceY = py_market * (1 + delta)  (off-market, attracts WETH inflow)
+priceX = px                       (unchanged)
+concentrationX = cx               (unchanged — controls depth)
+concentrationY = cy               (unchanged)
+minReserve0 = 0                   (relax during auction)
+minReserve1 = 0
 ```
-3. Verify x0_new > 0 (it will be for reasonable debt amounts)
-4. Set minReserve0 = 0, minReserve1 = y_cur (no range constraint needed
-   during auction — the pool returns to full params after)
+
+InitialState: `{ reserve0: reserve0, reserve1: reserve1 }`
+
+### Verified properties
+
+| Property | Status | Why |
+|----------|--------|-----|
+| CurveLib.verify passes | Yes | Reserves at equilibrium → auto-pass (line 39-40) |
+| Marginal price > market | Yes | py_off/px = market*(1+delta) at equilibrium |
+| Correct arb direction | Yes | WETH overpriced → arbers sell WETH → debt repaid |
+| Adequate depth | Yes | cx/cy unchanged, depth from concentration param |
+| No y0² distortion | Yes | At equilibrium, marginal is exactly py/px |
+| installDynamicParams checks | Yes | All constraints satisfied by construction |
+| Additive boost lost | Yes | Acceptable for a few blocks; restored after auction |
+| Vault state unaffected | Yes | reconfigure only changes curve, not vault positions |
+
+### Minimum viable debt
+
+At delta=18bps (arber barely profits: delta/2 - baseFee - uniFee > 0):
+- Debt repaid per auction: `reserve1 * delta / 2 ≈ $572` at current scale
+- Below ~$256 debt, the arb isn't worth gas costs — too small to trigger
 
 ### Depth during auction
 
-The reduced x0/y0 means less depth for normal swaps during the auction.
+Setting equilibrium = current reserves means the additive boost is
+temporarily lost. The pool's depth equals real deposits for a few blocks.
 This is acceptable because:
 - The auction is brief (arb executes within blocks of the reconfigure)
 - The afterSwap immediately restores full depth if debt is cleared
-- Worst case: pool has reduced depth for a few blocks
+- At current scale: real depth $3k vs virtual $635k — significant reduction,
+  but the arber only needs enough depth for ~$572 per trade
+- Worst case: a few blocks of reduced depth for normal swaps
+
+### Practical hook implementation
+
+```solidity
+// In afterSwap, when debt > threshold:
+DynamicParams memory dp = pool.getDynamicParams();
+dp.equilibriumReserve0 = reserve0;  // set eq = current
+dp.equilibriumReserve1 = reserve1;
+dp.priceY = uint80(uint256(dp.priceY) * (1e18 + delta) / 1e18);
+dp.minReserve0 = 0;  // relax during auction
+dp.minReserve1 = 0;
+
+try pool.reconfigure(dp, InitialState(reserve0, reserve1)) {
+    auctionActive = true;
+    auctionStart = uint40(block.timestamp);
+} catch {
+    // Edge case: skip auction, agent handles debt via direct swap
+}
+```
 
 ### Residual concerns
 
-1. **Onchain computation cost.** The sqrt for y0_max adds ~200 gas. The
-   quadratic solve is cheap. Total overhead is negligible.
+1. **Boost recovery after auction.** When the auction clears and the hook
+   reconfigures back to market price, the equilibrium must be recomputed
+   with full additive boost from clean vault state. This requires reading
+   vault balances and computing BX/BY onchain — more complex than the
+   auction reconfigure itself. Alternative: the agent handles the post-
+   auction boost restoration.
 
-2. **minReserve constraints.** During the auction, set minReserves to 0
-   (or to the current reserves as floor). Restore original minReserves
-   after the auction. This avoids minReserve validation failures.
+2. **minReserve restoration.** After auction, restore original minReserves.
+   The hook must store these before the auction to restore them afterward.
 
-3. **try/catch guard.** Even with the curve-fitting formula, edge cases
-   (rounding, extreme positions) could cause CurveLib.verify to fail.
-   Wrap the reconfigure in try/catch so failures are silent:
-```solidity
-try pool.reconfigure(auctionParams, currentReserves) {
-    auctionActive = true;
-} catch {
-    // Skip auction — agent handles debt via direct swap
-}
-```
+3. **try/catch guard.** Even with auto-pass, edge cases (rounding, uint112
+   overflow) could cause installDynamicParams to fail. Wrap in try/catch
+   so failures are silent — the agent can handle debt via direct swap.
 
 ## Open Questions
 
