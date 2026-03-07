@@ -304,7 +304,7 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
           rel="noopener noreferrer"
           className="font-mono text-xs text-gray-500 hover:text-gray-900 transition-colors"
         >
-          {shortAddr(pool.address)} &nearr;
+          {shortAddr(pool.address)} ↗
         </a>
       </Row>
 

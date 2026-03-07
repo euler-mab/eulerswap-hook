@@ -851,8 +851,8 @@ contract LPAgentHookV2Test is EulerSwapTestBase {
     function test_auction_restores_priceY_on_clear() public {
         IEulerSwap.DynamicParams memory dpBefore = pool.getDynamicParams();
         uint80 pyOriginal = dpBefore.priceY;
-        uint112 eq0Original = dpBefore.equilibriumReserve0;
-        uint112 eq1Original = dpBefore.equilibriumReserve1;
+        uint112 min0Original = dpBefore.minReserve0;
+        uint112 min1Original = dpBefore.minReserve1;
 
         _setupAuctionParams();
 
@@ -865,21 +865,25 @@ contract LPAgentHookV2Test is EulerSwapTestBase {
         // Verify pool params are shifted
         IEulerSwap.DynamicParams memory dpAuction = pool.getDynamicParams();
         assertTrue(dpAuction.priceY > pyOriginal, "priceY should be shifted during auction");
-        assertTrue(dpAuction.equilibriumReserve0 != eq0Original, "eq0 should differ during auction");
+        assertEq(dpAuction.minReserve0, 0, "minReserve0 should be 0 during auction");
+        assertEq(dpAuction.minReserve1, 0, "minReserve1 should be 0 during auction");
 
         // Wait for fee to decay, then repay
         vm.warp(block.timestamp + 60);
         _fundAndSwap(swapper, false, 2e18);
 
-        (, uint112 r1After,) = pool.getReserves();
+        (uint112 r0After, uint112 r1After,) = pool.getReserves();
         if (r1After >= hook.auctionThreshold1()) {
             assertFalse(hook.auctionActive(), "auction should have cleared");
 
-            // Pool params should be restored to pre-auction values
             IEulerSwap.DynamicParams memory dpRestored = pool.getDynamicParams();
             assertEq(dpRestored.priceY, pyOriginal, "priceY should be restored");
-            assertEq(dpRestored.equilibriumReserve0, eq0Original, "eq0 should be restored");
-            assertEq(dpRestored.equilibriumReserve1, eq1Original, "eq1 should be restored");
+            // eq = current reserves after restore (not pre-auction eq)
+            assertEq(dpRestored.equilibriumReserve0, r0After, "eq0 should equal current reserves");
+            assertEq(dpRestored.equilibriumReserve1, r1After, "eq1 should equal current reserves");
+            // minReserves restored (clamped to reserves if needed)
+            assertEq(dpRestored.minReserve0, min0Original, "minReserve0 should be restored");
+            assertEq(dpRestored.minReserve1, min1Original, "minReserve1 should be restored");
         }
     }
 
@@ -914,5 +918,82 @@ contract LPAgentHookV2Test is EulerSwapTestBase {
         // Wrong direction: asset1 in
         uint64 wrongFee = hook.getFee(false, r0, r1, false);
         assertEq(wrongFee, MAX_FEE, "wrong direction should get maxFee");
+    }
+
+    // --- Asset0 (USDC-side) debt auction: full cycle ---
+
+    function test_auction_clears_with_asset0_debt() public {
+        IEulerSwap.DynamicParams memory dpBefore = pool.getDynamicParams();
+        uint80 pyOriginal = dpBefore.priceY;
+        uint112 min0Original = dpBefore.minReserve0;
+        uint112 min1Original = dpBefore.minReserve1;
+
+        // Set threshold on asset0 side only
+        hook.setAuctionParams(9e18, 0, 50e14, 50e14, 1e14);
+
+        address swapper = makeAddr("swapper");
+
+        // Swap asset1 in → asset0 out → depletes reserve0 below threshold
+        _fundAndSwap(swapper, false, 2e18);
+        assertTrue(hook.auctionActive(), "auction should trigger on asset0 depletion");
+        assertFalse(hook.auctionAttractAsset1(), "should attract asset0, not asset1");
+
+        // priceY should decrease (makes asset1 cheaper → arbers sell asset0 to pool)
+        IEulerSwap.DynamicParams memory dpAuction = pool.getDynamicParams();
+        assertTrue(dpAuction.priceY < pyOriginal, "priceY should decrease for asset0 debt");
+        assertEq(dpAuction.minReserve0, 0, "minReserve0 relaxed during auction");
+
+        // Wait for fee to fully decay, then repay with asset0
+        vm.warp(block.timestamp + 60);
+        _fundAndSwap(swapper, true, 2e18);
+
+        (uint112 r0After, uint112 r1After,) = pool.getReserves();
+        if (r0After >= hook.auctionThreshold0()) {
+            assertFalse(hook.auctionActive(), "auction should have cleared");
+
+            IEulerSwap.DynamicParams memory dpRestored = pool.getDynamicParams();
+            assertEq(dpRestored.priceY, pyOriginal, "priceY should be restored after asset0 auction");
+            assertEq(dpRestored.equilibriumReserve0, r0After, "eq0 = reserves after restore");
+            assertEq(dpRestored.equilibriumReserve1, r1After, "eq1 = reserves after restore");
+            assertEq(dpRestored.minReserve0, min0Original, "minReserve0 restored");
+            assertEq(dpRestored.minReserve1, min1Original, "minReserve1 restored");
+        }
+    }
+
+    // --- Stress test: multiple swaps during auction, restore still works ---
+
+    function test_restore_succeeds_after_multiple_auction_swaps() public {
+        IEulerSwap.DynamicParams memory dpBefore = pool.getDynamicParams();
+        uint80 pyOriginal = dpBefore.priceY;
+
+        _setupAuctionParams();
+
+        address swapper = makeAddr("swapper");
+
+        // Trigger auction (asset0 in → depletes reserve1)
+        _fundAndSwap(swapper, true, 2e18);
+        assertTrue(hook.auctionActive());
+
+        // Do several more swaps during auction to shift reserves significantly
+        vm.warp(block.timestamp + 30);
+        _fundAndSwap(swapper, true, 0.5e18);
+        _fundAndSwap(swapper, true, 0.5e18);
+        _fundAndSwap(swapper, true, 0.3e18);
+
+        assertTrue(hook.auctionActive(), "auction should still be active");
+
+        // Now repay with large asset1 swap
+        vm.warp(block.timestamp + 30);
+        _fundAndSwap(swapper, false, 4e18);
+
+        (uint112 r0After, uint112 r1After,) = pool.getReserves();
+        if (r1After >= hook.auctionThreshold1()) {
+            assertFalse(hook.auctionActive(), "auction should have cleared");
+
+            IEulerSwap.DynamicParams memory dpRestored = pool.getDynamicParams();
+            assertEq(dpRestored.priceY, pyOriginal, "priceY must be restored even after many swaps");
+            assertEq(dpRestored.equilibriumReserve0, r0After, "eq0 = current reserves");
+            assertEq(dpRestored.equilibriumReserve1, r1After, "eq1 = current reserves");
+        }
     }
 }

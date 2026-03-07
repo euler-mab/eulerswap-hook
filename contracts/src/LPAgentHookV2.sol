@@ -375,17 +375,17 @@ contract LPAgentHookV2 is IEulerSwapHookTarget {
         }
     }
 
-    /// @notice Restore pool dynamic params to pre-auction snapshot.
-    /// Called when auction clears (reserves back above thresholds).
-    /// If restore fails (current reserves don't satisfy the original curve),
-    /// the pool retains auction params and the agent must reconfigure manually.
+    /// @notice Restore pool dynamic params after auction clears.
+    /// Sets eq = current reserves (guarantees CurveLib.verify passes) and
+    /// restores priceY + minReserves to pre-auction values.
+    /// The agent can re-boost equilibrium on its next recenter cycle.
     function _restorePreAuctionParams(uint112 reserve0, uint112 reserve1) internal {
         IEulerSwap.DynamicParams memory dp = IEulerSwap(pool).getDynamicParams();
         dp.priceY = preAuctionPriceY;
-        dp.equilibriumReserve0 = preAuctionEq0;
-        dp.equilibriumReserve1 = preAuctionEq1;
-        dp.minReserve0 = preAuctionMinReserve0;
-        dp.minReserve1 = preAuctionMinReserve1;
+        dp.equilibriumReserve0 = reserve0;
+        dp.equilibriumReserve1 = reserve1;
+        dp.minReserve0 = reserve0 < preAuctionMinReserve0 ? reserve0 : preAuctionMinReserve0;
+        dp.minReserve1 = reserve1 < preAuctionMinReserve1 ? reserve1 : preAuctionMinReserve1;
 
         try IEulerSwap(pool).reconfigure(dp, IEulerSwap.InitialState(reserve0, reserve1)) {}
         catch {

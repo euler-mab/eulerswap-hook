@@ -56,7 +56,7 @@ export default function StrategyPanel({ state }: { state: PoolState }) {
                   rel="noopener noreferrer"
                   className="font-mono text-xs text-gray-500 hover:text-gray-900 transition-colors"
                 >
-                  {shortAddr(state.swapHook)} &nearr;
+                  {shortAddr(state.swapHook)} ↗
                 </a>
               )}
           </Row>
