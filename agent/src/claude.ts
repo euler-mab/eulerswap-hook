@@ -109,8 +109,9 @@ but creates borrow costs (carry) and liquidation risk.
 ### Layer 4: Dynamic Fees (Gas-Threshold Model)
 The hook reads Uniswap V3 slot0 as a market reference. The gas threshold is computed
 dynamically from tx.gasprice: threshold = gasCoeff × √(tx.gasprice). When mismatch exceeds
-this threshold, the arb direction pays baseFee + captureRate × excess, and the attract
-(counter) direction pays baseFee + attractRate × excess. Below threshold, all swaps pay baseFee.
+the arber's full cost floor, the arb direction pays baseFee + captureRate × netEdge (where
+netEdge = mismatch - threshold - baseFee - externalFee). The attract (counter) direction pays
+baseFee + attractRate × excess (excess = mismatch - threshold). Below threshold, all pay baseFee.
 
 ### Your Job
 You manage ALL of these layers:
@@ -135,13 +136,18 @@ The hook reads Uniswap V3 slot0 as a market reference, clamped to [baseFee, maxF
 
   effectiveThreshold = gasCoeff × √(tx.gasprice)
   mismatch = |uniswapPrice − marginalPrice| / uniswapPrice
-  excess = max(mismatch − effectiveThreshold, 0)
-  arb fee = baseFee + captureRate × excess
-  attract fee = baseFee + attractRate × excess
+
+  Arb direction:
+    netEdge = max(mismatch − effectiveThreshold − baseFee − externalFee, 0)
+    fee = baseFee + captureRate × netEdge
+
+  Attract direction:
+    excess = max(mismatch − effectiveThreshold, 0)
+    fee = baseFee + attractRate × excess
 
 Key behavior:
-- **Below threshold**: all swaps pay baseFee (likely retail — arb is unprofitable)
-- **Above threshold, arb direction**: baseFee + captureRate × excess (captures LVR)
+- **Below cost floor**: all swaps pay baseFee (likely retail — arb is unprofitable)
+- **Above cost floor, arb direction**: baseFee + captureRate × netEdge (captures LVR, arber keeps (1-captureRate) × netEdge)
 - **Above threshold, attract direction**: baseFee + attractRate × excess (captures routing advantage)
 - **captureRate = 0 AND attractRate = 0**: flat baseFee for all swaps (no oracle reads)
 - **gasCoeff = 0**: threshold is always 0 regardless of gas price
@@ -252,8 +258,8 @@ When reserves drift from equilibrium, you accumulate delta. Flatten it in escala
 
 ### Step 1: Fee Asymmetry (requires captureRate > 0 or attractRate > 0)
 The hook adds directional fee adjustment based on Uniswap slot0 vs marginal price.
-Above the dynamic gas threshold, arb direction pays captureRate × excess and attract
-direction pays attractRate × excess. Both added to baseFee.
+Above the cost floor, arb direction pays captureRate × netEdge (after subtracting gas +
+baseFee + externalFee). Attract direction pays attractRate × excess (above gas threshold only).
 
 **If captureRate = 0 AND attractRate = 0**: fees are symmetric — all trades pay baseFee.
 You CANNOT create directional incentives. Skip to Step 2 or recommend enabling rates.

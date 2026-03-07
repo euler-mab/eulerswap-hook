@@ -57,7 +57,7 @@ breakEvenFeeDiscount = dailyBorrowCost / expectedDailyVolumeInRebalancingDirecti
 |-------------------|-----------|--------|
 | < 70% (below kink) | Any | Normal fees — no urgency |
 | 70-85% (near kink) | Mild | Mild fee asymmetry: reduce rebalancing-direction fee by 1-3 bps |
-| 85-95% (above kink) | Significant | Strong fee asymmetry: rebalancing at minFee, worsening at maxFee |
+| 85-95% (above kink) | Significant | Strong fee asymmetry: rebalancing at baseFee, worsening at maxFee |
 | > 95% (critical) | Severe | Emergency: maximum asymmetry + reduce concentration |
 
 **Agent actions by severity**:
@@ -66,11 +66,11 @@ breakEvenFeeDiscount = dailyBorrowCost / expectedDailyVolumeInRebalancingDirecti
    - No action needed. Normal mismatch-based fees handle it.
 
 2. **MEDIUM** (utilization near kink, moderate imbalance):
-   - `setFeeParams`: widen the min/max spread, increase mismatchScale
+   - `setFeeParams`: widen baseFee/maxFee spread, increase captureRate
    - This amplifies the hook's per-swap asymmetry without requiring gas on every swap
 
 3. **HIGH** (utilization above kink, large imbalance):
-   - `setFeeParams`: set maxFee high (200-500 bps), minFee low (1-2 bps)
+   - `setFeeParams`: set maxFee high (200-500 bps), baseFee low (1-2 bps)
    - Consider `reconfigure`: shift equilibrium toward the excess side
 
 4. **CRITICAL** (utilization > 95%, pool health at risk):
@@ -148,16 +148,16 @@ Every poll cycle:
 
     severity < 0.5 (interest < half of fees):
       → Mild fee asymmetry via setFeeParams
-      → Widen min/max spread by ~2 bps each direction
+      → Widen baseFee/maxFee spread by ~2 bps each direction
 
     severity 0.5-1.0 (interest approaching fee revenue):
       → Strong fee asymmetry
-      → Set minFee = 1 bps for rebalancing direction
-      → Set maxFee = 3× baseFee for worsening direction
+      → Set baseFee = 1 bps for rebalancing direction
+      → Set maxFee = 3× normal baseFee for worsening direction
       → Consider equilibrium shift toward excess side
 
     severity > 1.0 (interest exceeds fee revenue):
-      → Maximum fee asymmetry (minFee=1bps, maxFee=500bps)
+      → Maximum fee asymmetry (baseFee=1bps, maxFee=500bps)
       → Reduce concentration by 10-20%
       → Shift equilibrium
       → Journal alert

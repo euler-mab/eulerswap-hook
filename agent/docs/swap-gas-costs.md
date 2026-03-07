@@ -23,8 +23,8 @@ cd contracts && forge test --match-contract LPAgentHookTest --gas-report 2>&1 | 
 Key rows to look at:
 - `swap`: Total gas for EulerSwap swap (includes all sub-calls)
 - `getFee`: Hook fee computation
-- `slot0`: Uniswap oracle read (only when mismatchScale > 0)
-- `getDynamicParams`: Pool curve params read (only when mismatchScale > 0)
+- `slot0`: Uniswap oracle read (only when captureRate/attractRate > 0)
+- `getDynamicParams`: Pool curve params read (only when captureRate/attractRate > 0)
 - `deposit` / `withdraw`: Euler vault operations
 
 ### 3. Compute USD cost
@@ -71,8 +71,8 @@ Total swap gas with hook active: **~474k gas**
 
 | Mode | Gas | What it does |
 |---|---|---|
-| **Flat fee** (mismatchScale=0) | **7,155** | Just reads `baseFee` from storage, returns it. |
-| **With mismatch** (mismatchScale>0) | **~37,600** | Full oracle + marginal computation. |
+| **Flat fee** (captureRate/attractRate=0) | **7,155** | Just reads `baseFee` from storage, returns it. |
+| **With mismatch** (captureRate/attractRate>0) | **~37,600** | Full oracle + marginal computation. |
 
 Mismatch mode sub-costs:
 | Sub-component | Gas | Notes |

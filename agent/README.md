@@ -110,9 +110,9 @@ When the pool has leverage (borrow vaults), sustained one-directional flow can s
 | Utilization | Severity | Action |
 |-------------|----------|--------|
 | < 70% | None | Normal fees |
-| 70-85% | MILD | Widen min/max spread by 2 bps |
-| 85-95% | HIGH | minFee=1bps, maxFee=3×baseFee (≥100bps) |
-| > 95% | CRITICAL | minFee=1bps, maxFee=500bps |
+| 70-85% | MILD | Widen baseFee/maxFee spread by 2 bps |
+| 85-95% | HIGH | baseFee=1bps, maxFee=3×normal (≥100bps) |
+| > 95% | CRITICAL | baseFee=1bps, maxFee=500bps |
 
 The rule reads vault state via `monitor.getVaultDebtInfo()`: pool debt, vault utilization, borrow rates, and daily interest cost. It adjusts `setFeeParams` to make the rebalancing direction cheap and the worsening direction expensive, encouraging arbers to restore balance.
 
