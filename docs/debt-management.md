@@ -377,6 +377,222 @@ analysis ([`TWAP_RECENTERING.md` §Break-Even](../contracts/src/TWAP_RECENTERING
 confirms that *paying* to eliminate directional exposure is rational — the
 question is only the mechanism (direct swap vs auction), not whether to do it.
 
+## Revised Design: afterSwap-Triggered Autonomous Auction (2026-03-07)
+
+The original two-mode design (§Two-Mode Hook Design) requires the agent to
+detect debt, activate Mode 1, and monitor the auction. The revised design
+embeds the entire lifecycle in the hook's afterSwap + getFee callbacks,
+making it fully autonomous.
+
+### How it works
+
+**Trigger (afterSwap):** After every swap, the hook reads vault debt. If
+debt in either asset exceeds a threshold (e.g. 50% of NAV), the hook:
+1. Computes delta from debt level: `delta = min(2*debt*py/x0, maxDelta)`
+2. Reconfigures pool off-market (shifts py to attract debt-repaying asset)
+3. Sets `auctionActive = true`, `auctionStart = block.timestamp`
+
+**Fee (getFee):** When `auctionActive`, the hook returns a time-decaying
+fee for the debt-repaying direction instead of the normal Mode 2 formula:
+```
+elapsed = block.timestamp - auctionStart
+auctionFee = max(startFee - decayRate * elapsed, 0)
+```
+The debt-worsening direction gets maxFee (blocked). Normal Mode 2 trades
+that don't affect debt can proceed at normal fees.
+
+**Resolution (afterSwap):** After each swap during the auction:
+- If debt < threshold → clear `auctionActive`, reconfigure back to market
+- If debt still > threshold → reconfigure again with updated delta (smaller,
+  since some debt was repaid). Auction continues with fresh `auctionStart`.
+
+### State diagram
+
+```
+                    afterSwap: debt > threshold
+    Normal ─────────────────────────────────────> Auction
+  (Mode 2 fees)                                 (decaying fee)
+      ^                                             │
+      │         afterSwap: debt < threshold         │
+      └─────────────────────────────────────────────┘
+          reconfigure to market, clear auction
+```
+
+### Why this is better than agent-triggered Mode 1
+
+1. **Fully autonomous.** No agent needed to detect debt, activate auction,
+   or monitor progress. Every swap is a natural checkpoint.
+2. **Self-correcting loop.** If one arb swap doesn't clear enough debt,
+   afterSwap fires again → new reconfigure → auction continues. Iterates
+   until debt is below threshold.
+3. **MEV-aligned.** Searchers compete in the block auction for the post-
+   reconfigure arb. Natural price discovery.
+4. **Minimal new state.** Just `auctionActive`, `auctionStart`,
+   `auctionDirection` (which asset needs to flow in).
+5. **Resilient.** Works even with agent offline for days. Any swap touching
+   the pool checks debt and can trigger the auction.
+
+### Cost analysis
+
+The fundamental constraint: any arb-based mechanism costs the LP at least
+as much as a direct swap, because the arber incurs the same external
+exchange fee (Uni 5 bps) plus needs profit margin:
+
+```
+LP net cost = price improvement given − fee captured
+            = (arber's Uni fee + arber's profit) + fee captured − fee captured
+            = arber's Uni fee + arber's profit
+            ≥ Uni fee = direct swap cost
+```
+
+At minimum viable delta (~18 bps, where arber barely profits over gas):
+
+| Component | Value |
+|-----------|-------|
+| Arber average improvement | delta/2 = 9 bps |
+| Pool fee captured (baseFee) | 3 bps |
+| LP net cost per $ debt | 6 bps |
+| Direct swap cost per $ debt | 5 bps |
+| **Autonomy premium** | **1 bps (20%)** |
+
+At $16k/day debt accumulation: **~$1.60/day** for autonomous debt clearing.
+Clearly worth the resilience benefit.
+
+### Capacity
+
+At delta=18bps with x0=$635k:
+- Debt repaid per reconfigure: `x0 * delta / 2 ≈ $572`
+- Multiple reconfigures possible per day (each swap can trigger)
+- Actual debt: ~$16k/day → needs ~28 reconfigures/day
+- Rate limiting not strictly needed (only fires when debt > threshold)
+
+### Open concerns
+
+**1. CurveLib.verify on off-market reconfigure.** The afterSwap reconfigure
+shifts equilibrium to an off-market py while reserves are at the post-swap
+position. The new curve must be valid at those reserves. If verification
+fails in afterSwap, **the entire swap reverts**, making the pool un-swappable.
+This is the critical constraint to resolve — see §CurveLib.verify Analysis
+below.
+
+**2. Gas burden on triggering swapper.** The reconfigure in afterSwap writes
+~13 storage slots (~60k gas overhead). At 0.04 gwei: <$0.01 (negligible).
+At 1 gwei: ~$0.12 (still small). The arber prices this in. But the FIRST
+trigger (the normal swap that pushes debt over threshold) also pays this
+cost unexpectedly — consider whether this is acceptable.
+
+**3. getFee direction override.** The debt-repaying trade corrects the
+deliberate mispricing, so it's the "arb direction" from the current hook's
+perspective. getFee must recognize auction mode and override: return the
+decaying auction fee instead of captureRate-based fee. One approach: check
+`auctionActive` first, return time-based fee before computing mismatch.
+
+**4. Manipulation via forced debt.** An attacker could deliberately create
+debt (via a large swap) to trigger the auction, then profit from the off-
+market reconfigure. Mitigation: the debt threshold must be high enough that
+the cost of creating the debt exceeds the arb profit from the auction.
+With 50% NAV threshold, the attacker would need to move the pool
+significantly — which itself incurs fees via the Mode 2 captureRate.
+
+**5. Interaction with agent.** When the agent is online, it can recenter
+more efficiently (direct swap + reconfigure). The hook's afterSwap should
+defer if the agent recently recentered. Simple approach: if `auctionActive`
+and agent calls a manual reconfigure (as owner/manager), clear the auction.
+
+**6. Multi-directional debt.** If both xd and yd are above threshold
+simultaneously, which direction gets the auction? Pick the larger debt in
+USDC terms (validated in simulation). The hook needs to determine this
+onchain from vault reads.
+
+## CurveLib.verify Analysis
+
+### The problem
+
+For c=0, CurveLib.verify checks:
+- **Branch 1** (x ≤ x0, y ≥ y0): `y ≥ y0 + px*(x0-x)*x0 / (x*py)`
+- **Branch 2** (x > x0, y < y0): `x ≥ x0 + py*(y0-y)*y0 / (y*px)`
+
+When debt exists, the pool is on the branch where the off-market py shift
+makes verification fail:
+- WETH debt → Branch 2 → increase py → x_required > x_actual. **Fails.**
+- USDC debt → Branch 1 → decrease py → y_required > y_actual. **Fails.**
+
+The curve shifts "past" the current position. Simply changing py with the
+same x0/y0 always violates the invariant.
+
+### The solution: fit the curve to current reserves
+
+Instead of using full additive boost x0/y0, choose **reduced** x0_new/y0_new
+such that the new curve passes through the current reserves at the off-market
+py. The depth reduction during the auction is irrelevant — we only need
+enough depth for the arb trade, not full market-making depth.
+
+**Branch 2 (WETH debt, increase py):**
+
+Given current reserves (x_cur, y_cur) and target py_off, solve for x0_new
+and y0_new such that:
+```
+x_cur = x0_new + py_off*(y0_new - y_cur)*y0_new / (y_cur * px)
+```
+
+One degree of freedom. Maximize y0_new (arb depth) with x0_new → 0:
+```
+y0_max = (y_cur + sqrt(y_cur² + 4*x_cur*y_cur*px/py_off)) / 2
+```
+
+**Example** (x_cur=640k USDC, y_cur=310 WETH, py_off=2004):
+```
+y0_max ≈ 505 WETH → available arb depth = 195 WETH ≈ $390k
+```
+
+Typical debt per cycle: ~$16k. Available depth is 24x more than needed.
+
+**Branch 1 (USDC debt, decrease py):** Symmetric. Solve for x0_new:
+```
+y_cur = y0_new + px*(x0_new - x_cur)*x0_new / (x_cur * py_off)
+```
+
+### Practical formula for the hook
+
+The hook needs to compute x0_new, y0_new onchain. For Branch 2:
+
+1. Choose y0_new = y_cur + debt_WETH (enough depth to absorb the arb)
+2. Solve for x0_new:
+```
+x0_new = x_cur - py_off*(y0_new - y_cur)*y0_new / (y_cur * px)
+```
+3. Verify x0_new > 0 (it will be for reasonable debt amounts)
+4. Set minReserve0 = 0, minReserve1 = y_cur (no range constraint needed
+   during auction — the pool returns to full params after)
+
+### Depth during auction
+
+The reduced x0/y0 means less depth for normal swaps during the auction.
+This is acceptable because:
+- The auction is brief (arb executes within blocks of the reconfigure)
+- The afterSwap immediately restores full depth if debt is cleared
+- Worst case: pool has reduced depth for a few blocks
+
+### Residual concerns
+
+1. **Onchain computation cost.** The sqrt for y0_max adds ~200 gas. The
+   quadratic solve is cheap. Total overhead is negligible.
+
+2. **minReserve constraints.** During the auction, set minReserves to 0
+   (or to the current reserves as floor). Restore original minReserves
+   after the auction. This avoids minReserve validation failures.
+
+3. **try/catch guard.** Even with the curve-fitting formula, edge cases
+   (rounding, extreme positions) could cause CurveLib.verify to fail.
+   Wrap the reconfigure in try/catch so failures are silent:
+```solidity
+try pool.reconfigure(auctionParams, currentReserves) {
+    auctionActive = true;
+} catch {
+    // Skip auction — agent handles debt via direct swap
+}
+```
+
 ## Open Questions
 
 1. ~~**Decay parameters**~~: Tested at 200bps start, 2bps/min linear decay.
