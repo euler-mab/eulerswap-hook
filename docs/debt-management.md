@@ -301,29 +301,83 @@ Guard against Mode 1 being activated while already active. Only one
 auction should run at a time. The hook should reject setMode(1) if
 already in Mode 1.
 
+## Simulation Findings (2026-03-07)
+
+Implemented and tested the dutch auction in `scripts/sim-recenter.ts`. The
+simulation runs a 30-day GBM price path with 5% recenter threshold, triggering
+the auction whenever debt exceeds $100 before each recenter.
+
+### Setup
+
+- Pool: $3k real deposits → $635k virtual depth (additive boost)
+- Auction: startFee=200bps, decay=2bps/min, uniFee=5bps
+- Bidirectional: handles both WETH debt (yd) and USDC debt (xd)
+- Arber trades to marginal-profit=0 endpoint at each fee level
+
+### Results
+
+| Metric | Value |
+|--------|-------|
+| Auctions triggered | 27 / 30 recenters |
+| Total debt repaid | $76k |
+| Total auction net cost | $222 |
+| Total direct swap cost | $39 |
+| Auction cost ratio | 5.7x more expensive |
+
+### Why the auction always loses at current scale
+
+The fundamental issue is **quadratic vs linear cost**:
+
+- **Auction LP cost** scales as `x0 * delta² / 4` — the arber captures the
+  average price improvement (delta/2), not just the marginal edge. This is
+  quadratic in delta.
+
+- **Direct swap cost** is `debt * uniFee` — linear in debt size, with
+  negligible slippage at $16k per cycle on Uni V3's $300M+ USDC/WETH pool.
+
+At small delta (<100bps), the auction roughly breaks even. At larger delta
+(>300bps), the auction significantly overpays. The fee revenue from the
+decaying auction fee only partially offsets the price improvement leaked to
+arbers.
+
+The auction only becomes competitive when **Uni slippage** adds meaningful
+cost on top of the flat fee — which requires swap sizes of $200k+ per cycle
+(real deposits ~$50k+, virtual depth ~$7M+).
+
+### Decision
+
+**Dutch auction abandoned for near-term.** At current and foreseeable pool
+scale ($3k-$50k real deposits), direct swap is strictly cheaper.
+
+**Alternative approach: agent-triggered direct swap.** The agent will:
+1. Detect when vault debt (yd or xd) exceeds a threshold
+2. Execute a direct swap (via Euler vault or DEX aggregator) to repay debt
+3. Recenter to delta-neutral state with clean vault
+
+The dutch auction mechanism remains documented here and in the simulation
+code for future reference if the pool scales to $50k+ real deposits where
+Uni slippage becomes material.
+
 ## Open Questions
 
-1. **Decay parameters**: What startFee and decayRate? Linear vs exponential
-   decay? Over how many blocks/seconds?
+1. ~~**Decay parameters**~~: Tested at 200bps start, 2bps/min linear decay.
+   Works but irrelevant at current scale — auction abandoned.
 
-2. **Delta sizing**: Target full debt repayment or partial? Full = larger
-   delta = more cost per unit. Partial = residual exposure but safer
-   (smaller delta = less vulnerable to adverse price moves).
+2. ~~**Delta sizing**~~: Full repayment targeting works. Delta formula
+   `2*debt*py/x0` validated in simulation.
 
-3. **Direction guard implementation**: Should the hook enforce
-   single-direction swaps during Mode 1? Or just let Mode 2's fee
-   formula handle wrong-direction trades naturally?
+3. **Agent debt detection threshold**: What debt-to-NAV ratio triggers
+   manual repayment? Needs tuning based on gas costs and rebalance
+   frequency.
 
-4. **Onchain autonomy roadmap**: What's needed to move from agent-triggered
-   Mode 1 to autonomous TWAP-triggered? Is the gas cost of onchain TWAP
-   reads acceptable?
+4. **Direct swap execution**: Use Euler vault repay directly, or route
+   through DEX aggregator (CowSwap)? Vault repay may be cheaper if the
+   agent holds the repayment asset.
 
 5. **Interaction with Mode 2 attract-side fee**: During normal operation,
    the attract-side fee already encourages debt-repaying flow at lower
-   cost than a full dutch auction. Should Mode 1 only activate for debt
-   beyond what Mode 2 can naturally clear?
+   cost. Should manual repayment only trigger for debt beyond what
+   organic flow can clear?
 
-6. **Atomic activation**: Can reconfigure (set py off-market) + Mode 1
-   activation happen in a single tx? The hook's afterSwap can call
-   reconfigure, but Mode 1 isn't triggered by a swap — it's triggered
-   by the agent. May need a batched EVC call.
+6. **Revisit at scale**: If real deposits reach $50k+, re-evaluate the
+   dutch auction. Uni slippage becomes material at $200k+ swap sizes.
