@@ -791,6 +791,113 @@ contract LPAgentHookV2Test is EulerSwapTestBase {
         emit log_named_uint("reserve1", r1);
     }
 
+    // ===================================================================
+    // Audit fix tests
+    // ===================================================================
+
+    // --- HIGH: no re-trigger during active auction ---
+
+    function test_no_retrigger_priceY_stable_during_auction() public {
+        _setupAuctionParams();
+
+        // Trigger auction
+        address swapper = makeAddr("swapper");
+        _fundAndSwap(swapper, true, 2e18);
+        assertTrue(hook.auctionActive());
+
+        IEulerSwap.DynamicParams memory dpAfterTrigger = pool.getDynamicParams();
+        uint80 pyAfterTrigger = dpAfterTrigger.priceY;
+        uint40 startAfterTrigger = hook.auctionStart();
+
+        // Wait for fee to decay
+        vm.warp(block.timestamp + 30);
+
+        // Another swap that doesn't clear the debt
+        _fundAndSwap(swapper, true, 0.5e18);
+
+        // priceY should NOT have compounded
+        IEulerSwap.DynamicParams memory dpAfterSecond = pool.getDynamicParams();
+        assertEq(dpAfterSecond.priceY, pyAfterTrigger, "priceY must not compound on re-trigger");
+
+        // auctionStart should NOT have reset
+        assertEq(hook.auctionStart(), startAfterTrigger, "auctionStart must not reset on re-trigger");
+    }
+
+    function test_fee_decays_across_multiple_swaps_during_auction() public {
+        _setupAuctionParams();
+
+        address swapper = makeAddr("swapper");
+        _fundAndSwap(swapper, true, 2e18);
+        assertTrue(hook.auctionActive());
+
+        (uint112 r0, uint112 r1,) = pool.getReserves();
+
+        // Fee at t=0
+        uint64 feeT0 = hook.getFee(false, r0, r1, false);
+        assertEq(feeT0, 50e14, "fee should be startFee at t=0");
+
+        // Another swap at t=20 (doesn't clear)
+        vm.warp(block.timestamp + 20);
+        _fundAndSwap(swapper, true, 0.3e18);
+
+        // Fee should still reflect 20s of decay from the ORIGINAL start
+        (r0, r1,) = pool.getReserves();
+        uint64 feeT20 = hook.getFee(false, r0, r1, false);
+        assertEq(feeT20, 30e14, "fee should reflect 20s decay from original start");
+    }
+
+    // --- MEDIUM: pre-auction params restored on clear ---
+
+    function test_auction_restores_priceY_on_clear() public {
+        IEulerSwap.DynamicParams memory dpBefore = pool.getDynamicParams();
+        uint80 pyOriginal = dpBefore.priceY;
+        uint112 eq0Original = dpBefore.equilibriumReserve0;
+        uint112 eq1Original = dpBefore.equilibriumReserve1;
+
+        _setupAuctionParams();
+
+        address swapper = makeAddr("swapper");
+
+        // Trigger auction
+        _fundAndSwap(swapper, true, 2e18);
+        assertTrue(hook.auctionActive());
+
+        // Verify pool params are shifted
+        IEulerSwap.DynamicParams memory dpAuction = pool.getDynamicParams();
+        assertTrue(dpAuction.priceY > pyOriginal, "priceY should be shifted during auction");
+        assertTrue(dpAuction.equilibriumReserve0 != eq0Original, "eq0 should differ during auction");
+
+        // Wait for fee to decay, then repay
+        vm.warp(block.timestamp + 60);
+        _fundAndSwap(swapper, false, 2e18);
+
+        (, uint112 r1After,) = pool.getReserves();
+        if (r1After >= hook.auctionThreshold1()) {
+            assertFalse(hook.auctionActive(), "auction should have cleared");
+
+            // Pool params should be restored to pre-auction values
+            IEulerSwap.DynamicParams memory dpRestored = pool.getDynamicParams();
+            assertEq(dpRestored.priceY, pyOriginal, "priceY should be restored");
+            assertEq(dpRestored.equilibriumReserve0, eq0Original, "eq0 should be restored");
+            assertEq(dpRestored.equilibriumReserve1, eq1Original, "eq1 should be restored");
+        }
+    }
+
+    // --- MEDIUM: startFee >= WAD rejected ---
+
+    function test_setAuctionParams_rejects_startFee_100_percent() public {
+        vm.expectRevert("startFee >= 100%");
+        hook.setAuctionParams(0, 9e18, 50e14, uint64(1e18), 1e14);
+    }
+
+    function test_setAuctionParams_accepts_startFee_below_100_percent() public {
+        // Just below WAD should work
+        hook.setAuctionParams(0, 9e18, 50e14, uint64(1e18 - 1), 1e14);
+        assertEq(hook.auctionStartFee(), uint64(1e18 - 1));
+    }
+
+    // --- Existing tests below ---
+
     function test_getFee_direction_for_asset0_debt() public {
         hook.setAuctionParams(9e18, 0, 50e14, 50e14, 1e14);
 

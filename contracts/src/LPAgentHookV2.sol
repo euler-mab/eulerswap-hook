@@ -69,8 +69,15 @@ contract LPAgentHookV2 is IEulerSwapHookTarget {
     uint112 public auctionThreshold0; // reserve0 level below which asset0 debt triggers
     uint112 public auctionThreshold1; // reserve1 level below which asset1 debt triggers
     uint64 public auctionDelta;       // WAD: off-market price shift (e.g. 50e14 = 50bps)
-    uint64 public auctionStartFee;    // WAD: starting fee for decay
+    uint64 public auctionStartFee;    // WAD: starting fee for decay (must be < WAD)
     uint64 public auctionDecayPerSecond; // WAD: fee decay per second
+
+    // --- Pre-auction snapshot (for restoring pool params on clear) ---
+    uint80 private preAuctionPriceY;
+    uint112 private preAuctionEq0;
+    uint112 private preAuctionEq1;
+    uint112 private preAuctionMinReserve0;
+    uint112 private preAuctionMinReserve1;
 
     // --- Events ---
     event FeeParamsUpdated(
@@ -229,10 +236,12 @@ contract LPAgentHookV2 is IEulerSwapHookTarget {
             // Check if debt repaid — reserves above both thresholds
             if (reserve0 >= t0 && reserve1 >= t1) {
                 auctionActive = false;
+                _restorePreAuctionParams(reserve0, reserve1);
                 emit AuctionCleared(reserve0, reserve1);
-                return;
             }
-            // Still in debt — trigger another reconfigure below
+            // Whether cleared or still in debt, don't re-trigger.
+            // Re-triggering would compound the priceY shift and reset the fee decay timer.
+            return;
         }
 
         // Check debt trigger
@@ -284,6 +293,8 @@ contract LPAgentHookV2 is IEulerSwapHookTarget {
         uint64 _startFee,
         uint64 _decayPerSecond
     ) external onlyOwner {
+        require(_startFee < uint64(WAD), "startFee >= 100%");
+
         auctionThreshold0 = _threshold0;
         auctionThreshold1 = _threshold1;
         auctionDelta = _delta;
@@ -329,6 +340,13 @@ contract LPAgentHookV2 is IEulerSwapHookTarget {
     function _triggerAuction(uint112 reserve0, uint112 reserve1, bool attractAsset1) internal {
         IEulerSwap.DynamicParams memory dp = IEulerSwap(pool).getDynamicParams();
 
+        // Snapshot pre-auction params for restoration on clear
+        preAuctionPriceY = dp.priceY;
+        preAuctionEq0 = dp.equilibriumReserve0;
+        preAuctionEq1 = dp.equilibriumReserve1;
+        preAuctionMinReserve0 = dp.minReserve0;
+        preAuctionMinReserve1 = dp.minReserve1;
+
         // Set equilibrium = current reserves → CurveLib.verify auto-passes
         dp.equilibriumReserve0 = reserve0;
         dp.equilibriumReserve1 = reserve1;
@@ -354,6 +372,24 @@ contract LPAgentHookV2 is IEulerSwapHookTarget {
             emit AuctionTriggered(attractAsset1, reserve0, reserve1);
         } catch {
             // Silently fail — don't block normal swaps
+        }
+    }
+
+    /// @notice Restore pool dynamic params to pre-auction snapshot.
+    /// Called when auction clears (reserves back above thresholds).
+    /// If restore fails (current reserves don't satisfy the original curve),
+    /// the pool retains auction params and the agent must reconfigure manually.
+    function _restorePreAuctionParams(uint112 reserve0, uint112 reserve1) internal {
+        IEulerSwap.DynamicParams memory dp = IEulerSwap(pool).getDynamicParams();
+        dp.priceY = preAuctionPriceY;
+        dp.equilibriumReserve0 = preAuctionEq0;
+        dp.equilibriumReserve1 = preAuctionEq1;
+        dp.minReserve0 = preAuctionMinReserve0;
+        dp.minReserve1 = preAuctionMinReserve1;
+
+        try IEulerSwap(pool).reconfigure(dp, IEulerSwap.InitialState(reserve0, reserve1)) {}
+        catch {
+            // Restore failed — agent must reconfigure manually
         }
     }
 
