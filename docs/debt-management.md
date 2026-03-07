@@ -386,13 +386,34 @@ making it fully autonomous.
 
 ### How it works
 
-**Trigger (afterSwap):** After every swap, the hook reads vault debt. If
-debt in either asset exceeds a threshold (e.g. 50% of NAV), the hook:
+**Trigger (afterSwap):** After every swap, the hook checks if reserves
+have crossed a debt threshold — **no vault reads needed**. Debt is
+deterministic from the reserve position:
+
+```
+Y (WETH) debt appears when: reserve1 < BY  (= y0 - yr, the boost)
+X (USDC) debt appears when: reserve0 < BX  (= x0 - xr, the boost)
+
+Additional debt = BY - reserve1  (for WETH, when reserve1 < BY)
+```
+
+The hook stores `auctionThreshold0` and `auctionThreshold1` — reserve
+levels below which the auction triggers. Set by the agent at reconfigure
+time (or computed from `xr`/`yr` and a debt tolerance). This is a single
+comparison against reserves already passed as callback params.
+
+If reserves cross the threshold, the hook:
 1. Sets delta generously (e.g. `auctionDelta` config param, ~50 bps).
    Doesn't need to match debt precisely — the fee auction handles pricing.
 2. Reconfigures pool off-market: sets `equilibrium = current reserves`,
    shifts py by delta (see §CurveLib.verify Analysis for why this works)
 3. Sets `auctionActive = true`, `auctionStart = block.timestamp`
+
+**Why no vault reads:** The vault state is deterministic from the reserve
+position given the initial state at last reconfigure (see `vaultStateAt`
+in `sim-recenter.ts`). Interest accrual drifts this mapping over time,
+but between recenters (hours) the drift is negligible. The threshold can
+include a small buffer to account for this.
 
 **Fee (getFee):** When `auctionActive`, returns a **time-decaying fee** for
 the debt-repaying direction and `maxFee` for the debt-worsening direction.
@@ -529,8 +550,8 @@ and agent calls a manual reconfigure (as owner/manager), clear the auction.
 
 **6. Multi-directional debt.** If both xd and yd are above threshold
 simultaneously, which direction gets the auction? Pick the larger debt in
-USDC terms (validated in simulation). The hook needs to determine this
-onchain from vault reads.
+USDC terms (validated in simulation). Computable from reserve position:
+compare `(BX - reserve0) * px` vs `(BY - reserve1) * py`.
 
 ## CurveLib.verify Analysis
 
@@ -651,19 +672,41 @@ This is acceptable because:
 ### Practical hook implementation
 
 ```solidity
-// In afterSwap, when debt > threshold:
-DynamicParams memory dp = pool.getDynamicParams();
-dp.equilibriumReserve0 = reserve0;  // set eq = current
-dp.equilibriumReserve1 = reserve1;
-dp.priceY = uint80(uint256(dp.priceY) * (1e18 + delta) / 1e18);
-dp.minReserve0 = 0;  // relax during auction
-dp.minReserve1 = 0;
+// Storage: set by agent at reconfigure time
+uint112 public auctionThreshold0;  // reserve0 level where X debt triggers
+uint112 public auctionThreshold1;  // reserve1 level where Y debt triggers
+uint64  public auctionDelta;       // off-market shift (WAD), e.g. 50bps = 0.005e18
 
-try pool.reconfigure(dp, InitialState(reserve0, reserve1)) {
-    auctionActive = true;
-    auctionStart = uint40(block.timestamp);
-} catch {
-    // Edge case: skip auction, agent handles debt via direct swap
+function afterSwap(..., uint112 reserve0, uint112 reserve1) external {
+    if (auctionActive) {
+        // Check if debt repaid — reserves crossed back above threshold
+        if (reserve0 >= auctionThreshold0 && reserve1 >= auctionThreshold1) {
+            auctionActive = false;
+            // Agent restores full boost params on next recenter
+            return;
+        }
+    }
+
+    // Check debt trigger — pure comparison, no vault reads
+    bool yDebt = reserve1 < auctionThreshold1;
+    bool xDebt = reserve0 < auctionThreshold0;
+    if (!yDebt && !xDebt) return;
+
+    DynamicParams memory dp = pool.getDynamicParams();
+    dp.equilibriumReserve0 = reserve0;  // set eq = current
+    dp.equilibriumReserve1 = reserve1;
+    if (yDebt) {
+        dp.priceY = uint80(uint256(dp.priceY) * (1e18 + auctionDelta) / 1e18);
+    } else {
+        dp.priceY = uint80(uint256(dp.priceY) * 1e18 / (1e18 + auctionDelta));
+    }
+    dp.minReserve0 = 0;
+    dp.minReserve1 = 0;
+
+    try pool.reconfigure(dp, InitialState(reserve0, reserve1)) {
+        auctionActive = true;
+        auctionStart = uint40(block.timestamp);
+    } catch {}
 }
 ```
 
