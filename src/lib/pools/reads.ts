@@ -102,6 +102,19 @@ export async function fetchPoolState(
     pool.uniswapPool
       ? client.readContract({ address: pool.uniswapPool, abi: uniswapV3PoolAbi, functionName: "observe", args: [[300, 0]] })
       : Promise.resolve(null),
+    // 15-18: V2 hook auction state + config (fails silently on v1 hooks)
+    hasHook
+      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getAuctionState" })
+      : Promise.resolve(null),
+    hasHook
+      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "auctionDelta" })
+      : Promise.resolve(null),
+    hasHook
+      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "auctionStartFee" })
+      : Promise.resolve(null),
+    hasHook
+      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "auctionDecayPerSecond" })
+      : Promise.resolve(null),
   ]);
 
   const val = <T,>(r: PromiseSettledResult<T>, fallback: T): T =>
@@ -128,6 +141,11 @@ export async function fetchPoolState(
   const slot0 = val(results[13], null) as any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const observeResult = val(results[14], null) as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const auctionState = val(results[15], null) as any;
+  const auctionDeltaVal = val(results[16], null) as bigint | null;
+  const auctionStartFeeVal = val(results[17], null) as bigint | null;
+  const auctionDecayVal = val(results[18], null) as bigint | null;
 
   // Compute marginal price using EulerSwap curve.
   // On-chain priceX/priceY are (USD_price / 10^decimals) * 1e18, so normalise to
@@ -304,6 +322,15 @@ export async function fetchPoolState(
     hookAttractRate: feeParams ? feeParams[5] : undefined,
     hookLiveFee0In: liveFee0In ?? undefined,
     hookLiveFee1In: liveFee1In ?? undefined,
+    // V2 auction state (undefined on v1 hooks)
+    auctionActive: auctionState ? (auctionState[0] as boolean) : undefined,
+    auctionStart: auctionState ? Number(auctionState[1]) : undefined,
+    auctionAttractAsset1: auctionState ? (auctionState[2] as boolean) : undefined,
+    auctionThreshold0: auctionState ? (auctionState[3] as bigint) : undefined,
+    auctionThreshold1: auctionState ? (auctionState[4] as bigint) : undefined,
+    auctionDelta: auctionDeltaVal ?? undefined,
+    auctionStartFee: auctionStartFeeVal ?? undefined,
+    auctionDecayPerSecond: auctionDecayVal ?? undefined,
     // Wallet
     agentEthBalance, agentToken0Balance, agentToken1Balance,
     // Vault positions

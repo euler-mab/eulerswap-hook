@@ -57,6 +57,16 @@ export interface PoolState {
   hookLiveFee0In?: bigint; // fee when asset0 is input
   hookLiveFee1In?: bigint; // fee when asset1 is input
 
+  // Auction state (v2 hooks only)
+  auctionActive?: boolean;
+  auctionStart?: number;         // unix timestamp of auction start
+  auctionAttractAsset1?: boolean; // true = want asset1 in, false = want asset0 in
+  auctionThreshold0?: bigint;    // reserve0 level below which asset0 debt triggers
+  auctionThreshold1?: bigint;    // reserve1 level below which asset1 debt triggers
+  auctionDelta?: bigint;         // WAD: off-market price shift
+  auctionStartFee?: bigint;      // WAD: starting fee for decay
+  auctionDecayPerSecond?: bigint; // WAD: fee decay per second
+
   // Agent wallet balances
   agentEthBalance: bigint;
   agentToken0Balance: bigint;

@@ -80,6 +80,91 @@ export default function StrategyPanel({ state }: { state: PoolState }) {
         </div>
       )}
 
+      {/* V2 Auction state */}
+      {state.auctionThreshold0 !== undefined && (
+        <div>
+          <h4 className="text-xs font-medium uppercase tracking-wider text-gray-400 mb-2">
+            Auction State
+          </h4>
+          <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-2.5 text-sm">
+            <Row label="Mode">
+              <span className={state.auctionActive ? "text-amber-600 font-medium" : "text-emerald-700"}>
+                {state.auctionActive ? "Auction" : "Normal"}
+              </span>
+            </Row>
+            {state.auctionActive && state.auctionStart !== undefined && state.auctionStart > 0 && (
+              <>
+                <Row label="Direction">
+                  Attracting {state.auctionAttractAsset1 ? state.asset1Symbol : state.asset0Symbol}
+                </Row>
+                <Row label="Elapsed">
+                  {(() => {
+                    const elapsed = state.blockTimestamp - state.auctionStart;
+                    const mins = Math.floor(elapsed / 60);
+                    const secs = elapsed % 60;
+                    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                  })()}
+                </Row>
+                {state.auctionStartFee !== undefined && state.auctionDecayPerSecond !== undefined && (
+                  <Row label="Current fee">
+                    {(() => {
+                      const elapsed = BigInt(state.blockTimestamp - state.auctionStart);
+                      const decay = state.auctionDecayPerSecond! * elapsed;
+                      const fee = state.auctionStartFee! > decay ? state.auctionStartFee! - decay : 0n;
+                      return fmtFeeBps(fee);
+                    })()}
+                  </Row>
+                )}
+                {state.auctionDelta !== undefined && (
+                  <Row label="Price shift">
+                    {(Number(state.auctionDelta) / 1e14).toFixed(1)} bps
+                  </Row>
+                )}
+              </>
+            )}
+            {/* Thresholds and distance — always show when configured */}
+            {(state.auctionThreshold0! > 0n || state.auctionThreshold1! > 0n) && (
+              <>
+                {state.auctionThreshold0! > 0n && (
+                  <Row label={`${state.asset0Symbol} threshold`}>
+                    {fmtAmount(state.auctionThreshold0!, state.asset0Decimals)}
+                    {" / "}
+                    {fmtAmount(state.reserve0, state.asset0Decimals)} current
+                    {state.reserve0 < state.auctionThreshold0! && (
+                      <span className="text-red-600 ml-1">
+                        ({(Number(state.auctionThreshold0! - state.reserve0) / Number(state.auctionThreshold0!) * 100).toFixed(1)}% below)
+                      </span>
+                    )}
+                    {state.reserve0 >= state.auctionThreshold0! && (
+                      <span className="text-emerald-600 ml-1">
+                        ({(Number(state.reserve0 - state.auctionThreshold0!) / Number(state.auctionThreshold0!) * 100).toFixed(1)}% above)
+                      </span>
+                    )}
+                  </Row>
+                )}
+                {state.auctionThreshold1! > 0n && (
+                  <Row label={`${state.asset1Symbol} threshold`}>
+                    {fmtAmount(state.auctionThreshold1!, state.asset1Decimals)}
+                    {" / "}
+                    {fmtAmount(state.reserve1, state.asset1Decimals)} current
+                    {state.reserve1 < state.auctionThreshold1! && (
+                      <span className="text-red-600 ml-1">
+                        ({(Number(state.auctionThreshold1! - state.reserve1) / Number(state.auctionThreshold1!) * 100).toFixed(1)}% below)
+                      </span>
+                    )}
+                    {state.reserve1 >= state.auctionThreshold1! && (
+                      <span className="text-emerald-600 ml-1">
+                        ({(Number(state.reserve1 - state.auctionThreshold1!) / Number(state.auctionThreshold1!) * 100).toFixed(1)}% above)
+                      </span>
+                    )}
+                  </Row>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Static params */}
       <div>
         <h4 className="text-xs font-medium uppercase tracking-wider text-gray-400 mb-2">

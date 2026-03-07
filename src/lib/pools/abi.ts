@@ -253,6 +253,42 @@ export const hookAbi = [
     ],
     outputs: [{ name: "fee", type: "uint64" }],
   },
+  // V2 hook: auction state
+  {
+    name: "getAuctionState",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "active", type: "bool" },
+      { name: "start", type: "uint40" },
+      { name: "attractAsset1", type: "bool" },
+      { name: "threshold0", type: "uint112" },
+      { name: "threshold1", type: "uint112" },
+    ],
+  },
+  // V2 hook: auction config (public state vars)
+  {
+    name: "auctionDelta",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint64" }],
+  },
+  {
+    name: "auctionStartFee",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint64" }],
+  },
+  {
+    name: "auctionDecayPerSecond",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint64" }],
+  },
 ] as const;
 
 export const uniswapV3PoolAbi = [
