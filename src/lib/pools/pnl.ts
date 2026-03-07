@@ -30,6 +30,8 @@ export interface PnlAttribution {
   volume1: number;
   /** Total volume in USD (input side, at current prices) */
   volumeUsd: number;
+  /** Current ETH price in USD (always fetched, for wallet display) */
+  ethPrice: number;
 }
 
 /** Cached capital flow data (fetched once, immutable) */
@@ -83,13 +85,16 @@ export async function computePnl(
   swaps: SwapEvent[],
   capital: CapitalSnapshot,
 ): Promise<PnlAttribution> {
-  const tokens = [state.asset0, state.asset1] as Address[];
+  const WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" as Address;
+  const tokenSet = new Set([state.asset0.toLowerCase(), state.asset1.toLowerCase(), WETH.toLowerCase()]);
+  const tokens = [...tokenSet].map(t => t as Address);
   const currentPriceMap = await fetchCurrentPrices(tokens);
 
   const a0 = state.asset0.toLowerCase();
   const a1 = state.asset1.toLowerCase();
   const currentPrice0 = currentPriceMap.get(a0)?.price;
   const currentPrice1 = currentPriceMap.get(a1)?.price;
+  const ethPrice = currentPriceMap.get(WETH.toLowerCase())?.price ?? 0;
 
   if (currentPrice0 === undefined || currentPrice1 === undefined) {
     throw new Error(`DeFiLlama missing current price for ${currentPrice0 === undefined ? state.asset0Symbol : state.asset1Symbol}`);
@@ -159,6 +164,7 @@ export async function computePnl(
     volume0: totalVol0,
     volume1: totalVol1,
     volumeUsd,
+    ethPrice,
   };
 }
 
