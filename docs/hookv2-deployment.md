@@ -6,18 +6,24 @@ Deployed LPAgentHookV2 on the USDC/WETH pool. The hook adds autonomous debt auct
 via `afterSwap` on top of the existing Mode 2 mismatch-based dynamic fees from `getFee`.
 
 The first auction triggered immediately and **fully repaid all WETH vault debt** (0.7117 WETH → 0),
-but the **pre-auction param restore failed** — the pool is currently running with stale auction
+but the **pre-auction param restore failed** — the pool was left with stale auction
 parameters (priceY=1995 instead of 1976, minReserves=0).
+
+**Fixed and redeployed twice** on the same day:
+1. `0xF4Ce...D701` — fixed `_restorePreAuctionParams` (eq=reserves pattern)
+2. `0x9572...5048` — added asymmetric minReserves (depleted side gets 2x delta buffer)
 
 ## Deployment
 
 | Field | Value |
 |-------|-------|
-| Hook contract | `0xC3755af9b0B9F992e72C016d9554bdb97483d280` |
+| Hook contract (current) | `0x9572Bf3D41613987f548Ecfc8aDC73EeFF955048` |
+| Hook contract (v2.1, retired) | `0xF4Cea28cE81ede6200B6E1E033A9E72415d5D701` |
+| Hook contract (v2.0, retired) | `0xC3755af9b0B9F992e72C016d9554bdb97483d280` |
 | Pool | `0x4311031739918Aba578C3C667DA3028A12Ce28A8` |
-| Deploy block | 24602607 |
-| Deploy tx | `0x793bd1e71f73f72915ceae4827a0ae998d54162f8386e51e30af8a7830d3e6e3` |
-| Script | `contracts/script/UpgradeHookV2.s.sol` |
+| Initial deploy block | 24602607 |
+| Initial deploy tx | `0x793bd1e71f73f72915ceae4827a0ae998d54162f8386e51e30af8a7830d3e6e3` |
+| Redeploy script | `contracts/script/RedeployHookV2.s.sol` |
 
 ### Constructor Parameters
 
@@ -154,14 +160,6 @@ parameters. The try/catch in `_restorePreAuctionParams` swallowed the error.
   to zero in either direction. This is the more significant risk — a large adverse price
   move could push reserves to extreme values without the safety floor.
 
-### Fix
-
-The agent (or owner) must manually reconfigure the pool:
-1. Read current reserves
-2. Set priceY to current market price
-3. Set eq0/eq1 to appropriate values (current reserves or boosted)
-4. Restore minReserves based on desired range (rx, ry)
-
 ### Root Cause
 
 The auction reconfigures the pool with `eq = current reserves` and a shifted priceY.
@@ -169,11 +167,15 @@ After 7 arb trades, the reserves moved to a new position. Restoring to the OLD c
 (pre-auction eq and priceY) with these NEW reserves violates CurveLib.verify because
 the reserves no longer lie on the original curve.
 
-### Recommended Fix for Hook Code
+### Fix Applied (v2.1 → v2.2)
 
-The `_restorePreAuctionParams` should compute the correct equilibrium for the current
-reserves at the pre-auction priceY, rather than blindly restoring the old eq values.
-Alternatively, set `initialState = equilibrium` instead of `initialState = reserves`.
+1. **eq=reserves pattern** (v2.1): `_restorePreAuctionParams` sets eq=current reserves
+   instead of pre-auction eq. This guarantees CurveLib.verify passes. minReserves clamped
+   to `min(reserve, preAuctionMin)`.
+
+2. **Asymmetric minReserves** (v2.2): After auction, the depleted side gets a wider range
+   floor = `reserve * (1 - 2*delta)` while the attracted side keeps its pre-auction min.
+   This prevents the depleted side from hitting the range limit during post-auction arb unwind.
 
 ## Other Observations
 
