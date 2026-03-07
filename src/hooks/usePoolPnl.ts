@@ -25,8 +25,12 @@ interface HistoricalCache {
 /**
  * Computes P&L attribution using on-chain vault events and DeFiLlama prices.
  *
- * On first load: scans vault flows, fetches price charts, builds time series + TWR.
- * On each 30s poll: only re-fetches current prices and recomputes P&L attribution.
+ * Single effect handles both:
+ * 1. Building historical cache (vault flows, price charts, TWR) — once per pool
+ * 2. Computing current P&L (fetches current prices) — on every state/swaps change
+ *
+ * Current P&L runs immediately with a zero-capital placeholder if the historical
+ * cache isn't ready yet, so USD values appear as soon as pool state loads.
  */
 export function usePoolPnl(
   pool: PoolConfig,
@@ -53,19 +57,17 @@ export function usePoolPnl(
   }
 
   useEffect(() => {
-    if (!state || swapsLoading) return;
-
+    if (!state) return;
     let cancelled = false;
 
     async function compute() {
-      setLoading(true);
       try {
-        // Build historical cache once (vault flows, price charts, time series, TWR)
-        if (!cacheRef.current) {
+        // 1. Build historical cache if swaps are ready and cache is empty
+        if (!swapsLoading && !cacheRef.current) {
+          setLoading(true);
           const client = getClient();
           const currentBlock = await client.getBlockNumber();
 
-          // Build set of swap transaction hashes to filter out swap-induced vault events
           const swapTxHashes = new Set(swaps.map(s => s.transactionHash));
 
           const flows = await fetchVaultFlows(
@@ -85,7 +87,6 @@ export function usePoolPnl(
             state!.asset1Decimals,
           );
 
-          // Fetch historical price charts (2 API calls, cached)
           const deployTimestamp = await client.getBlock({ blockNumber: pool.deployBlock })
             .then(b => Number(b.timestamp));
 
@@ -94,7 +95,6 @@ export function usePoolPnl(
             fetchPriceChart(state!.asset1 as Address, deployTimestamp),
           ]);
 
-          // Build P&L time series from swap events + historical prices
           const timeSeries = buildPnlTimeSeries(
             swaps,
             priceChart0,
@@ -103,7 +103,6 @@ export function usePoolPnl(
             state!.asset1Decimals,
           );
 
-          // Enrich flows with timestamps for TWR
           const flowBlockNums = flows.map(f => f.blockNumber);
           if (flowBlockNums.length > 0) {
             const timestamps = await fetchBlockTimestamps(client, flowBlockNums);
@@ -136,8 +135,10 @@ export function usePoolPnl(
           }
         }
 
-        // Compute current P&L (re-fetches current prices each poll)
-        const result = await computePnl(state!, swaps, cacheRef.current.capital);
+        // 2. Compute current P&L (uses cached capital or zero placeholder)
+        if (cancelled) return;
+        const capital = cacheRef.current?.capital ?? { netDeposit0: 0, netDeposit1: 0, flowCount: 0 };
+        const result = await computePnl(state!, swaps, capital);
         if (!cancelled) {
           setPnl(result);
           setError(null);

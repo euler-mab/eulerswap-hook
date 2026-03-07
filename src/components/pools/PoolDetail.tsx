@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useCallback } from "react";
 import type { PoolConfig } from "@/lib/pools/config";
 import { usePoolState, useSwapHistory } from "@/hooks/usePoolData";
 import { usePoolPnl } from "@/hooks/usePoolPnl";
@@ -12,8 +12,13 @@ import SwapTable from "./SwapTable";
 import StrategyPanel from "./StrategyPanel";
 
 export default function PoolDetail({ pool }: { pool: PoolConfig }) {
-  const { state, loading: stateLoading, error: stateError, refresh } = usePoolState(pool);
-  const { swaps, loading: historyLoading } = useSwapHistory(pool);
+  const { state, loading: stateLoading, error: stateError, refresh: refreshState } = usePoolState(pool);
+  const { swaps, loading: historyLoading, refresh: refreshSwaps } = useSwapHistory(pool);
+
+  const refresh = useCallback(() => {
+    refreshState();
+    refreshSwaps();
+  }, [refreshState, refreshSwaps]);
 
   const pricePoints = useMemo(() => {
     if (!state || swaps.length === 0) return [];

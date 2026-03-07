@@ -15,7 +15,8 @@ export function usePoolState(pool: PoolConfig) {
   const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const refresh = useCallback(async () => {
+  const fetchData = useCallback(async () => {
+    setLoading(true);
     try {
       const client = getClient();
       const data = await fetchPoolState(client, pool);
@@ -28,10 +29,15 @@ export function usePoolState(pool: PoolConfig) {
     }
   }, [pool]);
 
+  // Manual refresh: fetch immediately and reset the polling timer
+  const refresh = useCallback(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(fetchData, POLL_INTERVAL);
+    fetchData();
+  }, [fetchData]);
+
   useEffect(() => {
-    setLoading(true);
     refresh();
-    intervalRef.current = setInterval(refresh, POLL_INTERVAL);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
@@ -40,46 +46,47 @@ export function usePoolState(pool: PoolConfig) {
   return { state, loading, error, refresh };
 }
 
-/** Fetches historical swap events once on mount. Not auto-polling. */
+/** Fetches historical swap events. Supports manual refresh. */
 export function useSwapHistory(pool: PoolConfig) {
   const [swaps, setSwaps] = useState<SwapEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const cancelRef = useRef(false);
 
-  useEffect(() => {
-    let cancelled = false;
+  const refresh = useCallback(async () => {
+    cancelRef.current = false;
+    setLoading(true);
+    try {
+      const client = getClient();
+      const currentBlock = await client.getBlockNumber();
+      const swapEvents = await fetchSwapEvents(
+        client, pool.address, pool.deployBlock, currentBlock,
+      );
 
-    async function load() {
-      try {
-        const client = getClient();
-        const currentBlock = await client.getBlockNumber();
-        const swapEvents = await fetchSwapEvents(
-          client, pool.address, pool.deployBlock, currentBlock,
-        );
-
-        // Fetch block timestamps (deduplicated)
-        if (swapEvents.length > 0) {
-          const blockNums = swapEvents.map(e => e.blockNumber);
-          const timestamps = await fetchBlockTimestamps(client, blockNums);
-          for (const s of swapEvents) {
-            s.timestamp = timestamps.get(s.blockNumber);
-          }
+      // Fetch block timestamps (deduplicated)
+      if (swapEvents.length > 0) {
+        const blockNums = swapEvents.map(e => e.blockNumber);
+        const timestamps = await fetchBlockTimestamps(client, blockNums);
+        for (const s of swapEvents) {
+          s.timestamp = timestamps.get(s.blockNumber);
         }
-
-        if (!cancelled) {
-          setSwaps(swapEvents);
-          setError(null);
-        }
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to fetch swap history");
-      } finally {
-        if (!cancelled) setLoading(false);
       }
-    }
 
-    load();
-    return () => { cancelled = true; };
+      if (!cancelRef.current) {
+        setSwaps(swapEvents);
+        setError(null);
+      }
+    } catch (e) {
+      if (!cancelRef.current) setError(e instanceof Error ? e.message : "Failed to fetch swap history");
+    } finally {
+      if (!cancelRef.current) setLoading(false);
+    }
   }, [pool]);
 
-  return { swaps, loading, error };
+  useEffect(() => {
+    refresh();
+    return () => { cancelRef.current = true; };
+  }, [refresh]);
+
+  return { swaps, loading, error, refresh };
 }
