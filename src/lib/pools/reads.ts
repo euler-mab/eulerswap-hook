@@ -161,13 +161,13 @@ export async function fetchPoolState(
   const equilibriumPrice = py > 0 ? px / py : 0; // Y per X at equilibrium
   let marginalPrice = equilibriumPrice;
   if (px > 0 && py > 0) {
-    if (r0 > 0 && r0 < x0) {
-      // X side: X being sold → price above equilibrium
+    if (r0 > 0 && r0 <= x0) {
+      // X side (reserve0 at or below equilibrium): price above equilibrium
       // pXxy = (px/py)(cx + (1-cx)(x0/x)²)
       const ratio = x0 / r0;
       marginalPrice = (px / py) * (cx + (1 - cx) * ratio * ratio);
-    } else if (r1 > 0 && r1 < y0) {
-      // Y side: Y being sold → price below equilibrium
+    } else if (r1 > 0 && y0 > 0) {
+      // Y side (reserve0 above equilibrium): price below equilibrium
       // pYxy = (px/py) / (cy + (1-cy)(y0/y)²)
       const ratio = y0 / r1;
       marginalPrice = (px / py) / (cy + (1 - cy) * ratio * ratio);
