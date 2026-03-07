@@ -85,6 +85,11 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
                 ({twrResult.annualizedReturn >= 0 ? "+" : ""}{(twrResult.annualizedReturn * 100).toFixed(1)}% ann., {Math.round(twrResult.durationDays)}d)
               </span>
             )}
+            {pnl.feesUsd > 0 && pnl.navUsd > 0 && twrResult && twrResult.durationDays > 1 && (
+              <span className="text-emerald-600 ml-1 text-xs">
+                ({((pnl.feesUsd / pnl.navUsd) * (365 / twrResult.durationDays) * 100).toFixed(1)}% fee APY)
+              </span>
+            )}
           </>
         ) : (
           (() => {
