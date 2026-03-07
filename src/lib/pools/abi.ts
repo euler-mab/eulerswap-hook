@@ -271,6 +271,16 @@ export const uniswapV3PoolAbi = [
       { name: "unlocked", type: "bool" },
     ],
   },
+  {
+    name: "observe",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "secondsAgos", type: "uint32[]" }],
+    outputs: [
+      { name: "tickCumulatives", type: "int56[]" },
+      { name: "secondsPerLiquidityCumulativeX128s", type: "uint160[]" },
+    ],
+  },
 ] as const;
 
 export const priceOracleAbi = [

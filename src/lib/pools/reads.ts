@@ -98,6 +98,10 @@ export async function fetchPoolState(
     pool.uniswapPool
       ? client.readContract({ address: pool.uniswapPool, abi: uniswapV3PoolAbi, functionName: "slot0" })
       : Promise.resolve(null),
+    // 14: Uniswap V3 observe (5-minute TWAP)
+    pool.uniswapPool
+      ? client.readContract({ address: pool.uniswapPool, abi: uniswapV3PoolAbi, functionName: "observe", args: [[300, 0]] })
+      : Promise.resolve(null),
   ]);
 
   const val = <T,>(r: PromiseSettledResult<T>, fallback: T): T =>
@@ -122,6 +126,8 @@ export async function fetchPoolState(
   const limits1to0 = val(results[12], null) as any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const slot0 = val(results[13], null) as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const observeResult = val(results[14], null) as any;
 
   // Compute marginal price using EulerSwap curve.
   // On-chain priceX/priceY are (USD_price / 10^decimals) * 1e18, so normalise to
@@ -165,6 +171,19 @@ export async function fetchPoolState(
       // Convert raw to human: asset1_human/asset0_human
       uniswapPrice = adjusted * Math.pow(10, meta0.decimals - meta1.decimals);
     }
+  }
+
+  // Uniswap V3 5-minute TWAP (from observe)
+  let twapPrice5m: number | undefined;
+  if (observeResult) {
+    try {
+      const tickCumulatives = observeResult[0] as bigint[];
+      const avgTick = Number(tickCumulatives[1] - tickCumulatives[0]) / 300;
+      const rawPrice = 1.0001 ** avgTick;
+      const token0IsAsset0 = asset0.toLowerCase() < asset1.toLowerCase();
+      const adjusted = token0IsAsset0 ? rawPrice : 1 / rawPrice;
+      twapPrice5m = adjusted * Math.pow(10, meta0.decimals - meta1.decimals);
+    } catch { /* observe failed — pool may lack observation history */ }
   }
 
   // ─── Arb probe: use computeQuote for realistic arb estimate ───
@@ -275,7 +294,7 @@ export async function fetchPoolState(
     eulerAccount: staticParams.eulerAccount as Address,
     feeRecipient: staticParams.feeRecipient as Address,
     marginalPrice, equilibriumPrice, isInstalled: installed,
-    uniswapPrice,
+    uniswapPrice, twapPrice5m,
     // Hook
     hookBaseFee: feeParams ? feeParams[0] : undefined,
     hookMaxFee: feeParams ? feeParams[1] : undefined,
