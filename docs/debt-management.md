@@ -1,5 +1,18 @@
 # Debt Management in Leveraged EulerSwap Pools
 
+> **Related docs:**
+> - [`contracts/src/TWAP_RECENTERING.md`](../contracts/src/TWAP_RECENTERING.md) —
+>   TWAP-based onchain recentering analysis. Covers oracle choice (slot0 vs TWAP),
+>   manipulation costs, recentering design options (afterSwap drift, permissionless
+>   keeper, hybrid), and an independent dutch auction analysis that reaches the same
+>   conclusions we validate in simulation below.
+> - [`scripts/sim-recenter.ts`](../scripts/sim-recenter.ts) — Simulation code with
+>   bidirectional dutch auction implementation. Run with `npx tsx scripts/sim-recenter.ts`.
+>
+> **Status (2026-03-07):** Dutch auction abandoned at current scale. Agent-triggered
+> direct swap is the near-term debt repayment mechanism. See [Simulation Findings](#simulation-findings-2026-03-07)
+> and [Decision](#decision).
+
 ## Motivation
 
 A leveraged EulerSwap pool creates depth by borrowing from Euler vaults. When
@@ -231,7 +244,10 @@ Setting py off-market requires knowing the current market price. Options:
 - **Uniswap TWAP**: 30-minute TWAP is much harder to manipulate. Could
   enable autonomous onchain Mode 1 (hook reads TWAP, detects debt via
   vault state, activates itself). **Future option** — adds gas cost and
-  complexity, but removes dependency on the agent.
+  complexity, but removes dependency on the agent. See
+  [`TWAP_RECENTERING.md`](../contracts/src/TWAP_RECENTERING.md) for
+  detailed analysis of TWAP mechanics, manipulation costs ($388k-$4M to
+  shift 5 bps), and gas overhead (~23k cold, negligible at current prices).
 
 ## Edge Cases and Security
 
@@ -356,7 +372,10 @@ scale ($3k-$50k real deposits), direct swap is strictly cheaper.
 
 The dutch auction mechanism remains documented here and in the simulation
 code for future reference if the pool scales to $50k+ real deposits where
-Uni slippage becomes material.
+Uni slippage becomes material. The TWAP recentering doc's break-even
+analysis ([`TWAP_RECENTERING.md` §Break-Even](../contracts/src/TWAP_RECENTERING.md#break-even-analysis))
+confirms that *paying* to eliminate directional exposure is rational — the
+question is only the mechanism (direct swap vs auction), not whether to do it.
 
 ## Open Questions
 
