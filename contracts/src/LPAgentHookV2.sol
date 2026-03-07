@@ -377,15 +377,29 @@ contract LPAgentHookV2 is IEulerSwapHookTarget {
 
     /// @notice Restore pool dynamic params after auction clears.
     /// Sets eq = current reserves (guarantees CurveLib.verify passes) and
-    /// restores priceY + minReserves to pre-auction values.
-    /// The agent can re-boost equilibrium on its next recenter cycle.
+    /// restores priceY. Uses asymmetric minReserves: the depleted side (opposite
+    /// of the attracted asset) gets a wider range (2x delta below reserves) to
+    /// absorb post-auction arb unwind without hitting the range floor.
     function _restorePreAuctionParams(uint112 reserve0, uint112 reserve1) internal {
         IEulerSwap.DynamicParams memory dp = IEulerSwap(pool).getDynamicParams();
         dp.priceY = preAuctionPriceY;
         dp.equilibriumReserve0 = reserve0;
         dp.equilibriumReserve1 = reserve1;
-        dp.minReserve0 = reserve0 < preAuctionMinReserve0 ? reserve0 : preAuctionMinReserve0;
-        dp.minReserve1 = reserve1 < preAuctionMinReserve1 ? reserve1 : preAuctionMinReserve1;
+
+        // Asymmetric minReserves: depleted side gets wider range (2x delta buffer)
+        uint256 delta = uint256(auctionDelta);
+        uint112 wideMin0 = uint112(uint256(reserve0) * (WAD - 2 * delta) / WAD);
+        uint112 wideMin1 = uint112(uint256(reserve1) * (WAD - 2 * delta) / WAD);
+
+        if (auctionAttractAsset1) {
+            // Attracted asset1, depleted asset0 → wider range on asset0
+            dp.minReserve0 = wideMin0;
+            dp.minReserve1 = reserve1 < preAuctionMinReserve1 ? reserve1 : preAuctionMinReserve1;
+        } else {
+            // Attracted asset0, depleted asset1 → wider range on asset1
+            dp.minReserve0 = reserve0 < preAuctionMinReserve0 ? reserve0 : preAuctionMinReserve0;
+            dp.minReserve1 = wideMin1;
+        }
 
         try IEulerSwap(pool).reconfigure(dp, IEulerSwap.InitialState(reserve0, reserve1)) {}
         catch {

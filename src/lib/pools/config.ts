@@ -24,7 +24,7 @@ export interface PoolConfig {
 export const POOLS: PoolConfig[] = [
   {
     address: "0x4311031739918Aba578C3C667DA3028A12Ce28A8",
-    hook: "0xF4Cea28cE81ede6200B6E1E033A9E72415d5D701",
+    hook: "0x9572Bf3D41613987f548Ecfc8aDC73EeFF955048",
     agentEoa: "0x2909bCc87c17d8Be263621bF087bC806BA313BFE",
     eulerAccount: "0x2909bCc87c17d8Be263621bF087bC806BA313BFE",
     name: "USDC/WETH #1",

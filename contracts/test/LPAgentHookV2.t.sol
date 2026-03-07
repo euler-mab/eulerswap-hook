@@ -881,9 +881,10 @@ contract LPAgentHookV2Test is EulerSwapTestBase {
             // eq = current reserves after restore (not pre-auction eq)
             assertEq(dpRestored.equilibriumReserve0, r0After, "eq0 should equal current reserves");
             assertEq(dpRestored.equilibriumReserve1, r1After, "eq1 should equal current reserves");
-            // minReserves restored (clamped to reserves if needed)
-            assertEq(dpRestored.minReserve0, min0Original, "minReserve0 should be restored");
-            assertEq(dpRestored.minReserve1, min1Original, "minReserve1 should be restored");
+            // Asymmetric minReserves: asset0 depleted → wider range on asset0
+            uint112 expectedWideMin0 = uint112(uint256(r0After) * (1e18 - 2 * 50e14) / 1e18);
+            assertEq(dpRestored.minReserve0, expectedWideMin0, "depleted side should get wide min");
+            assertEq(dpRestored.minReserve1, min1Original, "attracted side should keep preAuction min");
         }
     }
 
@@ -955,8 +956,10 @@ contract LPAgentHookV2Test is EulerSwapTestBase {
             assertEq(dpRestored.priceY, pyOriginal, "priceY should be restored after asset0 auction");
             assertEq(dpRestored.equilibriumReserve0, r0After, "eq0 = reserves after restore");
             assertEq(dpRestored.equilibriumReserve1, r1After, "eq1 = reserves after restore");
-            assertEq(dpRestored.minReserve0, min0Original, "minReserve0 restored");
-            assertEq(dpRestored.minReserve1, min1Original, "minReserve1 restored");
+            // Asymmetric: asset1 depleted → wider range on asset1
+            assertEq(dpRestored.minReserve0, min0Original, "attracted side keeps preAuction min");
+            uint112 expectedWideMin1 = uint112(uint256(r1After) * (1e18 - 2 * 50e14) / 1e18);
+            assertEq(dpRestored.minReserve1, expectedWideMin1, "depleted side gets wide min");
         }
     }
 
@@ -994,6 +997,9 @@ contract LPAgentHookV2Test is EulerSwapTestBase {
             assertEq(dpRestored.priceY, pyOriginal, "priceY must be restored even after many swaps");
             assertEq(dpRestored.equilibriumReserve0, r0After, "eq0 = current reserves");
             assertEq(dpRestored.equilibriumReserve1, r1After, "eq1 = current reserves");
+            // Asymmetric: attracted asset1 → depleted asset0 → wide min on asset0
+            uint112 expectedWideMin0 = uint112(uint256(r0After) * (1e18 - 2 * 50e14) / 1e18);
+            assertEq(dpRestored.minReserve0, expectedWideMin0, "depleted side wide min after many swaps");
         }
     }
 }
