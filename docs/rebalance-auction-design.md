@@ -646,3 +646,369 @@ Start with experiments 1+2 (zero cost, foundational data), then experiment 3 (sm
 10. **Attract-side fees are the bigger opportunity.** Most LP value comes from charging up to routing headroom on retail, not from arb protection refinements. Charge as much as the routing allows, not a fixed low rate.
 11. **Price each trade independently.** Fee memory (spike decay, attract boost after arbs) always hurts. baseFee floor + oracle-reactive component, no history dependence.
 12. **Design for iteration.** Hot-swappable parameters, minimal state, comprehensive events. Theory narrows the search space, empirical search finds the optimum.
+
+## 20. V1-V3 Recap and Lessons
+
+Before proposing new designs, a summary of what was built and what we learned.
+
+### V1: Oracle-Reactive Asymmetric Fees (getFee only)
+
+The baseline. Reads Uniswap V3 slot0, computes mismatch vs pool marginal price, returns asymmetric fees (high on arb side via captureRate, moderate on attract side via attractRate). Gas-aware threshold via gasCoeff × √(tx.gasprice). No afterSwap — purely passive fee adjustment.
+
+**What worked:** the fee formula is sound. Oracle-can-only-raise-fees is safe. Gas threshold adapts to network conditions. Asymmetric fees are the right structure.
+
+**What was missing:** no autonomous rebalancing. The agent must intervene manually when the pool drifts. Fine for learning, insufficient for production.
+
+### V2: Absolute Reserve Thresholds + Debt Auction
+
+Added afterSwap with auction: when reserves drop below absolute thresholds, the hook triggers an auction mode. Shifts priceY off-market by auctionDelta, decays fee from auctionStartFee toward zero, restores pool when reserves return above thresholds.
+
+**Bugs identified (section 15):**
+1. Double incentive: priceY shift + decaying fee → LP double-pays
+2. Absolute thresholds don't scale with reconfiguration
+3. Clearing requires full return to threshold (too strict)
+4. Sets eq = currentReserves (distorts curve shape)
+5. Fee decays to zero (no floor)
+6. Silent reconfigure failures
+
+### V3: Exposure-Based Triggers
+
+Fixed V2's threshold problem: triggers based on exposure as % of NAV instead of absolute reserve levels. Better boundary placement with asymmetric factors. Clearing requires return to pre-auction equilibrium.
+
+**What V3 fixed:** threshold scaling (#2). **What V3 didn't fix:** #1, #4, #5 remain. The priceY shift and eq=reserves hack are still present. Fee still decays to zero.
+
+### Key takeaway
+
+The fee logic (V1 getFee) is good. The auction logic (V2/V3 afterSwap) has fundamental design issues. The new designs preserve the fee formula and rethink the auction from scratch.
+
+## 21. Hook Design Candidates
+
+Four designs ordered by complexity. Each builds on the previous. Deploy them sequentially — start simple, add capability as data confirms value.
+
+All designs share the V1 getFee core (oracle-reactive asymmetric fees). They differ in afterSwap behavior and what the on-chain hook vs off-chain agent handles.
+
+### Design V4a: "Agent-Managed" (getFee only, no afterSwap)
+
+The simplest possible hook. Remove all auction logic. The hook only computes fees. The agent handles all rebalancing externally.
+
+**getFee:** identical to V1 — oracle-reactive asymmetric fees with gasCoeff, captureRate, attractRate, baseFee floor.
+
+**afterSwap:** emit an event with post-swap state, then return. No state changes, no reconfigure.
+
+```solidity
+function afterSwap(
+    uint256 amount0In, uint256 amount1In,
+    uint256 amount0Out, uint256 amount1Out,
+    uint256 fee0, uint256 fee1,
+    address msgSender, address to,
+    uint112 reserve0, uint112 reserve1
+) external {
+    emit SwapObserved(
+        reserve0, reserve1,
+        amount0In, amount1In, amount0Out, amount1Out,
+        fee0, fee1, block.number, tx.gasprice
+    );
+}
+```
+
+**Storage:** fee params only (baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate). ~6 slots. No auction state.
+
+**Agent responsibility:**
+- Monitor health and exposure continuously
+- Trigger reconfigure via EVC when health threshold breached
+- Adjust fee params based on realized vol, arb frequency
+- Handle all rebalancing (in-pool reconfigure or external swap)
+
+**What it tests:**
+- Is the fee formula alone sufficient for steady-state operation?
+- How responsive does the agent need to be? (Latency budget)
+- What fraction of value is lost to agent response delay vs on-chain auction?
+- Baseline P&L for comparison with more complex designs
+
+**Strengths:**
+- Minimal audit surface (~100 LOC)
+- No V2/V3 bugs possible (no auction code)
+- Gas-efficient (no state writes in afterSwap beyond event)
+- Maximum flexibility — agent can implement any rebalance strategy off-chain
+
+**Risks:**
+- Agent downtime = no rebalance = liquidation risk
+- Agent latency means pool sits exposed between trigger and response
+- Every rebalance requires an agent transaction (gas cost, timing risk)
+
+**Recommended duration:** 1-2 weeks. Collect baseline data.
+
+---
+
+### Design V4b: "Fee-Only Auction" (fee lever only, no curve distortion)
+
+Adds autonomous on-chain auction, but fixes all V2/V3 bugs. The auction is purely a fee change — no priceY shift, no eq=reserves hack. Arbers rebalance the pool naturally by trading through the decaying fee.
+
+**Core insight:** the pool doesn't need to be reconfigured to create an arb opportunity. A mispricing already exists (reserves have drifted from equilibrium). The auction just needs to lower the fee enough for arbers to profitably clear it.
+
+**getFee (auction mode):**
+
+```
+if auctionActive:
+    elapsed = block.number - auctionStartBlock
+    auctionFee = max(baseFee, startingFee - elapsed × decayPerBlock)
+
+    if swap is arb direction (clearing exposure):
+        return auctionFee
+    else:
+        return maxFee    // block flow that worsens exposure
+
+else:
+    return normal oracle-reactive fee (same as V4a)
+```
+
+**afterSwap (trigger + monitor):**
+
+```
+// 1. Compute health or exposure
+exposure = computeExposure(reserve0, reserve1)
+
+// 2. Check if auction should START
+if !auctionActive && exposure > triggerThreshold:
+    auctionActive = true
+    auctionStartBlock = block.number
+    startingFee = estimateMispricing(reserve0, reserve1)  // ≈ α × r
+    emit AuctionStarted(startingFee, block.number)
+
+// 3. Check if auction should END
+if auctionActive:
+    if exposure < clearThreshold:
+        auctionActive = false
+        emit AuctionEnded(block.number)
+
+// 4. Always emit state
+emit SwapObserved(reserve0, reserve1, ...)
+```
+
+**Key differences from V2/V3:**
+- **No priceY shift.** The fee is the only lever (principle #2). The curve stays undistorted.
+- **No eq = currentReserves hack.** Equilibrium doesn't change during auction. The existing mispricing IS the arb opportunity.
+- **Fee floor = baseFee.** Decay stops at baseFee (principle, section 8). Never zero.
+- **Decay per block, not per second.** Aligns with the σ₁ analysis. d ≈ σ₁ ≈ 4.3 bps/block.
+- **Health-based trigger.** Not absolute reserves or NAV percentage. Uses exposure relative to safety margin.
+- **Separate clear vs trigger thresholds.** Trigger at 50% margin consumed, clear when exposure drops below 20%. Prevents oscillation.
+
+**Storage:** fee params + auction state (auctionActive, auctionStartBlock, startingFee, triggerThreshold, clearThreshold, decayPerBlock). ~10 slots.
+
+**Starting fee computation:**
+
+The starting fee should match the known mispricing. For reserves at fraction α of range r:
+```
+startingFee ≈ α × r / 2
+```
+This can be computed from reserves and equilibrium:
+```
+α = (eq0 - reserve0) / (eq0 - minReserve0)    // for ETH-long exposure
+mispricing ≈ α × range / 2                      // approximate
+startingFee = mispricing + margin                // small buffer above mispricing
+```
+
+**What it tests:**
+- Does the fee-only auction work as well as the priceY-shift auction?
+- Is the arber surplus close to the theoretical (d + σ₁)² × L / 2?
+- How many blocks does a typical auction take?
+- Does multi-arb sequencing work (section 8)?
+
+**Strengths:**
+- Fixes all six V2/V3 bugs
+- Autonomous (no agent needed for routine rebalances)
+- Simple — only adds ~50 LOC over V4a
+- Preserves curve shape throughout auction
+- baseFee floor guarantees safe degradation
+
+**Risks:**
+- If mispricing estimate is wrong, starting fee is miscalibrated → slow auction or excessive leakage
+- No reconfigure means the pool stays at its old equilibrium after the auction clears. The agent should reconfigure afterward to reset. Between auction end and agent reconfigure, the pool may re-drift.
+- Clearing threshold needs tuning — too tight = never clears, too loose = clears prematurely
+
+**Agent responsibility (reduced vs V4a):**
+- Monitor auction events, reconfigure after auction completes
+- Tune triggerThreshold, clearThreshold, decayPerBlock
+- Still handles large-scale rebalances (external swaps)
+- Adjusts fee params for vol regime changes
+
+**Recommended duration:** 2-4 weeks after V4a baseline.
+
+---
+
+### Design V4c: "Routing-Aware Fees" (attract-side optimization)
+
+V4b plus the routing headroom insight from section 12/16. The attract-side fee is no longer a fixed `baseFee + attractRate × excess` — it charges up to the routing headroom.
+
+**getFee modification (attract side only):**
+
+```
+// Normal mode (no auction):
+uniPrice = getUniswapPrice()
+poolPrice = getMarginalPrice(reserve0, reserve1)
+mismatch = |uniPrice - poolPrice| / uniPrice
+
+if isAttractDirection:
+    // How much better is our price than Uniswap's for this trader?
+    // Our stale price is in their favor by `mismatch`
+    // They'd also pay externalFee at Uniswap
+    headroom = mismatch + externalFee
+
+    // Charge up to headroom, scaled by attractRate
+    attractFee = baseFee + attractRate × headroom
+    return min(attractFee, maxFee)
+
+else:  // arb direction (unchanged)
+    netEdge = mismatch - gasThreshold - baseFee - externalFee
+    return min(baseFee + captureRate × max(0, netEdge), maxFee)
+```
+
+**The change is small but the impact is large.** In V4a/V4b, the attract fee formula is:
+```
+fee = baseFee + attractRate × max(0, mismatch - gasThreshold)
+```
+The gasThreshold subtraction makes the attract fee very low (often just baseFee) when mismatch is moderate. The new formula replaces this with headroom-aware pricing:
+```
+fee = baseFee + attractRate × (mismatch + externalFee)
+```
+No gasThreshold subtraction on attract side — gas cost is the arber's problem, not the retail trader's. And externalFee is *added* (the trader would pay this elsewhere).
+
+**Numerical example:**
+- Pool is 15 bps stale, externalFee = 5 bps, baseFee = 3 bps, attractRate = 0.5
+- V4a/V4b attract fee: `3 + 0.3 × max(0, 15 - 6) = 3 + 2.7 = 5.7 bps`
+- V4c attract fee: `3 + 0.5 × (15 + 5) = 3 + 10 = 13 bps`
+- Trader's alternative: Uniswap at 5 bps fee, but their price is 15 bps worse → net cost 20 bps
+- Our 13 bps is still 7 bps cheaper than Uniswap. Trader happy. LP earns 7.3 bps more per trade.
+
+**attractRate semantics change:** in V4a/V4b, attractRate scales a penalty. In V4c, it controls what fraction of the routing headroom we capture. attractRate = 0.5 means we take half the headroom and leave half for the trader as incentive. This is closer to the AMM challenge insight — charge as much as routing allows.
+
+**What it tests:**
+- Does routing-aware pricing actually capture more retail revenue?
+- What attractRate maximizes revenue? (Theory says the optimum is high — 0.5-0.8)
+- Does higher attract-side fee reduce volume or increase revenue faster?
+- Is the 97/3 split from the AMM challenge reflected in real routing?
+
+**Strengths:**
+- Targets the dominant value opportunity (section 16)
+- Minimal code change from V4b (~10 lines in getFee)
+- Uses existing parameters (no new storage)
+- Self-calibrating: as mismatch grows, headroom grows, attract fee grows proportionally
+
+**Risks:**
+- Aggregators may not route to us if our fee is too high relative to alternatives
+- The headroom formula assumes a single competitor (Uniswap). Real routing involves many venues — actual headroom may be smaller
+- Higher attract fees could reduce volume enough to lose on total revenue (need to find the elasticity)
+
+**Recommended duration:** run V4b and V4c simultaneously on different fee params (A/B test via agent param updates).
+
+---
+
+### Design V4d: "Full Autonomous" (auction + reconfigure)
+
+V4c plus afterSwap reconfigure after auction completion. The hook does everything: detects exposure, runs fee-decay auction, then recenters the pool at the new market price. No agent intervention needed for routine rebalances.
+
+**afterSwap (extended):**
+
+```
+if auctionActive && exposure < clearThreshold:
+    auctionActive = false
+
+    // Recenter the pool at current market price
+    DynamicParams memory dp = pool.getDynamicParams();
+
+    // New equilibrium price from Uniswap oracle
+    uint256 newPrice = getUniswapPrice();
+    (dp.priceX, dp.priceY) = encodePriceRatio(newPrice);
+
+    // New equilibrium reserves: preserve total value at new price
+    // eq0_new × price + eq1_new = total_value
+    // Use symmetric allocation: eq0 × price = eq1
+    uint256 totalValue = reserve0 × newPrice + reserve1;
+    dp.equilibriumReserve0 = totalValue / (2 × newPrice);
+    dp.equilibriumReserve1 = totalValue / 2;
+
+    // Recompute min reserves for new equilibrium
+    dp.minReserve0 = dp.equilibriumReserve0 × BOUNDARY_FACTOR / WAD;
+    dp.minReserve1 = dp.equilibriumReserve1 × BOUNDARY_FACTOR / WAD;
+
+    pool.reconfigure(dp, InitialState(reserve0, reserve1));
+    emit Recentered(dp.priceX, dp.priceY, dp.equilibriumReserve0, dp.equilibriumReserve1);
+```
+
+**Why this is the hardest design:**
+- Reconfigure during afterSwap changes the curve. If the new params are wrong, the pool could be in a worse state.
+- Price encoding (priceX/priceY with decimal adjustment) is fiddly — off-by-one in decimals = catastrophic mispricing.
+- Equilibrium computation must account for leverage, boost, and the actual vault balances (not just reserves).
+- The "preserve total value" calculation above is simplified — real implementation needs to account for debt, interest, and vault share prices.
+
+**What it tests:**
+- Can the hook autonomously maintain a delta-neutral position?
+- How does on-chain reconfigure compare to agent-managed reconfigure?
+- Does immediate reconfigure after auction reduce subsequent exposure accumulation?
+- Is the gas cost of reconfigure-in-afterSwap acceptable? (~50k additional gas)
+
+**Strengths:**
+- Fully autonomous — agent only tunes parameters
+- Minimizes time between auction completion and recenter (zero blocks)
+- Reduces agent transaction costs (no separate reconfigure tx)
+
+**Risks:**
+- Most complex design — largest audit surface
+- Oracle dependency for recenter: if Uniswap price is manipulated at the moment of recenter, the new equilibrium is wrong. Unlike getFee (where manipulation is safe-direction), reconfigure with a manipulated price can be permanently damaging.
+- Reconfigure failure in afterSwap could leave the hook in inconsistent state (V2 bug #6 revisited)
+- The "preserve total value" math is a simplification. Real equity computation requires vault state (deposit shares, debt shares, interest accrual). Getting this wrong means the pool is misconfigured.
+
+**Mitigation for oracle risk:**
+- Use TWAP (not slot0) for recenter price. TWAP is harder to manipulate and the latency is acceptable (we're setting a new equilibrium, not pricing a trade).
+- Sanity-check: require new price to be within X% of the pre-auction price. If the move is too large, emit an event and let the agent handle it.
+- Separate the "end auction" from "reconfigure" — end the auction (fee returns to normal), but don't reconfigure until the agent confirms.
+
+**Recommendation:** defer V4d until V4b/V4c are battle-tested. The oracle risk during reconfigure is fundamentally different from the oracle risk in getFee, and deserves careful analysis. The agent-managed approach (V4a-V4c where agent reconfigures after auction) is safer and only slightly less responsive.
+
+## 22. Design Comparison
+
+| Property | V4a Agent-Managed | V4b Fee Auction | V4c Routing-Aware | V4d Full Auto |
+|----------|------------------|-----------------|-------------------|---------------|
+| getFee complexity | Low | Medium | Medium | Medium |
+| afterSwap complexity | None | Low | Low | High |
+| Storage slots | ~6 | ~10 | ~10 | ~12 |
+| Auction on-chain | No | Yes (fee only) | Yes (fee only) | Yes (fee + reconfigure) |
+| Agent latency tolerance | Low (must respond fast) | High (auction buys time) | High | Very high |
+| V2 bugs fixed | All (by removal) | All | All | All (but new risks) |
+| Rebalance mechanism | Agent tx | Fee decay → agent reconfigure | Fee decay → agent reconfigure | Fee decay → auto reconfigure |
+| Gas per swap | ~0 extra | ~5k (auction check) | ~5k | ~5k normal, ~55k on reconfigure |
+| Retail revenue | Baseline | Baseline | Higher (headroom) | Higher (headroom) |
+| Audit surface | Minimal | Small | Small | Large |
+| Oracle risk | None (getFee is safe-direction) | None | None | Yes (reconfigure uses oracle) |
+
+### Recommended deployment order
+
+1. **V4a** (1-2 weeks): establish baseline. Collect experiments 1-3 data. Confirm fee formula works. Measure agent latency requirements.
+2. **V4b** (2-4 weeks): add autonomous auction. Compare auction P&L vs agent-managed. Validate auction mechanics (decay rate, trigger, clearing).
+3. **V4c** (concurrent with V4b): A/B test routing-aware attract fees. Measure revenue impact. Find optimal attractRate.
+4. **V4d** (only if needed): add auto-reconfigure. Only justified if agent latency is proven insufficient and V4b/V4c auction-then-reconfigure is too slow.
+
+### Switching between designs
+
+All designs share the same pool — only the hook contract changes. To switch:
+1. Deploy new hook contract
+2. Reconfigure pool via EVC: set `swapHook = newHook`, update `swapHookedOperations`
+3. Old hook is abandoned (no state migration needed — each hook initializes fresh)
+
+This means we can run experiments on each design without redeploying the pool. The pool's static params (vaults, assets, euler account) stay the same. Only the dynamic params change.
+
+## 23. Open Questions
+
+1. **Clearing threshold calibration.** V4b uses separate trigger (50% margin consumed) and clear (20%) thresholds. What values minimize total cost? Too tight = oscillating auctions, too loose = exposure lingers.
+
+2. **Starting fee accuracy.** The formula `startingFee ≈ α × r / 2` is approximate. How sensitive is auction performance to starting fee errors? If s is 20% too high, how much time (gas, staleness) is wasted? If 20% too low, how much leakage?
+
+3. **attractRate optimal value.** Section 16 suggests high values (0.5-0.8) based on the AMM challenge. But that was single-competitor. With multi-venue routing, is the optimal attractRate lower?
+
+4. **Interaction between auction and attract fees.** During an auction, should attract-side routing optimization be active? Or should the auction mode override everything (only arb-direction trades allowed)?
+
+5. **Multi-pool agent strategy.** If we run WETH/USDC and USDC/USDT pools simultaneously, should the agent coordinate rebalances? E.g., a USDC surplus in one pool could be routed to the other.
+
+6. **Reconfigure-after-auction timing.** In V4b/V4c, the agent reconfigures after the auction clears. What's the optimal delay? Immediate reconfigure may be suboptimal if the price is still moving. Waiting too long means re-accumulating exposure.
+
+7. **Vol regime detection.** The agent should adjust baseFee based on realized vol. What's the right lookback window? Too short = noisy. Too long = stale. The AMM challenge found fixed parameters beat adaptive ones — does this hold for the agent's slower timescale?
