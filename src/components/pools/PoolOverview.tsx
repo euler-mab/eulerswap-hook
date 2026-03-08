@@ -296,6 +296,26 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
         </Row>
       )}
 
+      {/* Secondary Uniswap V3 oracle price (cross-validation) */}
+      {state.uniswapPrice2 !== undefined && state.uniswapPrice2 > 0 && (
+        <Row label={state.uniswapPool2Label ? `${state.uniswapPool2Label} price` : "Uni V3 price (2)"}>
+          {inverted
+            ? `${fmtPrice(1 / state.uniswapPrice2)} ${state.asset0Symbol}/${state.asset1Symbol}`
+            : `${fmtPrice(state.uniswapPrice2)} ${state.asset1Symbol}/${state.asset0Symbol}`}
+          <PriceDiff marginal={state.marginalPrice} other={state.uniswapPrice2} inverted={inverted} />
+        </Row>
+      )}
+
+      {/* Secondary Uniswap V3 5-minute TWAP */}
+      {state.twapPrice5m2 !== undefined && state.twapPrice5m2 > 0 && (
+        <Row label={state.uniswapPool2Label ? `${state.uniswapPool2Label} TWAP` : "Uni V3 TWAP (2)"}>
+          {inverted
+            ? `${fmtPrice(1 / state.twapPrice5m2)} ${state.asset0Symbol}/${state.asset1Symbol}`
+            : `${fmtPrice(state.twapPrice5m2)} ${state.asset1Symbol}/${state.asset0Symbol}`}
+          <PriceDiff marginal={state.marginalPrice} other={state.twapPrice5m2} inverted={inverted} />
+        </Row>
+      )}
+
       {/* DeFiLlama price cross-reference */}
       {pnl && pnl.currentPrices.asset0 > 0 && pnl.currentPrices.asset1 > 0 && (
         <Row label="DeFiLlama price">

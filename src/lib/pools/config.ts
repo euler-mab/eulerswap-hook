@@ -19,6 +19,14 @@ export interface PoolConfig {
   uniswapPool?: Address;
   /** Uniswap V3 pool fee tier in bps (e.g. 5 for 0.05%) */
   uniswapFeeBps?: number;
+  /** Secondary Uniswap V3 reference pool (cross-validation) */
+  uniswapPool2?: Address;
+  /** Display label for secondary pool (e.g. "WETH/USDT 0.01%") */
+  uniswapPool2Label?: string;
+  /** Token decimals [token0, token1] in the secondary Uni pool */
+  uniswapPool2Decimals?: [number, number];
+  /** If true, invert the secondary pool's native price to match the primary convention */
+  uniswapPool2Invert?: boolean;
 }
 
 export const POOLS: PoolConfig[] = [
@@ -32,6 +40,10 @@ export const POOLS: PoolConfig[] = [
     deployBlock: 24591724n,
     uniswapPool: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
     uniswapFeeBps: 5,
+    uniswapPool2: "0xc7bBeC68d12a0d1830360F8Ec58fA599bA1b0e9b",
+    uniswapPool2Label: "WETH/USDT 0.01%",
+    uniswapPool2Decimals: [18, 6],  // WETH, USDT
+    uniswapPool2Invert: true,       // invert USDT/WETH → WETH/USDC convention
   },
   {
     address: "0x719529e99b7b272c5ef4CE07C30d15BC57CD68A8",

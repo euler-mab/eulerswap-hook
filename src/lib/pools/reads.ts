@@ -102,7 +102,15 @@ export async function fetchPoolState(
     pool.uniswapPool
       ? client.readContract({ address: pool.uniswapPool, abi: uniswapV3PoolAbi, functionName: "observe", args: [[300, 0]] })
       : Promise.resolve(null),
-    // 15-18: V2 hook auction state + config (fails silently on v1 hooks)
+    // 15: Secondary Uniswap V3 slot0 (cross-validation oracle)
+    pool.uniswapPool2
+      ? client.readContract({ address: pool.uniswapPool2, abi: uniswapV3PoolAbi, functionName: "slot0" })
+      : Promise.resolve(null),
+    // 16: Secondary Uniswap V3 observe (5-minute TWAP)
+    pool.uniswapPool2
+      ? client.readContract({ address: pool.uniswapPool2, abi: uniswapV3PoolAbi, functionName: "observe", args: [[300, 0]] })
+      : Promise.resolve(null),
+    // 17-20: V2 hook auction state + config (fails silently on v1 hooks)
     hasHook
       ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getAuctionState" })
       : Promise.resolve(null),
@@ -142,10 +150,14 @@ export async function fetchPoolState(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const observeResult = val(results[14], null) as any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const auctionState = val(results[15], null) as any;
-  const auctionDeltaVal = val(results[16], null) as bigint | null;
-  const auctionStartFeeVal = val(results[17], null) as bigint | null;
-  const auctionDecayVal = val(results[18], null) as bigint | null;
+  const slot02 = val(results[15], null) as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const observeResult2 = val(results[16], null) as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const auctionState = val(results[17], null) as any;
+  const auctionDeltaVal = val(results[18], null) as bigint | null;
+  const auctionStartFeeVal = val(results[19], null) as bigint | null;
+  const auctionDecayVal = val(results[20], null) as bigint | null;
 
   // Compute marginal price using EulerSwap curve.
   // On-chain priceX/priceY are (USD_price / 10^decimals) * 1e18, so normalise to
@@ -202,6 +214,33 @@ export async function fetchPoolState(
       const adjusted = token0IsAsset0 ? rawPrice : 1 / rawPrice;
       twapPrice5m = adjusted * Math.pow(10, meta0.decimals - meta1.decimals);
     } catch { /* observe failed — pool may lack observation history */ }
+  }
+
+  // Secondary Uniswap V3 oracle price (cross-validation)
+  let uniswapPrice2: number | undefined;
+  if (slot02 && pool.uniswapPool2Decimals) {
+    const sqrtPriceX96 = slot02[0] as bigint;
+    if (sqrtPriceX96 > 0n) {
+      const num = Number(sqrtPriceX96) / 2 ** 96;
+      const rawPrice = num * num; // token1_raw / token0_raw
+      const [dec0, dec1] = pool.uniswapPool2Decimals;
+      let humanPrice = rawPrice * Math.pow(10, dec0 - dec1); // token1_human / token0_human
+      if (pool.uniswapPool2Invert) humanPrice = 1 / humanPrice;
+      uniswapPrice2 = humanPrice;
+    }
+  }
+
+  let twapPrice5m2: number | undefined;
+  if (observeResult2 && pool.uniswapPool2Decimals) {
+    try {
+      const tickCumulatives = observeResult2[0] as bigint[];
+      const avgTick = Number(tickCumulatives[1] - tickCumulatives[0]) / 300;
+      const rawPrice = 1.0001 ** avgTick; // token1_raw / token0_raw
+      const [dec0, dec1] = pool.uniswapPool2Decimals;
+      let humanPrice = rawPrice * Math.pow(10, dec0 - dec1);
+      if (pool.uniswapPool2Invert) humanPrice = 1 / humanPrice;
+      twapPrice5m2 = humanPrice;
+    } catch { /* observe failed */ }
   }
 
   // ─── Arb probe: use computeQuote for realistic arb estimate ───
@@ -313,6 +352,7 @@ export async function fetchPoolState(
     feeRecipient: staticParams.feeRecipient as Address,
     marginalPrice, equilibriumPrice, isInstalled: installed,
     uniswapPrice, twapPrice5m,
+    uniswapPrice2, twapPrice5m2, uniswapPool2Label: pool.uniswapPool2Label,
     // Hook
     hookBaseFee: feeParams ? feeParams[0] : undefined,
     hookMaxFee: feeParams ? feeParams[1] : undefined,

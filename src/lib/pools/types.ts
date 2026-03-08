@@ -45,6 +45,10 @@ export interface PoolState {
   // Uniswap V3 oracle price (asset1/asset0 in human units, same convention as marginalPrice)
   uniswapPrice?: number;
   twapPrice5m?: number;  // 5-minute TWAP from Uni V3 observe()
+  // Secondary Uniswap V3 reference (cross-validation, same convention)
+  uniswapPrice2?: number;
+  twapPrice5m2?: number;
+  uniswapPool2Label?: string;
 
   // Hook state
   hookBaseFee?: bigint;
