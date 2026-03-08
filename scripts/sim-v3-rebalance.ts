@@ -61,7 +61,11 @@ const SIM_CONFIG = {
 
 const V3_CONFIG = {
   triggerPct: 0.50,        // trigger at 50% of NAV exposure
-  auctionDeltaBps: 100,    // off-market shift (100 bps)
+  auctionDeltaBps: 100,    // fixed delta fallback (100 bps)
+  dynamicDelta: false,     // whether to use dynamic delta
+  minDeltaBps: 10,         // minimum delta (floor)
+  maxDeltaBps: 500,        // maximum delta (cap)
+  deltaSafetyFactor: 2.0,  // multiply exact delta by this (fee overhead compensation)
   startFeeBps: 200,        // auction start fee
   decayBpsPerMinute: 2,    // fee decay rate
   uniFee: 0.0005,          // external fee (Uni V3 5 bps)
@@ -154,16 +158,29 @@ interface AuctionResult {
   netCostUSDC: number;
   numTrades: number;
   clearingTimeMin: number;
+  deltaBps: number;        // actual delta used (may be dynamic)
+  cleared: boolean;        // whether auction fully cleared (reserve >= preAuctionEq)
 }
 
 /**
- * Simulate the V3 auction: attract the needed asset until exposure ≈ 0.
- * Uses the same fee-decay auction mechanism as V2.
+ * Simulate the V3 auction: attract the needed asset until reserves return
+ * to pre-drift equilibrium (matching the contract's clearing condition).
  *
- * Returns the vault state after the auction.
+ * Key accuracy fixes vs previous version:
+ * - Clearing: checks absolute reserves against pre-drift eq (not vault net position)
+ * - Reserve tracking: tracks actual reserves including fee accumulation
+ * - Dynamic delta: optionally computes delta from reserve deficit
+ *
+ * @param origEq0 pre-drift equilibrium reserve0 (contract's preAuctionEq0)
+ * @param origEq1 pre-drift equilibrium reserve1 (contract's preAuctionEq1)
+ * @param startRes0 absolute reserve0 at trigger time (pool.curX)
+ * @param startRes1 absolute reserve1 at trigger time (pool.curY)
  */
 function runV3Auction(
-  vault: VaultState, x0: number, y0: number, params: Params,
+  vault: VaultState,
+  origEq0: number, origEq1: number,
+  startRes0: number, startRes1: number,
+  params: Params,
   marketPy: number, config: typeof V3_CONFIG,
 ): AuctionResult & { finalVault: VaultState } {
   const ethPrice = marketPy;
@@ -174,8 +191,24 @@ function runV3Auction(
   const attractUsdc = wethNet >= 0;  // ETH-long → attract USDC
   const direction = attractUsdc ? 'attract_usdc' as const : 'attract_weth' as const;
 
-  // Compute delta: shift priceY off-market
-  const delta = config.auctionDeltaBps / 10000;
+  // Compute delta (fixed or dynamic)
+  let delta: number;
+  if (config.dynamicDelta) {
+    // Exact formula: delta_min = (eq/reserve)^2 - 1
+    // This is the minimum priceY shift for arb to reach preAuctionEq.
+    // Safety factor on the delta (not the ratio!) to ensure clearing.
+    const ratio = attractUsdc
+      ? origEq0 / Math.max(startRes0, 1)
+      : origEq1 / Math.max(startRes1, 1e-8);
+    const deltaExact = ratio * ratio - 1;  // minimum delta for clearing
+    delta = deltaExact * config.deltaSafetyFactor;
+    delta = Math.max(delta, config.minDeltaBps / 10000);
+    delta = Math.min(delta, config.maxDeltaBps / 10000);
+  } else {
+    delta = config.auctionDeltaBps / 10000;
+  }
+  const deltaBps = Math.round(delta * 10000);
+
   const pyOff = attractUsdc
     ? marketPy / (1 + delta)   // decrease py → overprices WETH → arbers sell USDC
     : marketPy * (1 + delta);  // increase py → underprices WETH → arbers sell WETH
@@ -191,9 +224,14 @@ function runV3Auction(
   if (x0Off < 1 || y0Off < 1e-8) {
     return {
       triggered: false, direction: 'none', exposureBefore, exposureAfter: exposureBefore,
-      netCostUSDC: 0, numTrades: 0, clearingTimeMin: 0, finalVault: vault,
+      netCostUSDC: 0, numTrades: 0, clearingTimeMin: 0, deltaBps: 0, cleared: false,
+      finalVault: vault,
     };
   }
+
+  // Track absolute reserves (matching what the contract sees in afterSwap)
+  let absoluteX = startRes0;
+  let absoluteY = startRes1;
 
   // Simulate arb trades with fee decay
   let curVault = { ...vault };
@@ -201,6 +239,7 @@ function runV3Auction(
   let totalCostUSDC = 0;
   let totalFeeUSDC = 0;
   let clearTime = 0;
+  let cleared = false;
 
   const { startFeeBps, decayBpsPerMinute, maxAuctionMinutes, uniFee } = config;
 
@@ -239,16 +278,18 @@ function runV3Auction(
         yd: curVault.yd + (dyOut - yrUsed),
       };
 
-      totalCostUSDC += dyOut * marketPy - dxIn;  // WETH given at market - USDC received
+      // Update absolute reserves (contract sees full input including fees)
+      absoluteX += totalUsdcIn;
+      absoluteY -= dyOut;
+
+      totalCostUSDC += dyOut * marketPy - dxIn;
       totalFeeUSDC += feeUSDC;
       numTrades++;
       clearTime = min;
       yCur = yEnd;
 
-      // V3 clearing: WETH deposits drained (ETH-long exposure cleared)
-      if (curVault.yr < 1e-6) { curVault.yr = 0; break; }
-      // Safety: stop if we created WETH debt (overshoot into opposite exposure)
-      if (curVault.yd > 1e-8) break;
+      // Contract clearing: reserve0 >= preAuctionEq0
+      if (absoluteX >= origEq0) { cleared = true; break; }
       if (feeFrac <= 0) break;
     }
   } else {
@@ -286,14 +327,18 @@ function runV3Auction(
         yd: curVault.yd - wethRepaid,
       };
 
-      totalCostUSDC += dxOut - dyIn * marketPy;  // USDC given - WETH received at market
+      // Update absolute reserves
+      absoluteX -= dxOut;
+      absoluteY += totalWethIn;
+
+      totalCostUSDC += dxOut - dyIn * marketPy;
       totalFeeUSDC += feeWETH * marketPy;
       numTrades++;
       clearTime = min;
       xCur = xEnd;
 
-      // V3 clearing: WETH debt repaid (ETH-short exposure cleared)
-      if (curVault.yd < 1e-8) { curVault.yd = 0; break; }
+      // Contract clearing: reserve1 >= preAuctionEq1
+      if (absoluteY >= origEq1) { cleared = true; break; }
       if (feeFrac <= 0) break;
     }
   }
@@ -303,7 +348,8 @@ function runV3Auction(
   return {
     triggered: true, direction, exposureBefore, exposureAfter,
     netCostUSDC: totalCostUSDC - totalFeeUSDC,
-    numTrades, clearingTimeMin: clearTime, finalVault: curVault,
+    numTrades, clearingTimeMin: clearTime, deltaBps, cleared,
+    finalVault: curVault,
   };
 }
 
@@ -376,12 +422,15 @@ interface StrategyResult {
   totalExposureCleared: number;
   maxExposurePct: number;     // peak exposure as % of NAV
   avgExposurePct: number;     // average exposure as % of NAV
+  auctionsCleared: number;    // how many auctions fully cleared
+  auctionsStalled: number;    // how many auctions failed to clear
+  avgDeltaBps: number;        // average delta used (dynamic or fixed)
   finalVault: VaultState;
   log: string[];
 }
 
 /** V3: exposure-based trigger, auction until reserves return to eq */
-function runV3Strategy(pricePath: number[]): StrategyResult {
+function runV3Strategy(pricePath: number[], label?: string): StrategyResult {
   const n = SIM_CONFIG.durationDays * SIM_CONFIG.stepsPerDay;
   let pool = initPool();
   const initialNAV = computeNAV(pool.vault, pool.params.py);
@@ -392,6 +441,9 @@ function runV3Strategy(pricePath: number[]): StrategyResult {
   let totalExposureCleared = 0;
   let maxExposurePct = 0;
   let sumExposurePct = 0;
+  let auctionsCleared = 0;
+  let auctionsStalled = 0;
+  let sumDeltaBps = 0;
 
   for (let i = 1; i <= n; i++) {
     const t = i / SIM_CONFIG.stepsPerDay;
@@ -419,7 +471,10 @@ function runV3Strategy(pricePath: number[]): StrategyResult {
       pool.vault = vault;
 
       const auction = runV3Auction(
-        vault, pool.x0, pool.y0, pool.params,
+        vault,
+        pool.x0, pool.y0,          // pre-drift eq (clearing target)
+        pool.curX, pool.curY,      // absolute reserves at trigger time
+        pool.params,
         newPy, V3_CONFIG,
       );
 
@@ -427,13 +482,17 @@ function runV3Strategy(pricePath: number[]): StrategyResult {
         totalAuctions++;
         totalAuctionCost += auction.netCostUSDC;
         totalExposureCleared += auction.exposureBefore - auction.exposureAfter;
+        sumDeltaBps += auction.deltaBps;
+        if (auction.cleared) auctionsCleared++;
+        else auctionsStalled++;
 
         log.push(
           `Day ${t.toFixed(1).padStart(5)} ETH=$${ethPrice.toFixed(0)} ` +
           `exp=${(exposurePct * 100).toFixed(0)}%NAV=$${exposure.toFixed(0)} ` +
-          `${auction.direction} trades=${auction.numTrades} ` +
+          `${auction.direction} delta=${auction.deltaBps}bps trades=${auction.numTrades} ` +
           `cost=$${auction.netCostUSDC.toFixed(2)} ` +
-          `cleared=$${(auction.exposureBefore - auction.exposureAfter).toFixed(0)}`
+          `${auction.cleared ? 'CLEARED' : 'STALLED'} ` +
+          `exp_after=$${auction.exposureAfter.toFixed(0)}`
         );
 
         // Recenter from post-auction vault state
@@ -446,10 +505,12 @@ function runV3Strategy(pricePath: number[]): StrategyResult {
   const finalNAV = computeNAV(finalVault, pool.params.py);
 
   return {
-    name: 'V3 (exposure-based)',
+    name: label || (V3_CONFIG.dynamicDelta ? 'V3 (dynamic delta)' : 'V3 (fixed delta)'),
     finalNAV, initialNAV, totalAuctions, totalAuctionCost,
     totalExposureCleared, maxExposurePct,
     avgExposurePct: sumExposurePct / n,
+    auctionsCleared, auctionsStalled,
+    avgDeltaBps: totalAuctions > 0 ? sumDeltaBps / totalAuctions : 0,
     finalVault, log,
   };
 }
@@ -498,8 +559,11 @@ function runV2Strategy(pricePath: number[]): StrategyResult {
       if (debtUSD > V2_CONFIG.debtThresholdUSD) {
         // V2 auction: clear debt only
         const auction = runV3Auction(
-          vault, pool.x0, pool.y0, pool.params,
-          newPy, { ...V3_CONFIG, ...V2_CONFIG },
+          vault,
+          pool.x0, pool.y0,
+          pool.curX, pool.curY,
+          pool.params,
+          newPy, { ...V3_CONFIG, ...V2_CONFIG, dynamicDelta: false },
         );
 
         if (auction.triggered && auction.numTrades > 0) {
@@ -532,6 +596,8 @@ function runV2Strategy(pricePath: number[]): StrategyResult {
     finalNAV, initialNAV, totalAuctions, totalAuctionCost,
     totalExposureCleared, maxExposurePct,
     avgExposurePct: sumExposurePct / n,
+    auctionsCleared: totalAuctions, auctionsStalled: 0,
+    avgDeltaBps: V2_CONFIG.auctionDeltaBps,
     finalVault, log,
   };
 }
@@ -576,6 +642,7 @@ function runStaticStrategy(pricePath: number[]): StrategyResult {
     finalNAV, initialNAV, totalAuctions: 0, totalAuctionCost: 0,
     totalExposureCleared: 0, maxExposurePct,
     avgExposurePct: sumExposurePct / n,
+    auctionsCleared: 0, auctionsStalled: 0, avgDeltaBps: 0,
     finalVault, log: [],
   };
 }
@@ -583,7 +650,18 @@ function runStaticStrategy(pricePath: number[]): StrategyResult {
 // ─── Main ───────────────────────────────────────────────────────────
 
 function printResults(result: StrategyResult) {
-  console.log(`  ${result.name.padEnd(25)} NAV: $${result.initialNAV.toFixed(0)} → $${result.finalNAV.toFixed(0).padStart(8)} (${((result.finalNAV / result.initialNAV - 1) * 100).toFixed(1).padStart(7)}%)  auctions=${String(result.totalAuctions).padStart(3)}  cost=$${result.totalAuctionCost.toFixed(0).padStart(5)}  maxExp=${(result.maxExposurePct * 100).toFixed(0).padStart(4)}%  avgExp=${(result.avgExposurePct * 100).toFixed(0).padStart(4)}%`);
+  const navChange = ((result.finalNAV / result.initialNAV - 1) * 100).toFixed(1).padStart(7);
+  const clearInfo = result.totalAuctions > 0
+    ? `  cleared=${result.auctionsCleared}/${result.totalAuctions}` +
+      (result.auctionsStalled > 0 ? ` STALLED=${result.auctionsStalled}` : '') +
+      `  avgDelta=${result.avgDeltaBps.toFixed(0)}bps`
+    : '';
+  console.log(
+    `  ${result.name.padEnd(25)} NAV: $${result.initialNAV.toFixed(0)} -> $${result.finalNAV.toFixed(0).padStart(8)} (${navChange}%)` +
+    `  auctions=${String(result.totalAuctions).padStart(3)}  cost=$${result.totalAuctionCost.toFixed(0).padStart(5)}` +
+    `  maxExp=${(result.maxExposurePct * 100).toFixed(0).padStart(4)}%  avgExp=${(result.avgExposurePct * 100).toFixed(0).padStart(4)}%` +
+    clearInfo
+  );
 }
 
 function runAtVol(vol: number, showLog: boolean = false) {
@@ -593,27 +671,43 @@ function runAtVol(vol: number, showLog: boolean = false) {
   const ethPriceStart = 1 / pricePath[0];
   const ethPriceEnd = 1 / pricePath[pricePath.length - 1];
 
-  console.log(`\n─── Vol=${(vol * 100).toFixed(0)}%, ${SIM_CONFIG.durationDays}d, ETH $${ethPriceStart.toFixed(0)}→$${ethPriceEnd.toFixed(0)} ───`);
+  console.log(`\n--- Vol=${(vol * 100).toFixed(0)}%, ${SIM_CONFIG.durationDays}d, ETH $${ethPriceStart.toFixed(0)}->${ethPriceEnd.toFixed(0)} ---`);
 
-  const v3 = runV3Strategy(pricePath);
+  // V3 with dynamic delta
+  V3_CONFIG.dynamicDelta = true;
+  const v3dyn = runV3Strategy(pricePath, 'V3 (dynamic delta)');
+
+  // V3 with fixed delta (original)
+  V3_CONFIG.dynamicDelta = false;
+  const v3fix = runV3Strategy(pricePath, 'V3 (fixed 100bps)');
+
   const v2 = runV2Strategy(pricePath);
   const stat = runStaticStrategy(pricePath);
 
-  printResults(v3);
+  printResults(v3dyn);
+  printResults(v3fix);
   printResults(v2);
   printResults(stat);
 
-  if (showLog && v3.log.length > 0) {
-    console.log(`\n  V3 first 20 auctions:`);
-    for (const line of v3.log.slice(0, 20)) console.log(`    ${line}`);
-    if (v3.log.length > 20) console.log(`    ... (${v3.log.length - 20} more)`);
+  if (showLog) {
+    if (v3dyn.log.length > 0) {
+      console.log(`\n  V3 dynamic delta - first 20 auctions:`);
+      for (const line of v3dyn.log.slice(0, 20)) console.log(`    ${line}`);
+      if (v3dyn.log.length > 20) console.log(`    ... (${v3dyn.log.length - 20} more)`);
+    }
+    if (v3fix.log.length > 0 && v3fix.auctionsStalled > 0) {
+      console.log(`\n  V3 fixed delta - STALLED auctions:`);
+      for (const line of v3fix.log.filter(l => l.includes('STALLED')).slice(0, 10)) console.log(`    ${line}`);
+    }
   }
 }
 
 function run() {
   console.log('=== V3 Exposure-Based Rebalancing Simulation ===');
   console.log(`Pool: USDC/WETH, rx=ry=${BASE_PARAMS.rx}, cx=cy=0, real=$${BASE_PARAMS.xr}`);
-  console.log(`Trigger: ${V3_CONFIG.triggerPct * 100}% NAV, delta=${V3_CONFIG.auctionDeltaBps}bps, fee=${V3_CONFIG.startFeeBps}→0 bps`);
+  console.log(`Trigger: ${V3_CONFIG.triggerPct * 100}% NAV`);
+  console.log(`Fixed delta: ${V3_CONFIG.auctionDeltaBps}bps | Dynamic: (eq/res)^2*${V3_CONFIG.deltaSafetyFactor}-1, ${V3_CONFIG.minDeltaBps}-${V3_CONFIG.maxDeltaBps}bps`);
+  console.log(`Fee: ${V3_CONFIG.startFeeBps}->0 bps, decay ${V3_CONFIG.decayBpsPerMinute}bps/min`);
 
   for (const vol of [0.30, 0.45, 0.60]) {
     runAtVol(vol, vol === 0.60);
