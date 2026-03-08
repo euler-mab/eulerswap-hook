@@ -1,6 +1,12 @@
 /**
- * Delta-neutral rebalance: sell all WETH → USDC via CowSwap,
+ * Delta-neutral rebalance: sell all WETH → USDC via Euler orderflow router,
  * repay USDC debt, recompute equilibrium, reconfigure pool.
+ *
+ * Uses EVC batch with deferred checks — single atomic transaction:
+ *   1. Withdraw all WETH from vault to Swapper (check deferred)
+ *   2. Swapper swaps WETH→USDC, repays debt, deposits remainder
+ *   3. SwapVerifier validates output
+ *   → end of batch: account healthy (USDC deposit, no WETH, no debt)
  *
  * Usage: cd agent && npx tsx src/rebalance.ts
  */
@@ -10,19 +16,15 @@ import {
   createWalletClient,
   http,
   encodeFunctionData,
+  encodeAbiParameters,
+  formatUnits,
   type Address,
   type Hash,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { mainnet } from "viem/chains";
-import { eulerSwapAbi, evcAbi, evaultAbi, erc20Abi } from "./abi.js";
-import {
-  getSwapQuote,
-  signOrder,
-  submitOrder,
-  waitForOrder,
-  GPV2_VAULT_RELAYER,
-} from "./cowswap.js";
+import { eulerSwapAbi, evcAbi, evaultAbi } from "./abi.js";
+
 // --- Inlined boost math (from src/lib/math.ts, can't import across rootDir) ---
 
 interface BoostParams {
@@ -62,7 +64,7 @@ function computeX0Additive(p: BoostParams): number {
 
   const num = vyx * (yr - yd) * pXyxb * sx * R
     + xr * (vyx * (sx - 1) * PX + R)
-    + (0 - xd) * sx * R; // ZXC=0 for no exogenous collateral
+    + (0 - xd) * sx * R;
   const BX = num / denom;
 
   const x0 = xr + BX;
@@ -86,7 +88,7 @@ function computeY0Additive(p: BoostParams): number {
 
   const num = vxy * (xr - xd) * pYxyb * sy * Ry
     + yr * (vxy * (sy - 1) * PY + Ry)
-    + (0 - yd) * sy * Ry; // ZYC=0
+    + (0 - yd) * sy * Ry;
   const BY = num / denom;
 
   const y0 = yr + BY;
@@ -113,13 +115,15 @@ const CX = 0;
 const CY = 0;
 
 // Borrow LTVs
-const VYX_BORROW = 0.84; // WETH collateral → USDC debt
-const VXY_BORROW = 0.85; // USDC collateral → WETH debt
+const VYX_BORROW = 0.84;
+const VXY_BORROW = 0.85;
 
 const WAD = 10n ** 18n;
 const Q192 = 2n ** 192n;
 const TX_TIMEOUT_MS = 120_000;
-const SLIPPAGE_BPS = 50; // 0.5% slippage tolerance
+const SLIPPAGE_PCT = 0.5; // 0.5%
+
+const EULER_SWAP_API = "https://swap.euler.finance";
 
 // Uniswap V3 slot0 ABI
 const uniV3Abi = [
@@ -140,19 +144,70 @@ const uniV3Abi = [
   },
 ] as const;
 
-// repay ABI (not in abi.ts)
-const repayAbi = [
+// EVC batch ABI (not in abi.ts)
+const evcBatchAbi = [
   {
-    name: "repay",
+    name: "batch",
+    type: "function",
+    stateMutability: "payable",
+    inputs: [
+      {
+        name: "items",
+        type: "tuple[]",
+        components: [
+          { name: "targetContract", type: "address" },
+          { name: "onBehalfOfAccount", type: "address" },
+          { name: "value", type: "uint256" },
+          { name: "data", type: "bytes" },
+        ],
+      },
+    ],
+    outputs: [],
+  },
+] as const;
+
+// Swapper ABI fragments (for rebuilding multicall)
+const swapperAbi = [
+  {
+    name: "repayAndDeposit",
     type: "function",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "amount", type: "uint256" },
-      { name: "receiver", type: "address" },
+      { name: "token", type: "address" },
+      { name: "vault", type: "address" },
+      { name: "repayAmount", type: "uint256" },
+      { name: "account", type: "address" },
     ],
-    outputs: [{ name: "", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    name: "multicall",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "calls", type: "bytes[]" }],
+    outputs: [],
   },
 ] as const;
+
+const MAX_UINT256 = 2n ** 256n - 1n;
+
+// --- Euler orderflow router API types ---
+interface SwapApiResponse {
+  amountIn: string;
+  amountOut: string;
+  amountOutMin: string;
+  swap: {
+    swapperAddress: string;
+    swapperData: string;
+    multicallItems: Array<{ functionName: string; data: string }>;
+  };
+  verify: {
+    verifierAddress: string;
+    verifierData: string;
+    type: string;
+  };
+  route: Array<{ providerName: string }>;
+}
 
 async function main() {
   const account = privateKeyToAccount(PRIVATE_KEY);
@@ -195,9 +250,6 @@ async function main() {
   const slot0 = await publicClient.readContract({ address: UNI_POOL, abi: uniV3Abi, functionName: "slot0" });
   const sqrtP = slot0[0];
   const priceWad = (sqrtP * sqrtP * WAD) / Q192;
-  // priceWad = (WETH_raw / USDC_raw) * 1e18. Convert to human ETH/USD price:
-  // 1 USDC (1e6 raw) → priceWad/1e18 * 1e6 raw WETH → priceWad/1e18 * 1e6 / 1e18 WETH
-  // ETH price = 1 / (priceWad * 1e6 / 1e18 / 1e18) = 1e30 / priceWad
   const ethPriceUsd = 1e30 / Number(priceWad);
 
   // Display position
@@ -220,7 +272,7 @@ async function main() {
     return;
   }
 
-  console.log(`\nSell ${(Number(sellAmount) / 1e18).toFixed(4)} WETH → USDC via CowSwap`);
+  console.log(`\nSell ${formatUnits(sellAmount, 18)} WETH → USDC via Euler orderflow router`);
 
   // Y/N confirmation
   const readline = await import("readline");
@@ -239,141 +291,141 @@ async function main() {
     console.log(`  ${label}: ${hash}`);
   }
 
-  // Helper: deposit WETH back to vault (recovery)
-  async function recoverWeth(): Promise<void> {
-    console.log("  Recovering WETH to vault...");
-    const appHash = await walletClient.writeContract({
-      address: asset1 as Address,
-      abi: erc20Abi,
-      functionName: "approve",
-      args: [supplyVault1, sellAmount],
-      account,
-      chain: mainnet,
+  // --- Step 3: Get swap quote, simulate, and submit ---
+  const MAX_ATTEMPTS = 3;
+
+  async function getQuoteAndBuildBatch() {
+    const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min
+
+    const swapParams = new URLSearchParams({
+      chainId: "1",
+      tokenIn: asset1 as string,                // WETH
+      tokenOut: asset0 as string,               // USDC
+      amount: sellAmount.toString(),
+      receiver: supplyVault0 as string,         // USDC vault (repay + deposit)
+      vaultIn: supplyVault1 as string,          // WETH vault (for unused input)
+      origin: account.address,
+      accountIn: eulerAccount as string,
+      accountOut: eulerAccount as string,
+      swapperMode: "0",                         // exact input
+      slippage: SLIPPAGE_PCT.toString(),
+      deadline: deadline.toString(),
+      isRepay: "true",
+      currentDebt: debt0.toString(),
+      targetDebt: "0",
     });
-    await waitTx(appHash, "Approve WETH");
-    const depHash = await walletClient.writeContract({
-      address: supplyVault1,
-      abi: evaultAbi,
-      functionName: "deposit",
-      args: [sellAmount, eulerAccount],
-      account,
-      chain: mainnet,
-    });
-    await waitTx(depHash, "Deposit WETH back");
-  }
 
-  // --- Step 3: Withdraw WETH from supply vault ---
-  console.log("\nStep 1/6: Withdrawing WETH from vault...");
-  const withdrawData = encodeFunctionData({
-    abi: evaultAbi,
-    functionName: "withdraw",
-    args: [sellAmount, account.address, eulerAccount],
-  });
-  const withdrawHash = await walletClient.writeContract({
-    address: EVC_ADDRESS,
-    abi: evcAbi,
-    functionName: "call",
-    args: [supplyVault1, eulerAccount, 0n, withdrawData],
-    account,
-    chain: mainnet,
-  });
-  await waitTx(withdrawHash, "Withdraw WETH");
-
-  // --- Step 4: CowSwap ---
-  console.log("Step 2/6: Getting CowSwap quote...");
-  const quote = await getSwapQuote(asset1 as Address, asset0 as Address, sellAmount, account.address);
-  if (!quote) {
-    console.error("CowSwap quote failed — recovering...");
-    await recoverWeth();
-    return;
-  }
-
-  const quotedBuy = BigInt(quote.buyAmount);
-  const minBuy = quotedBuy * BigInt(10000 - SLIPPAGE_BPS) / 10000n;
-  console.log(`  Quote: ${(Number(sellAmount) / 1e18).toFixed(4)} WETH → ${(Number(quotedBuy) / 1e6).toFixed(2)} USDC`);
-
-  if (quotedBuy < minBuy) {
-    console.error("Price too low — recovering...");
-    await recoverWeth();
-    return;
-  }
-
-  console.log("Step 3/6: Approving CowSwap...");
-  const approveAmount = BigInt(quote.sellAmount) + BigInt(quote.feeAmount);
-  const approveHash = await walletClient.writeContract({
-    address: asset1 as Address,
-    abi: erc20Abi,
-    functionName: "approve",
-    args: [GPV2_VAULT_RELAYER, approveAmount],
-    account,
-    chain: mainnet,
-  });
-  await waitTx(approveHash, "Approve CowSwap");
-
-  console.log("Step 4/6: Signing and submitting order...");
-  const signature = await signOrder(walletClient, quote);
-  const orderUid = await submitOrder(quote, signature, account.address);
-  console.log(`  Order: ${orderUid.slice(0, 24)}...`);
-
-  console.log("Step 5/6: Waiting for fill (up to 5 min)...");
-  const result = await waitForOrder(orderUid);
-
-  if (result.status !== "fulfilled") {
-    console.error(`  Order ${result.status} — recovering...`);
-    try { await recoverWeth(); } catch (e) {
-      console.error(`  WARNING: Recovery failed. WETH may be in agent EOA ${account.address}`);
+    const swapRes = await fetch(`${EULER_SWAP_API}/swap?${swapParams}`);
+    if (!swapRes.ok) {
+      const err = await swapRes.text();
+      throw new Error(`Euler swap API error: ${swapRes.status} ${err}`);
     }
-    return;
-  }
 
-  const usdcReceived = result.buyAmount;
-  console.log(`  Filled: ${(Number(result.sellAmount) / 1e18).toFixed(4)} WETH → ${(Number(usdcReceived) / 1e6).toFixed(2)} USDC`);
+    const swapData = (await swapRes.json()) as { data: SwapApiResponse };
+    const quote = swapData.data;
 
-  // --- Step 5: Repay USDC debt + deposit remainder ---
-  console.log("Step 6/6: Repaying debt and depositing USDC...");
+    const providers = quote.route.map(r => r.providerName).join(", ");
+    console.log(`  Route: ${providers}`);
+    console.log(`  Quote: ${formatUnits(BigInt(quote.amountIn), 18)} WETH → ${formatUnits(BigInt(quote.amountOut), 6)} USDC`);
+    console.log(`  Min out: ${formatUnits(BigInt(quote.amountOutMin), 6)} USDC (${SLIPPAGE_PCT}% slippage)`);
 
-  // Approve vault for all USDC
-  const usdcApproveHash = await walletClient.writeContract({
-    address: asset0 as Address,
-    abi: erc20Abi,
-    functionName: "approve",
-    args: [supplyVault0, usdcReceived],
-    account,
-    chain: mainnet,
-  });
-  await waitTx(usdcApproveHash, "Approve USDC");
+    // Post-process the API multicall: replace repay/repayAndDeposit with our own
+    // using type(uint256).max so vault.repay() auto-caps to exact debt amount.
+    // The API generates maxUint256-1 which _capRepayToBalance caps to balance,
+    // causing E_RepayTooMuch when swap output > debt.
+    const fixedMulticallItems: `0x${string}`[] = [];
+    for (const item of quote.swap.multicallItems) {
+      if (item.functionName === "repay" || item.functionName === "repayAndDeposit") {
+        const fixed = encodeFunctionData({
+          abi: swapperAbi,
+          functionName: "repayAndDeposit",
+          args: [asset0, supplyVault0, MAX_UINT256, eulerAccount],
+        });
+        fixedMulticallItems.push(fixed);
+        console.log(`  Fixed: ${item.functionName} → repayAndDeposit(maxUint256)`);
+      } else {
+        fixedMulticallItems.push(item.data as `0x${string}`);
+      }
+    }
 
-  // Repay debt first (if any)
-  let remaining = usdcReceived;
-  if (debt0 > 0n) {
-    const repayAmount = remaining < debt0 ? remaining : debt0;
-    const repayHash = await walletClient.writeContract({
-      address: supplyVault0,
-      abi: repayAbi,
-      functionName: "repay",
-      args: [repayAmount, eulerAccount],
-      account,
-      chain: mainnet,
+    // Re-encode as multicall(bytes[])
+    const fixedSwapperData = encodeFunctionData({
+      abi: swapperAbi,
+      functionName: "multicall",
+      args: [fixedMulticallItems],
     });
-    await waitTx(repayHash, `Repay ${(Number(repayAmount) / 1e6).toFixed(2)} USDC debt`);
-    remaining -= repayAmount;
-  }
 
-  // Deposit remainder
-  if (remaining > 0n) {
-    const depositHash = await walletClient.writeContract({
-      address: supplyVault0,
+    // Build EVC batch items
+    const withdrawData = encodeFunctionData({
       abi: evaultAbi,
-      functionName: "deposit",
-      args: [remaining, eulerAccount],
+      functionName: "withdraw",
+      args: [sellAmount, quote.swap.swapperAddress as Address, eulerAccount],
+    });
+
+    const batchItems = [
+      {
+        targetContract: supplyVault1,
+        onBehalfOfAccount: eulerAccount,
+        value: 0n,
+        data: withdrawData,
+      },
+      {
+        targetContract: quote.swap.swapperAddress as Address,
+        onBehalfOfAccount: eulerAccount,
+        value: 0n,
+        data: fixedSwapperData,
+      },
+      {
+        targetContract: quote.verify.verifierAddress as Address,
+        onBehalfOfAccount: eulerAccount,
+        value: 0n,
+        data: quote.verify.verifierData as `0x${string}`,
+      },
+    ];
+
+    return batchItems;
+  }
+
+  let batchHash: Hash | undefined;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    console.log(`\nAttempt ${attempt}/${MAX_ATTEMPTS}: Getting quote...`);
+    const batchItems = await getQuoteAndBuildBatch();
+
+    // Simulate with eth_call before sending
+    const batchCalldata = encodeFunctionData({
+      abi: evcBatchAbi,
+      functionName: "batch",
+      args: [batchItems],
+    });
+
+    try {
+      await publicClient.call({
+        to: EVC_ADDRESS,
+        data: batchCalldata,
+        account: account.address,
+      });
+      console.log("  Simulation OK, submitting tx...");
+    } catch (simErr: any) {
+      const reason = simErr?.cause?.data || simErr?.message?.slice(0, 200) || String(simErr);
+      console.log(`  Simulation failed: ${reason}`);
+      if (attempt < MAX_ATTEMPTS) continue;
+      throw new Error(`All ${MAX_ATTEMPTS} attempts failed (last: ${reason})`);
+    }
+
+    batchHash = await walletClient.writeContract({
+      address: EVC_ADDRESS,
+      abi: evcBatchAbi,
+      functionName: "batch",
+      args: [batchItems],
       account,
       chain: mainnet,
     });
-    await waitTx(depositHash, `Deposit ${(Number(remaining) / 1e6).toFixed(2)} USDC`);
+    await waitTx(batchHash, "EVC batch (withdraw + swap + verify)");
+    break;
   }
 
-  // --- Step 6: Recompute equilibrium and reconfigure ---
-  console.log("\nRecomputing equilibrium...");
+  // --- Step 5: Recompute equilibrium and reconfigure ---
+  console.log("\nStep 3/3: Reconfiguring pool...");
 
   // Read final vault state
   const [finalShares0, finalDebt0] = await Promise.all([
@@ -384,7 +436,7 @@ async function main() {
     ? await publicClient.readContract({ address: supplyVault0, abi: evaultAbi, functionName: "convertToAssets", args: [finalShares0] })
     : 0n;
 
-  const xr = Number(finalDeposit0) / 1e6; // USDC in human units
+  const xr = Number(finalDeposit0) / 1e6;
   const xd = Number(finalDebt0) / 1e6;
 
   // Market price (re-read for freshness)
@@ -422,13 +474,13 @@ async function main() {
   const min0Raw = BigInt(Math.round(min0 * 1e6));
   const min1Raw = BigInt(Math.round(min1 * 1e18));
 
-  // Market priceY (integer, same scale as current priceY)
+  // Market priceY
   const priceX = dynamicParams.priceX;
   const marketPriceY = (BigInt(priceX) * WAD) / priceWadFresh;
 
   console.log(`  priceY: ${dynamicParams.priceY} → ${marketPriceY}`);
 
-  // Build reconfigure calldata
+  // Reconfigure
   const newDParams = {
     ...dynamicParams,
     equilibriumReserve0: eq0Raw,
@@ -444,7 +496,6 @@ async function main() {
     args: [newDParams, { reserve0: eq0Raw, reserve1: eq1Raw }],
   });
 
-  console.log("\nReconfiguring pool...");
   const reconfigHash = await walletClient.writeContract({
     address: EVC_ADDRESS,
     abi: evcAbi,
