@@ -1,0 +1,648 @@
+# Rebalance Auction Design Notes
+
+Working document capturing the analysis and design reasoning for the next-generation rebalancing mechanism. Intended as a reference for developers and agents implementing the design.
+
+## 1. EulerSwap Building Blocks
+
+Before the design analysis, a summary of the tools EulerSwap gives us. These are the primitives any solution must be built from.
+
+### Pool curve
+
+Each pool has an equilibrium point (x₀, y₀), a price ratio (priceX/priceY), and per-side range parameters (rx, ry) that define upper and lower price boundaries. The curve is a concentration-weighted blend of constant-product and constant-sum, controlled by (cx, cy). At cx=cy=0, it's standard xy=k; at cx=cy=1, it's constant-sum (infinite depth, linear). The piecewise structure means the X branch (price above eq) and Y branch (price below eq) can have different concentration and range parameters.
+
+### Reconfigurable state
+
+All dynamic parameters can be changed without redeploying: equilibrium reserves, price, concentration, fees, range, hook address, and hook operations bitmask. This is done via `reconfigure()`, callable by the owner/manager through EVC, or by the hook directly from within `afterSwap`. This is the core mechanism for rebalancing — we can move the equilibrium price, adjust range, change fees, all in a single call.
+
+### Hook system (three insertion points)
+
+| Hook | When | Pool state | Primary use |
+|------|------|-----------|-------------|
+| `beforeSwap` | Before any swap logic | Locked | Gate/block swaps, pre-validation |
+| `getFee` | During swap, before fee application | Locked (read-only reserves) | Dynamic fee computation |
+| `afterSwap` | After swap completes | **Unlocked** — can call `reconfigure()` | Releverage, rebalance, state updates |
+
+The `getFee` hook receives: direction (asset0IsInput), current reserves (reserve0, reserve1), and a readOnly flag (true when called from `computeQuote` for off-chain pricing). It returns a uint64 fee in WAD scale, or `type(uint64).max` to fall back to the static fee.
+
+The `afterSwap` hook receives: amounts in/out, fees charged, sender, recipient, and post-swap reserves. Crucially, the pool is unlocked during this callback — the hook can call `reconfigure()` to adjust any pool parameter.
+
+### Asymmetric fees
+
+The hook can return different fees depending on direction (asset0IsInput). This enables:
+- **Protect side** (arb direction): high fee to capture LVR
+- **Attract side** (retail direction): low fee to win routing
+- Direction is determined by comparing the pool's marginal price to an oracle reference
+
+### Leverage via Euler vaults
+
+The pool deposits into and borrows from Euler lending vaults. Equilibrium reserves can be set much larger than actual deposits (the "boost"). The pool borrows the difference as price moves reserves away from equilibrium. This creates leveraged liquidity from small equity — but also health constraints (liquidation if collateral × LTV < debt).
+
+### On-chain readable state
+
+Available to the hook at execution time:
+- **Own reserves:** reserve0, reserve1 (passed to getFee/afterSwap)
+- **Own parameters:** all DynamicParams via `getDynamicParams()`
+- **Uniswap V3 price:** `slot0()` on any configured pool (spot price, tick)
+- **Uniswap V3 TWAP:** `observe()` for historical price accumulators
+- **Gas price:** `tx.gasprice` (for gas-aware fee thresholds)
+- **Block number:** `block.number` (for time-based decay)
+- **Vault state:** deposit balances, debt balances, health factor via Euler lens contracts
+
+### Hook storage
+
+The hook contract can maintain arbitrary storage. Current hooks use this for:
+- Fee parameters (baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate)
+- Auction state (auctionActive, auctionStartBlock, startingFee, preAuctionParams)
+- Owner and pool address
+
+Storage is cheap to read (warm SLOAD = 100 gas) but expensive to write (SSTORE = 5000-20000 gas). Designs should minimize writes per swap.
+
+### Off-chain agent
+
+An EOA (the pool owner) can call `setFeeParams`, `setAuctionParams`, and trigger `reconfigure()` via EVC at any time. This enables:
+- Periodic parameter updates based on off-chain analysis
+- Emergency interventions (pause via maxFee, force rebalance)
+- Sophisticated computation that would be too expensive on-chain
+
+### What we DON'T have
+
+- **No access to pending mempool** — can't see other transactions in the block
+- **No cross-block state in getFee** — getFee is view-like; writes happen in afterSwap
+- **No direct Chainlink reads** (would need additional oracle adapter)
+- **No control over swap ordering within a block** — MEV/builder determines this
+- **No way to force swaps** — can only incentivize via fees; the pool is passive
+
+## 2. The Problem
+
+The pool targets a delta-neutral position (100% USDC equity). Any non-zero ETH equity or debt means the LP has directional exposure that should be cleared. A rebalance recenters the equilibrium price and range to current market. But recentering creates a mispricing between old reserves and the new curve — if left unprotected, an arber extracts the full value in one block. An auction controls this leakage.
+
+## 3. Per-Block Price Movement
+
+ETH annualized volatility ≈ 70%. With 12-second blocks (2,628,000 blocks/year):
+
+```
+σ_block = 0.70 / √2,628,000 ≈ 4.3 bps
+E[|ΔP/P|] = 0.8 × σ ≈ 3.4 bps per block
+```
+
+Over n blocks, mismatch grows as √n (random walk):
+
+| Blocks | Time | σ (bps) | E[\|δ\|] (bps) |
+|--------|------|---------|----------------|
+| 1      | 12s  | 4.3     | 3.4            |
+| 5      | 1m   | 9.6     | 7.7            |
+| 10     | 2m   | 13.6    | 10.9           |
+| 25     | 5m   | 21.5    | 17.2           |
+| 50     | 10m  | 30.4    | 24.3           |
+| 300    | 1h   | 74.5    | 59.5           |
+
+## 4. Arb Profitability Threshold
+
+For a pool with effective liquidity L, a price move δ gives arb profit ≈ δ² × L / 2. An arb is profitable when this exceeds gas cost.
+
+```
+L_needed = 2 × gas_cost / σ²_block
+```
+
+At current gas (0.43 gwei) with 350k gas per EulerSwap swap:
+
+```
+gas_cost = 350,000 × 0.43e-9 × $2,000 = $0.30
+L_needed ≈ $3.2M effective liquidity
+```
+
+EulerSwap's concentration boost is 200x+ on the WETH/USDC pool (5% range, cx=cy=0, LTVs 0.84/0.85). With $16k deposited at 200x boost, effective liquidity = $3.2M — enough for arbs on nearly every block.
+
+**Implication:** at current gas prices, arbers are already rebalancing the pool continuously. The fee is the only variable — it determines how much of the LVR the LP captures vs gives away.
+
+## 5. Fee as Arb Filter
+
+A fee f means arbers only trade when |δ| > f. Expected blocks until breach:
+
+```
+n ≈ (f / σ₁)²
+```
+
+| Fee (bps) | Blocks to breach | Time  |
+|-----------|-----------------|-------|
+| 3.4       | ~1              | 12s   |
+| 10        | ~5.4            | 65s   |
+| 20        | ~22             | 4.4m  |
+| 50        | ~135            | 27m   |
+
+In the continuous limit, total LVR per unit time is σ₁² × L / 2 regardless of fee — the fee just changes whether you get many small arbs or fewer large ones. In practice with discrete blocks, a higher fee does reduce realized LVR: some mismatches never breach f due to mean reversion (price walks to +7 bps then back to 0 without ever being arbed at f = 10 bps). The fee also captures revenue from non-arb flow (retail, rebalancers) that trades when |δ| < f.
+
+## 6. LP Economics Per Arb Event
+
+When mismatch is δ and fee is f (with δ > f), for the constant-product approximation:
+
+| Metric | Formula |
+|--------|---------|
+| Trade size | ∝ (δ - f) × L |
+| Fee revenue to LP | f × (δ - f) × L |
+| Adverse selection (value given up) | (δ² - f²) × L / 2 |
+| Net LP cost per arb | (δ - f)² × L / 2 |
+
+The net LP cost per arb event is always non-negative: each individual arb extracts more in adverse selection than it pays in fees. But the fee drastically reduces the cost compared to zero-fee: savings = f(2δ - f) × L / 2.
+
+**Note on fee model:** The exact economics depend on how fees are applied (on input, output, or notional) and the curve shape. In some models, there exists a threshold (around δ ≈ 2-3f) below which arbs are net positive for the LP — this can happen when the fee structure means the arber pays more in fees than they extract in adverse selection. The qualitative insight matters more than the exact multiplier: small-mismatch arbs are cheap or free for the LP; large-mismatch arbs are expensive.
+
+**Key implication:** the LP's goal is not to prevent arbs but to keep δ close to f when arbs happen. This is what batching (section 9) and fee calibration achieve. However, as section 16 will show, optimizing arb-side fees is only ~3% of the total opportunity — the dominant value comes from the attract side (retail fee optimization).
+
+## 7. Rebalance = Recenter + Auction
+
+A rebalance does two things:
+1. **Recenter:** reset the equilibrium price and range to current market
+2. **Auction:** controlled delivery of the recenter, preventing value leakage
+
+Without an auction, the recenter creates an instant mispricing that gets arbed in one block — full value leaked as MEV. The auction spreads this over time via a decaying fee.
+
+### Mispricing magnitude after recenter
+
+The mispricing depends on how far reserves have moved from equilibrium. For a pool with range r and reserves at fraction α of the range (0 = at equilibrium, 1 = at boundary):
+
+- At α = 0.5 (mid-range): mispricing ≈ r/2 (e.g. 250 bps for 5% range)
+- At α = 1.0 (boundary): mispricing ≈ r (e.g. 500 bps for 5% range)
+
+In practice, rebalances should trigger well before the boundary (see section 13). A health-triggered rebalance at α ≈ 0.3-0.5 creates mispricings of 150-250 bps, determining the auction's starting fee s.
+
+### In-pool auction vs external swap
+
+Two complementary strategies for clearing exposure:
+
+- **In-pool auction (fee decay):** best for small-to-moderate imbalances. The pool sells the excess gradually to arbers at decreasing fees. No external dependencies, atomic, gas-efficient per unit traded.
+- **External swap (CowSwap / orderflow router):** better for large imbalances where the pool's own liquidity is insufficient or where batch auctions give better execution. Non-atomic (withdraw → swap → redeposit), introduces trust assumptions and timing risk, but accesses deep external liquidity.
+
+The handoff: use in-pool auctions for routine rebalances (most of the time). Reserve external swaps for large sustained moves where the pool is near boundary and needs to clear significant exposure quickly.
+
+## 8. Discrete Auction Mechanics
+
+Auction starts at fee s, decays by d per block. Arb triggers at the first block k where |δ(k)| > f(k) = s - k × d.
+
+### Arber surplus at trigger
+
+In a continuous auction, the arber triggers at exactly δ = f and extracts zero surplus. But blocks are discrete, so the arber gets a windfall from two sources: fee granularity (dropped by d since last block) and price randomness (moved by ~σ₁). Arber's edge ≈ d + σ₁, giving profit ≈ (d + σ₁)² × L / 2.
+
+### Optimal decay rate
+
+- d >> σ₁: coarse fee steps, giving away value through granularity
+- d << σ₁: fine granularity but price moves dominate — waiting longer for no benefit
+- **d ≈ σ₁ ≈ 4.3 bps/block:** arber edge ≈ 2σ₁ ≈ 8.6 bps — the irreducible minimum given 12s blocks
+
+### Expected waiting time (d = σ₁)
+
+| Starting fee s | Blocks | Time  | Fee at trigger |
+|----------------|--------|-------|----------------|
+| 10 bps         | ~2     | 24s   | ~1 bps         |
+| 20 bps         | ~5     | 1m    | ~1 bps         |
+| 50 bps         | ~11    | 2.2m  | ~3 bps         |
+| 100 bps        | ~20    | 4m    | ~14 bps        |
+| 200 bps        | ~35    | 7m    | ~50 bps        |
+
+### Cost per auction
+
+With d = σ₁ and L = $5M, arber profit ≈ 8 × σ₁² × L / 2 ≈ $3.70 — roughly equal to gas cost. The auction is nearly efficient.
+
+### Auction fee floor
+
+The auction fee must never decay below baseFee. If no arber shows up and the fee reaches zero, the pool is left with full mispricing and zero protection — this is exactly V2's bug (section 15, item 5). The decay should be: `f(k) = max(baseFee, s - k × d)`. Once the floor is hit, the auction effectively becomes a fixed-fee regime, which is safe (the pool just waits for δ to accumulate enough to breach baseFee).
+
+### Multi-arb sequences
+
+The analysis above models a single arb resolving the auction. But if the price keeps moving in the same direction after the first arb, the auction may trigger multiple arbs in sequence. Each arb pays the current decaying fee, and each leaks ~(d + σ₁)² × L / 2 in surplus. This is actually fine for the LP — multiple smaller arbs at moderate fees are better than one large arb, and the fee revenue accumulates across fills. The auction should continue decaying after each arb (not reset), since the remaining mispricing is smaller.
+
+**Implementation note:** the decay clock must be set once at auction start and not touched by intermediate arbs. In the contract, `afterSwap` must NOT reset the auction start timestamp when an arb fills during an active auction. This is easy to accidentally break — store `auctionStartBlock` once and compute `f(k) = max(baseFee, s - (block.number - auctionStartBlock) × d)` purely from the original timestamp.
+
+### High residual fee is LP-favorable
+
+The "fee at trigger" column in the table shows substantial residual fees for high starting fees (e.g. 50 bps at s=200). This is good: the LP captures f × (δ - f) × L in fee revenue at each trigger. The arber's edge is still only ~(d + σ₁) ≈ 8.6 bps regardless of f, because the arber's profit depends on (δ - f)², which is small when δ ≈ f + d + σ₁. The high fee extracts revenue from the large trade volume, not from a large per-unit edge.
+
+### Key result
+
+With d ≈ σ₁, the auction leaks roughly one block's worth of LVR regardless of s. The starting fee s controls waiting time, not leakage. Therefore: s should be calibrated to the known mispricing after a recenter — start just above it.
+
+## 9. Interblock Mismatch Variability
+
+### The problem with per-block arbs
+
+The absolute price move per block follows a half-normal distribution with high variance:
+
+```
+E[|δ|] = σ × √(2/π) ≈ 3.4 bps
+Std[|δ|] = σ × √(1 - 2/π) ≈ 2.6 bps    (CV = 76%)
+```
+
+A fixed fee at the mean means ~50% of blocks get arbed. But arber profit (δ - f)² is convex in δ — large-mismatch blocks cost the LP disproportionately more than small-mismatch blocks save (Jensen's inequality).
+
+### Accumulation reduces variance
+
+Over n blocks, the CV shrinks as 1/√n:
+
+| Blocks | E[\|δ\|] | Std of \|δ\| | CV   |
+|--------|----------|--------------|------|
+| 1      | 3.4 bps  | 2.6 bps      | 76%  |
+| 5      | 7.7 bps  | 3.4 bps      | 44%  |
+| 10     | 10.9 bps | 4.0 bps      | 37%  |
+| 25     | 17.2 bps | 5.1 bps      | 30%  |
+
+### Benefits of batching
+
+1. **Reduces variance of arber surplus.** Accumulated mismatch is more predictable, so fee is better calibrated — arber triggers close to δ ≈ f.
+2. **Reduces the convexity penalty.** Total LVR over n blocks is the same, but collected in one event where the fee is better matched.
+
+This argues for starting the fee above σ₁: arbs every few blocks, not every block.
+
+## 10. Model Assumptions and Second-Order Effects
+
+### Fat tails
+Real price moves have excess kurtosis. Tail events cost more than Gaussian predicts. Strengthens the batching argument (CLT normalizes over n blocks).
+
+### Volatility is not constant
+Realized vol ranges from ~40% to 120%+. Since σ₁ drives optimal decay rate, fee calibration, and arb frequency, these parameters must be dynamic. The hook should track recent realized vol (off-chain agent or on-chain TWAP-derived estimate).
+
+### Gas-volatility correlation
+Gas and price vol are positively correlated (high activity = big moves = high gas). This is a natural hedge: when LVR is highest, arbs are most expensive. The current hook captures this via `gasCoeff × √(tx.gasprice)`. Dangerous exception: CEX-driven moves with normal gas.
+
+### Two-leg arb cost
+The arber needs a second leg (Uniswap swap: ~150k gas + Uni fee + builder tip). The true arb threshold is higher than single-leg gas cost. The `externalFee` parameter accounts for this.
+
+### Builder/MEV dynamics
+Arbers compete via priority fees to builders. This doesn't change LP loss but means the arber's *net* profit is much less than gross. The threshold for "will an arb happen" is gross profit > gas + tip.
+
+### Strategic arber timing
+With a decaying fee, a rational arber might wait for a lower fee. Competition pushes toward immediate execution, but with few arbers the timing could be adversarial.
+
+### Residual mispricing
+After an arb with fee f, the pool is ~f stale. Next block's mismatch is f_residual + δ_new, growing slightly faster than a pure random walk.
+
+### Curve shape and concentration
+
+Effective liquidity L changes as reserves move from equilibrium. For cx=cy=0, liquidity drops away from eq — second-order for small δ, material for large accumulations. All numerical analysis in this document assumes cx=cy=0 (constant-product). With non-zero concentration (cx, cy > 0), the curve is flatter near equilibrium → higher effective liquidity → more fee revenue but also more adverse selection per arb. The qualitative framework generalizes, but the specific numbers (arb thresholds, fee revenue, etc.) shift. For high-concentration pools (cx → 1), the arb profit per unit mismatch is larger, favoring higher fees and more frequent rebalancing.
+
+### Calibration TODO
+For parameter calibration, pull real data from an archive node (mid-2025 onward) — see also experiments 1-2 in section 17, which collect much of this data from our own pool:
+- Base fee distribution and spike magnitudes
+- ETH per-block price move distribution
+- Joint distribution of gas and price volatility
+- Realized vol regime dynamics
+- Arb frequency on comparable pools (Uniswap V3 USDC/WETH 0.05%)
+
+## 11. Oracle Strategy: Asymmetric Safety
+
+### The core insight
+
+Oracle errors are asymmetric in risk:
+- **Overstated mismatch → higher fee:** worst case = no trade. LP safe.
+- **Understated mismatch → lower fee:** worst case = value extraction. Dangerous.
+
+### Safe oracle usage
+
+```
+f = max(f_theoretical, f_from_oracle_mismatch)
+```
+
+- `f_theoretical`: statistical floor (σ₁, gas, vol). Cannot be manipulated.
+- `f_from_oracle_mismatch`: reactive, based on Uniswap slot0. Can only push fee *up*.
+
+A manipulated slot0 overstates mismatch → increases fee → protects LP. The attacker cannot lower the fee below the oracle-independent floor.
+
+### slot0 vs TWAP
+
+**Reactive fee component (raising fees):** slot0 is preferable — more responsive, manipulation is safe-direction only, cheaper to read.
+
+**Floor calibration (estimating realized vol):** TWAP is more useful — smoothed, less noisy, good for vol estimation.
+
+### Relationship to current hook
+
+The current hook already approximates this: `baseFee` is the floor, mismatch components only add to it. The audit finding C1 ("slot0 is manipulable") doesn't apply here because the oracle can only raise fees, never lower them below the floor.
+
+## 12. Retail Flow and the Fee-Staleness Tradeoff
+
+### The three-way tension
+
+The fee level creates a tradeoff between LVR capture, retail competitiveness, and price freshness:
+
+- **Fee too high (arbs every ~25+ blocks):** pool stale by 15-20+ bps. Uncompetitive even on the good side. Aggregators route around. Zero retail volume.
+- **Fee too low (arbs every block):** fresh pricing, competitive for retail. But arbers extract full LVR. LP subsidizes arbers.
+- **Sweet spot (arbs every ~5-10 blocks):** staleness ~8-14 bps. Retail on attract side gets a good deal (stale price in their favor + moderate fee). Arbs frequent enough for freshness, infrequent enough for fee capture.
+
+### Staleness creates attract-side advantage
+
+When the pool is 10 bps stale, a retail trader going opposite to the arb direction gets 10 bps of free price improvement. With a 5 bps fee they're 5 bps ahead of a perfectly-priced pool. Moderate staleness + low attract fee makes the pool the best price for one direction.
+
+### Routing headroom: the bigger opportunity
+
+Evidence from the AMM challenge (a fee strategy competition against a 30 bps normalizer AMM) revealed that **97% of the gap between actual and oracle-optimal performance came from undercharging retail, not from arb losses.** When the competing pool (analogous to Uniswap) is stale, there's substantial "routing headroom" — the maximum fee we can charge while still winning the routing. In the competition, 40% of retail trades had >20 bps of headroom above what was actually charged.
+
+This reframes the optimization priority: **the attract-side fee should not simply be "low" — it should be as high as possible while still winning the routing.** The headroom depends on the competitor's staleness, which varies per block.
+
+**Implementation:** the hook already reads Uniswap slot0 for mismatch detection. To estimate routing headroom, it also needs the competitor's fee tier — this is the existing `externalFee` parameter (e.g. 5e14 = 5 bps for the Uni 0.05% pool). The headroom is approximately: `headroom = |uniPrice - poolPrice| + externalFee` on the attract side (our stale price is in the trader's favor, plus they'd pay Uni's fee elsewhere). The attract fee can be raised up to this headroom while still winning the routing. This is a natural extension of the existing mismatch calculation, not a new oracle dependency.
+
+### Routing is nonlinear in fees
+
+Aggregator order splitting equalizes marginal prices across pools post-trade. For two constant-product AMMs, the flow allocation to pool i is proportional to `A_i = √(x_i × (1 - f_i) × y_i)`. This means:
+- Small fee differences shift large fractions of volume (nonlinear sensitivity)
+- A pool with fresher prices AND lower fees captures disproportionately more flow
+- Even 1-2 bps of fee advantage matters for volume capture
+- But the relationship is continuous, not winner-take-all: a slightly more expensive pool with better price still gets partial flow
+
+**Generalization caveat:** this formula is for two constant-product pools. Real aggregators route across many venues with different curve shapes (Uni V3 concentrated liquidity, Curve stableswap, etc.). The qualitative point — nonlinear fee sensitivity and partial flow allocation — holds generally, but the exact formula changes. With n venues, the pool competes against the best available alternative at each price point, not a single normalizer. This makes the headroom calculation harder but the principle the same: charge up to but not above the point where the marginal trader routes elsewhere.
+
+### Aggregator routing
+
+The pool doesn't need to be competitive on both sides — only on the attract side. Aggregators naturally route attract-side flow here and arb-side flow elsewhere. For this to work:
+1. Pool must be registered and indexed by routing APIs
+2. `computeQuote` (which calls `getFee`) must reflect the attract-side discount
+3. Aggregators compare net price including fee and staleness
+
+## 13. Boundary Conditions and Structural Constraints
+
+The fee optimization operates within hard constraints from the pool's leverage and structure.
+
+### Health constraint
+
+The pool is leveraged. Health = collateral × LTV / debt. If health < 1, the position is liquidated. This creates an absolute upper bound on mismatch accumulation. Higher boost = more fee revenue but thinner health margin. Fee parameters must be calibrated jointly with leverage.
+
+### Directional exposure is asymmetrically dangerous
+
+For GBM, directional exposure has symmetric expected returns — wins and losses are equally likely, and in expectation the exposure is neutral. Being temporarily exposed isn't a problem per se.
+
+But consequences are asymmetric:
+- **Large loss → liquidation.** Catastrophic: forced unwind with penalties, permanent capital reduction, reduced future fee-earning capacity.
+- **Large gain → excess reserves.** Upside is capped: excess sits idle until rebalanced, doesn't compound.
+
+This is gambler's ruin: the downside is absorbing (out of the game), the upside is bounded. **The goal of rebalancing is not to maximize expected returns but to avoid tail losses that take you out of the game.**
+
+### Sustained losses erode earning capacity
+
+Even short of liquidation, losses create a negative feedback loop: less equity → lower boost → less liquidity → less fee revenue → slower recovery. The rebalancing mechanism must prevent this spiral.
+
+### Fee-to-rebalance handoff
+
+Two mechanisms handle different scales:
+
+- **Continuous fee (getFee):** routine block-to-block arbs, small mismatches (< ~50 bps). Steady-state regime.
+- **Discrete rebalance (reconfigure):** sustained directional moves pushing reserves toward boundary. State change: new eq price, new range.
+
+The handoff trigger should be health-based: if health has deteriorated by more than X% of the safety margin, recenter. Not absolute reserves (V2's mistake) or NAV percentage (V3, better but still imperfect).
+
+**Rough heuristic for X:** the safety margin is (health_factor - 1.0). If health starts at 1.05 (5% margin), triggering at X = 50% means rebalancing when health drops to 1.025. This leaves a 2.5% buffer for the rebalance auction to complete before liquidation risk. The trigger should be tighter (lower X) for higher-leverage pools and looser for lower leverage. A conservative starting point: trigger when health drops below `1 + 0.5 × (initial_health - 1)`, i.e., 50% of the margin consumed. This is a parameter the agent can tune based on observed rebalance costs and frequency.
+
+### Boundary behavior
+
+At `minReserves`, the pool is one-sided. This is the worst time to rebalance: maximum exposure, least flexibility, highest cost. Rebalancing earlier is cheaper but leaves potential fee revenue on the table. The trigger balances cost vs risk.
+
+### Interest cost
+
+For net profitability: `fee_revenue + attract_revenue > LVR_cost + interest_cost + rebalance_cost`. Interest accrues on leveraged debt. Clearing exposure via rebalance reduces interest costs directly.
+
+### Range width
+
+Tighter range = higher boost = more fees, but faster boundary hits and more frequent rebalancing. Wider range = lower boost = less fees, but more health margin and less rebalancing. Optimal range jointly minimizes total costs minus total revenue. Should be re-evaluated as market conditions change.
+
+### Fee-mismatch feedback loop
+
+Larger mismatch → higher fee → arber needs bigger mismatch → more accumulation. During fast directional moves, this feedback can overwhelm the continuous fee mechanism, requiring a discrete rebalance — which is the handoff trigger.
+
+**Stability analysis:** with a fixed baseFee, the loop is self-limiting — mismatch grows as √n but the fee is constant, so eventually δ > f and an arb fires. With dynamic fees that increase with mismatch (like the oracle-reactive component), the question is whether fee growth outpaces mismatch growth. Since mismatch grows as √n and the oracle-reactive fee tracks the oracle's mismatch reading (also √n-like), they grow at the same rate → stable equilibrium where arbs happen at roughly constant intervals. The system only becomes unstable if the fee formula amplifies mismatch super-linearly, which the `max(baseFee, ...)` floor prevents.
+
+### Steady-state fee: dynamic or fixed?
+
+Between agent interventions, should the on-chain fee be static (fixed baseFee) or self-adjusting?
+
+- **Fixed baseFee** (current approach): simple, predictable. Agent updates baseFee periodically based on realized vol. Between updates, the fee may be stale if vol regime shifts.
+- **Dynamic baseFee** (self-adjusting): the hook could track recent arb frequency or price deviation and adjust baseFee on-chain. More responsive but adds complexity, state, and gas cost. Risk of adversarial manipulation of the adjustment mechanism.
+
+The "simple on-chain" principle favors fixed baseFee with agent updates. The oracle-reactive component already provides real-time responsiveness for fee increases. The main gap is fee decreases after vol drops — the agent handles this on a slower timescale, which is acceptable since a too-high fee is safe (just less competitive).
+
+## 14. Complexity and Implementation Strategy
+
+### The complexity tradeoff
+
+Every line of Solidity in the hook costs: gas per swap (reduces competitiveness), audit surface (V2's simple auction already had multiple high-severity bugs), parameters to tune (more ways to misconfigure), and cognitive overhead for maintenance.
+
+### Simple on-chain, sophisticated off-chain
+
+**On-chain (hook) — robust primitives:**
+- baseFee floor (manipulation-proof)
+- Oracle-boosted fee (slot0, can only raise above floor)
+- Time-based linear decay (one storage slot)
+- afterSwap exposure check (reconfigure when health margin consumed)
+
+**Off-chain (agent) — complex optimization:**
+- Adjust fee params based on realized vol, gas, interest rates
+- Monitor health, trigger rebalance as backup
+- Backtest and grid-search parameter space
+- Handle edge cases (stuck auctions, failed reconfigures)
+
+If the agent is wrong, on-chain primitives still protect the LP. If the agent is down, the pool operates safely but suboptimally.
+
+### Finding optimal parameters
+
+The surface is high-dimensional and nonlinear. Not analytically solvable. Approach:
+
+1. **Theory** (this document) defines structure and rules out bad regions
+2. **Simulation** against historical block data identifies promising parameter regions
+3. **Deploy conservatively** (higher fees, wider margins)
+4. **Monitor** actual performance (fee revenue, LVR, arb frequency, health)
+5. **Agent adjusts** parameters toward observed optimum
+6. **Re-evaluate** as market conditions change
+
+Parameters must be hot-swappable without redeployment (already the case via `setFeeParams` / `setAuctionParams`).
+
+### Contract design principles
+
+- Minimal state (fewer inconsistency risks)
+- Hot-swappable parameters
+- Clean separation: fee logic (getFee) vs rebalance logic (afterSwap)
+- Events on every state change (for off-chain monitoring)
+- Prefer 90% optimal + simple + auditable over 99% optimal + complex + fragile
+
+## 15. V2 Auction Issues (Reference)
+
+Problems with the current V2 hook auction, for reference when designing the replacement:
+
+1. **Double incentive:** priceY shift + decaying fee. Arber gets both — LP double-pays.
+2. **Absolute thresholds:** fixed uint112 values don't scale with NAV.
+3. **Clearing = trigger threshold:** auction runs until fully restored, not "good enough."
+4. **eq = currentReserves hack:** distorts curve shape during auction.
+5. **Fee decays to zero:** no floor on auction fee.
+6. **Silent reconfigure failure:** can leave pool in inconsistent state.
+
+## 16. Lessons from AMM Fee Challenge
+
+The AMM challenge (ammchallenge.com) was a fee strategy competition for a constant-product AMM. Participants designed dynamic fee strategies to maximize "edge" (fair-price-marked P&L) against a 30 bps normalizer AMM with optimal order routing between them. Key constraints: no external oracle, no beforeSwap hook, 32 storage slots, fee-on-input. Despite these limitations, the findings generalize.
+
+### Winning strategy structure
+
+The best strategies all converged on: **Bayesian fair price estimation → soft arb probability → confidence-scaled asymmetric fees.** Hard classification (arb vs retail thresholds) always lost to soft probability estimates. The winning formula:
+1. Maintain a posterior distribution over the fair price (log-normal)
+2. Update on each trade using truncated normal likelihood (the fee constrains where the fair price can be)
+3. Compute arb probability from likelihood ratio
+4. Set asymmetric fees: high on protect side (arb direction), low on attract side, scaled by confidence
+
+This maps to our design, but with a critical placement distinction: the Bayesian posterior is an **off-chain agent** concern, not on-chain. Maintaining a log-normal posterior with truncated normal likelihood updates in Solidity would be prohibitively expensive in gas and complexity. Instead, the agent maintains the posterior off-chain and pushes updated fee parameters (baseFee, attractRate, captureRate) to the hook periodically. The on-chain hook uses the simpler oracle-reactive formula, which the agent's Bayesian estimates help calibrate. We also have oracle access (Uniswap slot0) which the competition lacked — our fair price estimate should be strictly better.
+
+### The retail fee optimization insight
+
+Oracle analysis showed the gap between actual and perfect-information performance broke down as:
+- **97% from retail fee optimization** (undercharging on attract side when routing headroom existed)
+- **3% from arb IL reduction** (better arb identification)
+
+This was surprising. The dominant opportunity is not better arb protection but **charging more on retail trades when you have a routing advantage.** The competition's oracle strategy charged 200-600 bps on high-headroom trades where the normalizer was stale, vs ~35 bps actually charged.
+
+### Confirmed dead ends
+
+Extensive parameter sweeps (500+ experiments) confirmed these approaches hurt or didn't help:
+- **Realized vol scaling** of fees on a per-trade basis: -41 edge (catastrophic). Vol estimate is too noisy to be useful for per-trade fee adjustment. This does NOT mean vol-aware fees are bad — agent-timescale updates to baseFee based on recent realized vol (e.g. hourly/daily) are still correct. The failure is specifically about adjusting fees *within* the hook based on a running vol estimate: the estimate lags, overshoots, and gets gamed.
+- **Fee spike decay** (memory of recent fees): always negative. Each trade should be priced independently.
+- **Attract boost after arbs** (lower attract fee right after arb): -0.2 at best. Not worth the complexity.
+- **Hard classification** (binary arb/retail): always worse than soft pArb.
+- **Dynamic alpha** (adaptive learning rate): no improvement. Fixed rate optimal.
+
+### Implications for our hook design
+
+1. **On-chain:** the hook already has asymmetric fees (captureRate vs attractRate). The key addition is **routing-aware attract fees** — charging up to the headroom allowed by competitor staleness, not a fixed low rate.
+2. **Off-chain agent:** Bayesian fair price tracking is the optimal estimation approach. The agent should maintain a posterior and update fee parameters based on confidence and routing headroom.
+3. **The baseFee floor is essential** — both for manipulation safety and because the competition confirmed that per-trade fee memory hurts. Each trade should face at least baseFee regardless of history.
+4. **Don't over-optimize arb protection.** The fee formula for the arb side is already close to optimal (gasCoeff + captureRate). The bigger wins come from the attract side.
+
+**Generalization caveat:** the competition used a single 30 bps normalizer AMM. In production, the pool competes against multiple venues (Uni V3 0.05%, 0.3%, Curve, 1inch routing across dozens of sources). The 97/3 split may not hold exactly — with more competitors, routing headroom shrinks as there's usually *some* venue with a fresh price. But the qualitative finding holds: attract-side optimization is the larger lever, even if the magnitude is smaller than the single-competitor case.
+
+## 17. Competitive Landscape (March 2026)
+
+Uniswap pool data for the pairs we care about, as context for fee calibration and target selection.
+
+### WETH/USDC (primary target)
+
+| Pool | Fee | TVL | 1D Vol | 30D Vol | APR | Vol/TVL |
+|------|-----|-----|--------|---------|-----|---------|
+| v3 0.05% | 5 bps | $46.2M | $61.1M | $3.0B | 24.2% | 1.32 |
+| v3 0.3% | 30 bps | $73.2M | $47.6M | $1.9B | 71.2% | 0.65 |
+| v3 0.05% (#2) | 5 bps | $12.5M | $19.2M | $959M | 28.2% | 1.54 |
+| v2 0.3% | 30 bps | $4.1M | $310K | $12.3M | 8.4% | 0.08 |
+
+The 0.05% pool dominates volume. The 0.3% pool has more TVL but less volume — it survives on the trickle of flow routed when its stale price happens to be attractive (the routing headroom effect in action). The second 0.05% pool at $12.5M TVL still gets $19M/day — confirms smaller pools can compete if they're at the right fee tier.
+
+### WETH/USDT
+
+| Pool | Fee | TVL | 1D Vol | 30D Vol | APR | Vol/TVL |
+|------|-----|-----|--------|---------|-----|---------|
+| v3 0.01% | 1 bps | $6.0M | $30.3M | $1.9B | 18.5% | 5.07 |
+| v3 0.05% | 5 bps | $13.1M | $16.5M | $934.8M | 22.9% | 1.25 |
+| v3 0.3% | 30 bps | $56.6M | $10.6M | $678.6M | 20.6% | 0.19 |
+
+Striking: the 1 bps pool with only $6M TVL does 5x vol/TVL — the most capital-efficient pool on Uniswap. Lowest fee wins volume decisively. Our secondary oracle (WETH/USDT 0.01%) is this pool.
+
+### USDC/USDT (stablecoin, different dynamics)
+
+| Pool | Fee | TVL | 1D Vol | 30D Vol | APR | Vol/TVL |
+|------|-----|-----|--------|---------|-----|---------|
+| v4 0.08 bps | 0.08 bps | $12.5M | $44.3M | $5.4B | 1.03% | 3.54 |
+| v4 0.1 bps | 0.1 bps | $15.3M | $56.4M | $2.5B | 1.35% | 3.69 |
+| v3 0.01% | 1 bps | $22.0M | $3.7M | $528M | 0.62% | 0.17 |
+
+v4 has completely eaten v3 for stablecoins. Sub-1 bps fees doing 3.5x+ vol/TVL. The v3 1 bps pool is dying (0.17 vol/TVL). Stablecoin LPing is razor-thin margins at massive volume — a different game from WETH/USDC.
+
+### WBTC pairs (future expansion)
+
+| Pair | Best pool | TVL | 1D Vol | 30D Vol | APR | Vol/TVL |
+|------|-----------|-----|--------|---------|-----|---------|
+| WBTC/ETH | v3 0.05% | $54.4M | $40.8M | $2.1B | 13.7% | 0.75 |
+| WBTC/USDT | v3 0.05% | $16.7M | $12.9M | $750M | 14.1% | 0.77 |
+| WBTC/USDC | v4 0.05% | $6.7M | $6.7M | $250M | 18.1% | 0.99 |
+
+WBTC has lower vol/TVL than ETH pairs (less arb activity, fewer retail swaps). But APRs are solid and liquidity is meaningful. Lower vol = lower σ₁ = different fee calibration. Worth considering after WETH/USDC is proven.
+
+### Key takeaways for our design
+
+1. **0.05% (5 bps) is the dominant fee tier for volatile pairs.** This is our primary competitive reference. Charging 5 bps flat would make us indistinguishable from Uniswap — we need dynamic fees to differentiate.
+2. **The 0.3% pool paradox.** High APR despite low volume. This is pure routing headroom extraction — when the 0.3% pool's stale price is attractive, aggregators route there and it charges 6x more per trade. Our hook can do this dynamically instead of relying on a fixed high fee.
+3. **Vol/TVL > 1 is the benchmark.** Capital-efficient pools turn over their TVL daily. With 200x boost, our $16K deposit should target vol/TVL comparable to the best pools.
+4. **v4 is the future for stablecoins.** If we build a USDC/USDT pool, we're competing against sub-1 bps fees. The hook would need to be extremely gas-efficient. Different strategy than volatile pairs.
+5. **Multiple pools per pair coexist.** We don't need to be the biggest — aggregators split flow across venues. Even a $12.5M pool gets $19M/day in ETH/USDC. Our effective liquidity of $3.2M can capture meaningful flow if fees are competitive.
+6. **Low-fee pools are capital-efficient, high-fee pools are revenue-efficient.** ETH/USDT 0.01% does 5x vol/TVL but only 18.5% APR. ETH/USDC 0.3% does 0.65x vol/TVL but 71% APR. Our dynamic fee can aim for both: routing-optimal fee on attract side (as high as headroom allows while still winning volume) + high fee on arb side (captures revenue).
+
+### Target pools for experiments
+
+- **WETH/USDC (active):** primary test pool. Deepest market, most arb data, well-understood oracle (Uni 0.05% as reference).
+- **USDC/USDT (planned):** already have a pool deployed. Very different dynamics: near-zero vol, tight peg, sub-1 bps competition. Tests whether the hook design generalizes to stablecoins.
+- **WBTC/ETH (future):** lower vol pair, different σ₁ calibration. Tests parameter sensitivity. Large Uniswap pools available as oracle.
+
+## 18. Empirical Validation Experiments
+
+The analysis above rests on theoretical predictions that can be tested on the live pool with minimal capital at risk.
+
+### Experiment 1: Mismatch distribution (zero cost)
+
+Read-only data collection. Every block, record Uniswap V3 spot price and our pool's marginal price. Over a few days this gives:
+- Empirical σ₁ (per-block vol) vs the theoretical 4.3 bps
+- Distribution shape: is it Gaussian? Fat tails? How much excess kurtosis?
+- Autocorrelation: are big moves clustered?
+- n-block averaging: does accumulated mismatch variance scale as 1/n per CLT?
+
+### Experiment 2: Gas-volatility correlation (zero cost)
+
+Same data collection: for each block, record base fee alongside |price change|. Compute:
+- Pearson correlation between gas and |δ|
+- Joint distribution during different vol regimes
+- Whether the "natural hedge" (high gas when high vol) holds empirically
+
+### Experiment 3: Fixed-fee arb frequency (small cost)
+
+Set a known fixed fee (e.g. 3, 5, 10 bps) and log every swap for 24-48 hours at each level. Measure:
+- Time between arbs (blocks) — compare to prediction: n ≈ (f/σ₁)²
+- Mismatch at moment of arb — should be ~f + gas threshold
+- Direction sequence: alternating or streaky?
+- Arb size as fraction of equilibrium
+
+At 5 bps with σ₁ ≈ 4.3 bps, theory predicts arbs every ~1-2 blocks. At 10 bps, every ~5 blocks.
+
+### Experiment 4: Stepped fee ladder (small cost)
+
+Run 3 bps for 2 days, then 5, 10, 20 bps. For each tier measure:
+- Arb frequency and size
+- Retail volume (non-arb swaps)
+- Total fee revenue
+- LP P&L vs HODL
+
+Maps the fee-revenue curve empirically. Theory predicts a sweet spot — this finds it.
+
+### Experiment 5: Auction decay test (moderate cost)
+
+Trigger a manual rebalance, set a decaying fee starting at ~20 bps, decaying at ~σ₁ per block. Measure:
+- Blocks until first arb
+- Single arb or multiple?
+- Arber surplus vs theoretical prediction ((d + σ₁)² × L / 2)
+
+Most directly validates the auction design, but most complex to set up.
+
+### Experiment 6: Oracle accuracy (zero cost)
+
+For each block, record Uniswap V3 slot0 price, TWAP (5m, 30m windows), and Chainlink. After the fact, compare each to the "realized" price (the price that actually got arbed to). Measures:
+- Which oracle source is tightest
+- How much fee headroom each gives
+- TWAP lag characteristics across different vol regimes
+
+### Current pool advantage: pure toxic flow
+
+The USDC/WETH pool is not currently indexed by aggregators, so all swap volume is pure arb flow. This is unusually clean data — no need to classify swaps as arb vs retail, no noise from rebalancers or MEV bots doing non-directional trades. Every swap is a direct measurement of arb behavior: trigger threshold, timing, size, and surplus. This makes experiments 1-5 especially high-signal. Once the pool is registered with aggregators, this clean separation is lost.
+
+### Recommended order
+
+Start with experiments 1+2 (zero cost, foundational data), then experiment 3 (small cost, highest signal for fee calibration). Experiments 4-6 build on earlier findings. Much of the infrastructure already exists in the agent's swap logging.
+
+## 19. Design Principles Summary
+
+1. **Prevention over cure.** Calibrate fees to cover expected rebalance costs. Most imbalances should be handled by routine arb flow.
+2. **The fee is the single lever.** Control value leakage through fees, not priceY shifts or curve distortions.
+3. **Optimal decay rate = σ₁.** ≈ 4.3 bps/block. Faster wastes through granularity, slower gains nothing.
+4. **Batch blocks to reduce variance.** Arbs every ~5-10 blocks, not every block. Accumulated mismatch is more predictable, fee is better calibrated.
+5. **Starting fee = known mispricing.** After recenter, start just above the mispricing so arbers take a minimal cut.
+6. **Oracle can only raise fees.** f = max(floor, oracle_mismatch). Manipulation-safe by design.
+7. **Rebalance trigger = health-based.** Handoff from continuous fees to discrete rebalance when health margin is consumed.
+8. **Directional exposure is a risk management problem.** Rebalance to avoid tail losses (liquidation, capital erosion), not to optimize expected returns.
+9. **Simple on-chain, sophisticated off-chain.** Contract guarantees safety via robust primitives. Agent optimizes performance via parameter tuning.
+10. **Attract-side fees are the bigger opportunity.** Most LP value comes from charging up to routing headroom on retail, not from arb protection refinements. Charge as much as the routing allows, not a fixed low rate.
+11. **Price each trade independently.** Fee memory (spike decay, attract boost after arbs) always hurts. baseFee floor + oracle-reactive component, no history dependence.
+12. **Design for iteration.** Hot-swappable parameters, minimal state, comprehensive events. Theory narrows the search space, empirical search finds the optimum.
