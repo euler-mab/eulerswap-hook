@@ -5,7 +5,7 @@ import { getClient } from "@/lib/pools/client";
 import { fetchVaultFlows, fetchBlockTimestamps } from "@/lib/pools/reads";
 import { fetchPriceChart, type PriceChartPoint } from "@/lib/pools/prices";
 import {
-  buildCapitalSnapshot, computePnl, buildPnlTimeSeries, computeTwr,
+  buildCapitalSnapshot, computePnl, computeCostBasis, buildPnlTimeSeries, computeTwr,
   type PnlAttribution, type CapitalSnapshot, type PnlTimePoint, type TwrResult,
 } from "@/lib/pools/pnl";
 import type { PoolConfig } from "@/lib/pools/config";
@@ -15,6 +15,8 @@ import type { Address } from "viem";
 /** Cached immutable data (fetched once per pool, never changes) */
 interface HistoricalCache {
   capital: CapitalSnapshot;
+  costBasisUsd: number;
+  deployTimestamp: number;
   flows: VaultFlow[];
   priceChart0: PriceChartPoint[];
   priceChart1: PriceChartPoint[];
@@ -102,13 +104,18 @@ export function usePoolPnl(
             }
           }
 
+          const costBasisUsd = computeCostBasis(
+            flows, priceChart0, priceChart1,
+            state!.asset0Decimals, state!.asset1Decimals,
+          );
+
           const twrRes = computeTwr(
             flows, swaps, priceChart0, priceChart1,
             state!.asset0Decimals, state!.asset1Decimals,
           );
 
           cacheRef.current = {
-            capital, flows, priceChart0, priceChart1,
+            capital, costBasisUsd, deployTimestamp, flows, priceChart0, priceChart1,
             pnlTimeSeries: timeSeries, twrResult: twrRes,
           };
 
@@ -121,7 +128,10 @@ export function usePoolPnl(
         // 2. Compute current P&L (uses cached capital or zero placeholder)
         if (cancelled) return;
         const capital = cacheRef.current?.capital ?? { netDeposit0: 0, netDeposit1: 0, flowCount: 0 };
-        const result = await computePnl(state!, swaps, capital);
+        const costBasis = cacheRef.current?.costBasisUsd ?? 0;
+        const deployTs = cacheRef.current?.deployTimestamp ?? 0;
+        const poolAgeDays = deployTs > 0 ? (Date.now() / 1000 - deployTs) / 86400 : 0;
+        const result = await computePnl(state!, swaps, capital, costBasis, poolAgeDays);
         if (!cancelled) {
           setPnl(result);
           setError(null);

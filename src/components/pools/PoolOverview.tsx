@@ -4,7 +4,7 @@ import { useState } from "react";
 import { formatUnits } from "viem";
 import type { PoolConfig } from "@/lib/pools/config";
 import type { PoolState } from "@/lib/pools/types";
-import type { PnlAttribution, TwrResult } from "@/lib/pools/pnl";
+import type { PnlAttribution } from "@/lib/pools/pnl";
 import { fmtAmount, fmtFeeBps, fmtPrice, fmtUsd, shortAddr } from "@/lib/pools/format";
 
 function fmtVol(n: number): string {
@@ -49,10 +49,9 @@ interface OverviewProps {
   pool: PoolConfig;
   pnl?: PnlAttribution | null;
   pnlError?: string | null;
-  twrResult?: TwrResult | null;
 }
 
-export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: OverviewProps) {
+export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewProps) {
   const [inverted, setInverted] = useState(true);
   const r0 = Number(formatUnits(state.reserve0, state.asset0Decimals));
   const r1 = Number(formatUnits(state.reserve1, state.asset1Decimals));
@@ -84,28 +83,28 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
 
   return (
     <div className="grid grid-cols-[auto_1fr] gap-x-10 gap-y-2.5 text-sm">
-      {/* NAV + P&L */}
-      <Row label="NAV">
+      {/* Deposited NAV (cost basis at time of deposit) */}
+      {pnl && pnl.depositedNavUsd > 0 && (
+        <Row label="Deposited NAV">
+          <span className="text-gray-900 font-medium">{fmtUsd(pnl.depositedNavUsd)}</span>
+          <span className="text-gray-400 ml-1 text-xs">({pnl.flowCount} flows)</span>
+        </Row>
+      )}
+
+      {/* Current NAV */}
+      <Row label="Current NAV">
         {pnl ? (
           <>
             <span className="text-gray-900 font-medium">{fmtUsd(pnl.navUsd)}</span>
-            <span className={`ml-1.5 text-xs font-medium ${pnl.totalPnl >= 0 ? "text-emerald-700" : "text-red-700"}`}>
-              {pnl.totalPnl >= 0 ? "+" : ""}{fmtUsd(pnl.totalPnl)}
-              {pnl.netInvestedUsd > 0 && ` (${pnl.returnPct >= 0 ? "+" : ""}${(pnl.returnPct * 100).toFixed(2)}%)`}
-            </span>
-            <span className="text-gray-400 ml-1 text-xs">
-              (invested {fmtUsd(pnl.netInvestedUsd)}, {pnl.flowCount} flows)
-            </span>
-            {twrResult && twrResult.durationDays > 1 && (
-              <span className="text-gray-400 ml-1 text-xs">
-                ({twrResult.annualizedReturn >= 0 ? "+" : ""}{(twrResult.annualizedReturn * 100).toFixed(1)}% ann., {Math.round(twrResult.durationDays)}d)
-              </span>
-            )}
-            {pnl.feesUsd > 0 && pnl.navUsd > 0 && twrResult && twrResult.durationDays > 1 && (
-              <span className="text-emerald-600 ml-1 text-xs">
-                ({((pnl.feesUsd / pnl.navUsd) * (365 / twrResult.durationDays) * 100).toFixed(1)}% fee APY)
-              </span>
-            )}
+            {pnl.depositedNavUsd > 0 && (() => {
+              const diff = pnl.navUsd - pnl.depositedNavUsd;
+              const pct = (diff / pnl.depositedNavUsd) * 100;
+              return (
+                <span className={`ml-1.5 text-xs font-medium ${diff >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+                  {diff >= 0 ? "+" : ""}{fmtUsd(diff)} ({pct >= 0 ? "+" : ""}{pct.toFixed(2)}%)
+                </span>
+              );
+            })()}
           </>
         ) : (
           (() => {
@@ -125,6 +124,30 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
         )}
         {pnlError && <span className="text-red-500 ml-1 text-xs" title={pnlError}>price unavailable</span>}
       </Row>
+
+      {/* HODL NAV (deposited amounts at current prices) */}
+      {pnl && pnl.depositedNavUsd > 0 && pnl.netInvestedUsd > 0 && (
+        <Row label="HODL NAV">
+          <span className="text-gray-900 font-medium">{fmtUsd(pnl.netInvestedUsd)}</span>
+          {(() => {
+            const diff = pnl.netInvestedUsd - pnl.depositedNavUsd;
+            const pct = (diff / pnl.depositedNavUsd) * 100;
+            return (
+              <span className={`ml-1.5 text-xs font-medium ${diff >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+                {diff >= 0 ? "+" : ""}{fmtUsd(diff)} ({pct >= 0 ? "+" : ""}{pct.toFixed(2)}%)
+              </span>
+            );
+          })()}
+          {(() => {
+            const lpAlpha = pnl.navUsd - pnl.netInvestedUsd;
+            return (
+              <span className={`ml-1.5 text-xs ${lpAlpha >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                (LP {lpAlpha >= 0 ? "+" : ""}{fmtUsd(lpAlpha)})
+              </span>
+            );
+          })()}
+        </Row>
+      )}
 
       {/* P&L breakdown */}
       {pnl && (pnl.feesUsd > 0 || pnl.rebalUsd !== 0 || pnl.interestUsd !== 0) && (
@@ -149,15 +172,36 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
         </Row>
       )}
 
+      {/* APY metrics */}
+      {pnl && pnl.poolAgeDays > 1 && pnl.navUsd > 0 && (
+        <Row label="APY">
+          <span className="text-xs space-x-3">
+            {pnl.feesUsd > 0 && (
+              <span className="text-emerald-700">
+                {((pnl.feesUsd / pnl.navUsd) * (365 / pnl.poolAgeDays) * 100).toFixed(1)}% fee
+              </span>
+            )}
+            {pnl.depositedNavUsd > 0 && (() => {
+              const netReturn = pnl.navUsd - pnl.depositedNavUsd;
+              const netApy = (netReturn / pnl.depositedNavUsd) * (365 / pnl.poolAgeDays) * 100;
+              return (
+                <span className={netApy >= 0 ? "text-emerald-700" : "text-red-700"}>
+                  {netApy >= 0 ? "+" : ""}{netApy.toFixed(1)}% net
+                </span>
+              );
+            })()}
+            <span className="text-gray-400">({Math.round(pnl.poolAgeDays)}d)</span>
+          </span>
+        </Row>
+      )}
+
       {/* Volume stats */}
       {pnl && pnl.swapCount > 0 && (
         <Row label="Volume">
-          <span className="text-xs">
-            <span className="text-gray-700">{fmtUsd(pnl.volumeUsd)}</span>
-            <span className="text-gray-400 ml-1.5">
-              ({pnl.swapCount} swaps, {fmtVol(pnl.volume0)} {state.asset0Symbol} + {fmtVol(pnl.volume1)} {state.asset1Symbol}
-              {pnl.navUsd > 0 && `, ${(pnl.volumeUsd / pnl.navUsd).toFixed(1)}x NAV`})
-            </span>
+          {fmtUsd(pnl.volumeUsd)}
+          <span className="text-gray-400 ml-1.5 text-xs">
+            ({pnl.swapCount} swaps, {fmtVol(pnl.volume0)} {state.asset0Symbol} + {fmtVol(pnl.volume1)} {state.asset1Symbol}
+            {pnl.navUsd > 0 && `, ${(pnl.volumeUsd / pnl.navUsd).toFixed(1)}x NAV`})
           </span>
         </Row>
       )}
@@ -167,6 +211,11 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
         {fmtAmount(state.reserve0, state.asset0Decimals)} {state.asset0Symbol} +{" "}
         {fmtAmount(state.reserve1, state.asset1Decimals)} {state.asset1Symbol}
         {tvl !== undefined && <span className="text-gray-500 ml-1">(~{fmtUsd(tvl)})</span>}
+        {tvl !== undefined && pnl && pnl.navUsd > 0 && (
+          <span className="text-gray-400 ml-1 text-xs">
+            ({(tvl / pnl.navUsd).toFixed(0)}x leverage)
+          </span>
+        )}
       </Row>
 
       {/* Trade limits */}
@@ -280,15 +329,6 @@ export default function PoolOverview({ state, pool, pnl, pnlError, twrResult }: 
           </Row>
         );
       })()}
-
-      {/* Hook status */}
-      <Row label="Hook">
-        {state.hookBaseFee !== undefined ? (
-          <Badge ok={true} label="active" />
-        ) : (
-          <span className="text-gray-400">none</span>
-        )}
-      </Row>
 
       {/* Live fees from hook.getFee */}
       {state.hookLiveFee0In !== undefined && (

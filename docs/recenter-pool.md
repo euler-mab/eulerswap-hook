@@ -21,6 +21,19 @@ Specifically:
 The pool's actual token balances, vaults, hook, fees, and concentration
 are all untouched. Only the curve shape parameters change.
 
+## Limitations
+
+RecenterPool only updates storage parameters — it does **not** move tokens
+or fix directional exposure. If the pool has accumulated a large ETH
+position and USDC debt (or vice versa), recentering just moves the
+goalposts without making the position delta-neutral. Any price-sensitive
+rebalancing done purely via `reconfigure()` leaks MEV because it changes
+the pool's price without trading.
+
+To actually fix exposure, use `agent/src/rebalance.ts` which sells the
+overweight asset via CowSwap and repays debt before recentering. See
+[rebalance.md](rebalance.md).
+
 ## When to use
 
 - **Periodic maintenance** — price drifts over time, making the pool's
@@ -30,6 +43,9 @@ are all untouched. Only the curve shape parameters change.
   state (failed restore, stale eq from a bug), this cleans it up.
 - **Before deploying a new hook** — ensure the pool starts from a clean
   centered state.
+- **After running `rebalance.ts`** — the rebalance script already calls
+  reconfigure at the end, so this is only needed if you want to recenter
+  again later without rebalancing.
 
 ## Usage
 

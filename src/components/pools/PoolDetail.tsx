@@ -25,7 +25,7 @@ export default function PoolDetail({ pool }: { pool: PoolConfig }) {
     return swapsToPricePoints(swaps, state.asset0Decimals, state.asset1Decimals);
   }, [swaps, state]);
 
-  const { pnl, pnlTimeSeries, twrResult, error: pnlError } = usePoolPnl(pool, state, swaps, historyLoading);
+  const { pnl, pnlTimeSeries, error: pnlError } = usePoolPnl(pool, state, swaps, historyLoading);
 
   if (stateLoading && !state) {
     return <div className="text-gray-400 animate-pulse text-sm">Loading pool state...</div>;
@@ -57,7 +57,7 @@ export default function PoolDetail({ pool }: { pool: PoolConfig }) {
 
       {/* Overview */}
       <SectionCard title="Overview" defaultOpen>
-        <PoolOverview state={state} pool={pool} pnl={pnl} pnlError={pnlError} twrResult={twrResult} />
+        <PoolOverview state={state} pool={pool} pnl={pnl} pnlError={pnlError} />
       </SectionCard>
 
       {/* Charts */}

@@ -7,8 +7,10 @@ import { fetchCurrentPrices, interpolatePrice, type PriceChartPoint } from "./pr
 export interface PnlAttribution {
   /** Current NAV in USD */
   navUsd: number;
-  /** Total external capital deployed (deposits - withdrawals) in USD at current prices */
+  /** Total external capital deployed (deposits - withdrawals) in USD at current prices (= HODL NAV) */
   netInvestedUsd: number;
+  /** Value of deposited assets at the time of deposit (cost basis) */
+  depositedNavUsd: number;
   /** Total P&L = navUsd - netInvestedUsd */
   totalPnl: number;
   /** Accumulated swap fees in USD (valued at current prices) */
@@ -32,6 +34,8 @@ export interface PnlAttribution {
   volumeUsd: number;
   /** Current ETH price in USD (always fetched, for wallet display) */
   ethPrice: number;
+  /** Pool age in days (from deploy timestamp to now) */
+  poolAgeDays: number;
 }
 
 /** Cached capital flow data (fetched once, immutable) */
@@ -68,6 +72,31 @@ export function buildCapitalSnapshot(
 }
 
 /**
+ * Compute cost basis: value of each flow at its historical USD price.
+ * Returns the net deposited value in USD at the time of each deposit/withdrawal.
+ */
+export function computeCostBasis(
+  flows: VaultFlow[],
+  chart0: PriceChartPoint[],
+  chart1: PriceChartPoint[],
+  asset0Decimals: number,
+  asset1Decimals: number,
+): number {
+  let total = 0;
+  for (const f of flows) {
+    if (!f.timestamp) continue;
+    const decimals = f.vaultIndex === 0 ? asset0Decimals : asset1Decimals;
+    const amount = Number(formatUnits(f.assets, decimals));
+    const price = f.vaultIndex === 0
+      ? interpolatePrice(chart0, f.timestamp)
+      : interpolatePrice(chart1, f.timestamp);
+    const signed = f.direction === "deposit" ? amount : -amount;
+    total += signed * price;
+  }
+  return total;
+}
+
+/**
  * Compute P&L attribution using on-chain capital flows and current prices.
  *
  * P&L = NAV - netInvested
@@ -84,6 +113,8 @@ export async function computePnl(
   state: PoolState,
   swaps: SwapEvent[],
   capital: CapitalSnapshot,
+  costBasisUsd = 0,
+  poolAgeDays = 0,
 ): Promise<PnlAttribution> {
   const WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" as Address;
   const tokenSet = new Set([state.asset0.toLowerCase(), state.asset1.toLowerCase(), WETH.toLowerCase()]);
@@ -153,6 +184,7 @@ export async function computePnl(
   return {
     navUsd,
     netInvestedUsd,
+    depositedNavUsd: costBasisUsd,
     totalPnl,
     feesUsd,
     rebalUsd,
@@ -165,6 +197,7 @@ export async function computePnl(
     volume1: totalVol1,
     volumeUsd,
     ethPrice,
+    poolAgeDays,
   };
 }
 
