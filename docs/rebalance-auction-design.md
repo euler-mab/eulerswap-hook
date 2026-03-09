@@ -405,7 +405,7 @@ Two mechanisms handle different scales:
 - **Continuous fee (getFee):** routine block-to-block arbs, small mismatches (< ~50 bps). Steady-state regime.
 - **Discrete rebalance (reconfigure):** sustained directional moves pushing reserves toward boundary. State change: new eq price, new range.
 
-The handoff trigger is exposure-based: when directional exposure exceeds a threshold, rebalance. Since health and exposure track together (see above), this is equivalent to a health-based trigger without requiring expensive vault state reads on-chain. Not absolute reserves (V2's mistake) or NAV percentage (V3, better but still imperfect) — exposure as fraction of the range consumed.
+The handoff trigger is exposure-based: when directional exposure exceeds a threshold, rebalance. Exposure = `(eq - reserve) / (eq - min)` for the deficit side (formal definition in section 21). Since health and exposure track together (see above), this is equivalent to a health-based trigger without requiring expensive vault state reads on-chain. Not absolute reserves (V2's mistake) or NAV percentage (V3, better but still imperfect) — exposure as fraction of the range consumed.
 
 **Rough heuristic:** trigger when reserves have moved past ~30-50% of the range (α = 0.3-0.5). At α = 0.5 with a 5% range, the pool has ~250 bps of mispricing and health margin is roughly half consumed. This leaves buffer for the rebalance to complete. The trigger should be tighter (lower α) for higher-leverage pools and looser for lower leverage. The agent tunes based on observed rebalance costs and frequency.
 
@@ -714,6 +714,43 @@ Pool sets `swapHookedOperations = GET_FEE | AFTER_SWAP` (0x06).
 
 **Equity clearing mode.** When directional exposure — ETH equity or ETH debt — crosses a threshold, the hook reconfigures the curve to create a large arb in the clearing direction and runs a fee-decay auction. Arbers trade to clear the exposure at minimum cost. Once the marginal price converges back to the oracle price (within `clearThreshold`), the hook recenters at market and returns to normal mode.
 
+### Exposure metric (trigger)
+
+The hook measures directional exposure as the fraction of range consumed on each side:
+
+```
+exposure0 = (eq0 - reserve0) / (eq0 - min0)    if reserve0 < eq0
+exposure1 = (eq1 - reserve1) / (eq1 - min1)    if reserve1 < eq1
+exposure = max(exposure0, exposure1)
+```
+
+At equilibrium (reserve = eq): exposure = 0. At boundary (reserve = min): exposure = 1.0 (100% of range consumed, pool is one-sided). The deficit side is whichever has higher exposure.
+
+This metric is used **only in normal mode** to trigger auctions. It is NOT used during auction mode — clearing uses price convergence instead (see Step 3). The metric directly tracks health: at the boundary, debt = eq - min, which is the maximum borrowing. So exposure = fraction of max debt consumed. Triggering at 15% means the pool has used 15% of its max borrowing capacity on the deficit side.
+
+**Why range-based, not reserve-based.** Using `reserve / eq` (as a percentage of virtual reserves) is meaningless for boosted pools — virtual reserves are orders of magnitude larger than real equity. A 1% reserve change could represent 100% of the equity. The range `(eq - min)` captures the actual tradeable depth where health degrades.
+
+### afterSwap logic (both modes)
+
+```
+function afterSwap(... reserve0, reserve1):
+    if !auctionActive:
+        // Normal mode: check if exposure warrants equity clearing
+        d = pool.getDynamicParams()
+        (exposure, asset0Deficit) = computeExposure(reserve0, reserve1, d)
+        if exposure > triggerThreshold:
+            startEquityClearing(reserve0, reserve1, asset0Deficit, d)
+
+    else:
+        // Auction mode: check if arb has been consumed (price convergence)
+        if block.number >= auctionStartBlock + minAuctionBlocks:
+            uniPrice = getUniswapPrice()
+            marginalPrice = getMarginalPrice(reserve0, reserve1)
+            priceDiff = |marginalPrice - uniPrice| / uniPrice
+            if priceDiff < clearThreshold:
+                endAuctionAndRecenter(reserve0, reserve1)
+```
+
 ### Normal mode getFee
 
 ```
@@ -776,12 +813,10 @@ This matches V3's direction (V3 line 371-379). Verified against the curve math: 
 
 #### Step 1: Shift curve to create clearing arb
 
-afterSwap detects exposure > threshold:
+When `afterSwap` detects exposure > triggerThreshold (see "Exposure metric" above), it starts the auction:
 
 ```
-(exposure, isAsset0Deficit) = computeExposure(reserve0, reserve1)
-
-if !auctionActive && exposure > triggerThreshold:
+// Already inside: if !auctionActive && exposure > triggerThreshold
     // Snapshot pre-shift price for recenter safety clamping
     preShiftPriceY = currentPriceY
 
