@@ -2,6 +2,21 @@
 
 Working document capturing the analysis and design reasoning for the next-generation rebalancing mechanism. Intended as a reference for developers and agents implementing the design.
 
+### Document structure
+
+| Sections | Topic |
+|----------|-------|
+| 1 | EulerSwap primitives available for building solutions |
+| 2-6 | Theory: price movement, arb profitability, fee mechanics, LP economics |
+| 7-9 | Auction mechanics: rebalance = shift + auction + recenter, decay rates, batching |
+| 10-13 | Practical constraints: second-order effects, oracle strategy, retail routing, health/leverage |
+| 14-15 | Implementation philosophy and V2 bug reference |
+| 16 | Lessons from the AMM fee challenge competition |
+| 17 | Competitive landscape: Uniswap pool data (March 2026) |
+| 18 | Empirical validation experiments |
+| 19 | Design principles summary |
+| 20-22 | **Hook designs:** V1-V3 recap, V4 design, open questions |
+
 ## 1. EulerSwap Building Blocks
 
 Before the design analysis, a summary of the tools EulerSwap gives us. These are the primitives any solution must be built from.
@@ -149,31 +164,33 @@ The net LP cost per arb event is always non-negative: each individual arb extrac
 
 **Key implication:** the LP's goal is not to prevent arbs but to keep δ close to f when arbs happen. This is what batching (section 9) and fee calibration achieve. However, as section 16 will show, optimizing arb-side fees is only ~3% of the total opportunity — the dominant value comes from the attract side (retail fee optimization).
 
-## 7. Rebalance = Recenter + Auction
+## 7. Rebalance = Shift + Auction + Recenter
 
-A rebalance does two things:
-1. **Recenter:** reset the equilibrium price and range to current market
-2. **Auction:** controlled delivery of the recenter, preventing value leakage
+A rebalance restores delta-neutrality and recenters the pool. Three steps:
 
-Without an auction, the recenter creates an instant mispricing that gets arbed in one block — full value leaked as MEV. The auction spreads this over time via a decaying fee.
+1. **Shift** the curve to create an arb opportunity in the clearing direction
+2. **Auction** via fee decay so arbers clear the exposure at minimum cost
+3. **Recenter** the curve at market price once the marginal price converges to oracle
 
-### Mispricing magnitude after recenter
+### Why shift first?
 
-The mispricing depends on how far reserves have moved from equilibrium. For a pool with range r and reserves at fraction α of the range (0 = at equilibrium, 1 = at boundary):
+With concentrated pools (high boost), reserves can drift significantly with little marginal price change. The pool could have 50% NAV exposure with only 10 bps of natural mispricing — not enough headroom for a fee auction to work. The shift creates a controlled, large mispricing that the auction can extract at high fees.
 
-- At α = 0.5 (mid-range): mispricing ≈ r/2 (e.g. 250 bps for 5% range)
-- At α = 1.0 (boundary): mispricing ≈ r (e.g. 500 bps for 5% range)
+The shift alone would be catastrophically expensive — arbers would extract it in one block. The fee starts at the mispricing level and recaptures the value. Net cost per arb = arber's minimum edge only (section 8).
 
-In practice, rebalances should trigger well before the boundary (see section 13). A health-triggered rebalance at α ≈ 0.3-0.5 creates mispricings of 150-250 bps, determining the auction's starting fee s.
+### Equity rebalancing vs recentering
+
+These are distinct operations:
+
+- **Equity rebalancing** = actually trading to clear accumulated directional exposure (ETH equity or ETH debt). The pool shifts the curve + runs a fee-decay auction. Arbers bring liquidity to the pool — the LP pays no slippage.
+- **Recentering** = reconfiguring the curve to reflect current market price. After equity clearing, the pool is near-neutral, so the recenter displacement is small. A decaying surcharge protects against any residual arb from recentering error.
 
 ### In-pool auction vs external swap
 
-Two complementary strategies for clearing exposure:
+- **In-pool auction (shift + fee decay):** arbers bring liquidity TO the pool. No slippage for the LP. Autonomous, atomic, gas-efficient. The fee decay discovers the market-clearing price for rebalancing.
+- **External swap (CowSwap / orderflow router):** the LP goes out to external venues. Non-atomic, timing risk. **Critically, the LP pays slippage** — empirically this dominates the cost, far exceeding gas and swap fees. For leveraged pools with large equilibrium reserves, the rebalance amounts are substantial and external venue depth is often insufficient.
 
-- **In-pool auction (fee decay):** best for small-to-moderate imbalances. The pool sells the excess gradually to arbers at decreasing fees. No external dependencies, atomic, gas-efficient per unit traded.
-- **External swap (CowSwap / orderflow router):** better for large imbalances where the pool's own liquidity is insufficient or where batch auctions give better execution. Non-atomic (withdraw → swap → redeposit), introduces trust assumptions and timing risk, but accesses deep external liquidity.
-
-The handoff: use in-pool auctions for routine rebalances (most of the time). Reserve external swaps for large sustained moves where the pool is near boundary and needs to clear significant exposure quickly.
+The in-pool auction is strongly preferred. External swaps are reserved for emergencies only.
 
 ## 8. Discrete Auction Mechanics
 
@@ -359,9 +376,13 @@ The pool doesn't need to be competitive on both sides — only on the attract si
 
 The fee optimization operates within hard constraints from the pool's leverage and structure.
 
-### Health constraint
+### Health and exposure are the same problem
 
-The pool is leveraged. Health = collateral × LTV / debt. If health < 1, the position is liquidated. This creates an absolute upper bound on mismatch accumulation. Higher boost = more fee revenue but thinner health margin. Fee parameters must be calibrated jointly with leverage.
+The pool is leveraged. Health = collateral × LTV / debt. If health < 1, the position is liquidated. Health degrades as reserves move toward the boundary — which is exactly when directional exposure is highest. Solving delta-neutrality (keeping exposure near zero) keeps reserves near equilibrium, which keeps health near its initial value. They are close to being the same problem.
+
+The only divergence is from external factors: vault interest rate spikes or oracle price changes affecting collateral valuation independently of pool reserves. But for the pool's own dynamics, maintaining neutrality maintains health.
+
+This simplifies monitoring: the agent doesn't need separate health and exposure tracking. It monitors exposure and rebalances. Health follows.
 
 ### Directional exposure is asymmetrically dangerous
 
@@ -384,9 +405,9 @@ Two mechanisms handle different scales:
 - **Continuous fee (getFee):** routine block-to-block arbs, small mismatches (< ~50 bps). Steady-state regime.
 - **Discrete rebalance (reconfigure):** sustained directional moves pushing reserves toward boundary. State change: new eq price, new range.
 
-The handoff trigger should be health-based: if health has deteriorated by more than X% of the safety margin, recenter. Not absolute reserves (V2's mistake) or NAV percentage (V3, better but still imperfect).
+The handoff trigger is exposure-based: when directional exposure exceeds a threshold, rebalance. Since health and exposure track together (see above), this is equivalent to a health-based trigger without requiring expensive vault state reads on-chain. Not absolute reserves (V2's mistake) or NAV percentage (V3, better but still imperfect) — exposure as fraction of the range consumed.
 
-**Rough heuristic for X:** the safety margin is (health_factor - 1.0). If health starts at 1.05 (5% margin), triggering at X = 50% means rebalancing when health drops to 1.025. This leaves a 2.5% buffer for the rebalance auction to complete before liquidation risk. The trigger should be tighter (lower X) for higher-leverage pools and looser for lower leverage. A conservative starting point: trigger when health drops below `1 + 0.5 × (initial_health - 1)`, i.e., 50% of the margin consumed. This is a parameter the agent can tune based on observed rebalance costs and frequency.
+**Rough heuristic:** trigger when reserves have moved past ~30-50% of the range (α = 0.3-0.5). At α = 0.5 with a 5% range, the pool has ~250 bps of mispricing and health margin is roughly half consumed. This leaves buffer for the rebalance to complete. The trigger should be tighter (lower α) for higher-leverage pools and looser for lower leverage. The agent tunes based on observed rebalance costs and frequency.
 
 ### Boundary behavior
 
@@ -635,14 +656,14 @@ Start with experiments 1+2 (zero cost, foundational data), then experiment 3 (sm
 ## 19. Design Principles Summary
 
 1. **Prevention over cure.** Calibrate fees to cover expected rebalance costs. Most imbalances should be handled by routine arb flow.
-2. **The fee is the single lever.** Control value leakage through fees, not priceY shifts or curve distortions.
+2. **The fee controls the cost.** The eq price shift creates the clearing arb opportunity; the fee — starting at the mispricing level — recaptures the value. The shift is the mechanism, the fee is the cost control.
 3. **Optimal decay rate = σ₁.** ≈ 4.3 bps/block. Faster wastes through granularity, slower gains nothing.
 4. **Batch blocks to reduce variance.** Arbs every ~5-10 blocks, not every block. Accumulated mismatch is more predictable, fee is better calibrated.
 5. **Starting fee = known mispricing.** After recenter, start just above the mispricing so arbers take a minimal cut.
 6. **Oracle can only raise fees.** f = max(floor, oracle_mismatch). Manipulation-safe by design.
-7. **Rebalance trigger = health-based.** Handoff from continuous fees to discrete rebalance when health margin is consumed.
+7. **Rebalance trigger = exposure-based.** Handoff from continuous fees to discrete rebalance when directional exposure grows. Health and exposure track together — solving neutrality solves health.
 8. **Directional exposure is a risk management problem.** Rebalance to avoid tail losses (liquidation, capital erosion), not to optimize expected returns.
-9. **Simple on-chain, sophisticated off-chain.** Contract guarantees safety via robust primitives. Agent optimizes performance via parameter tuning.
+9. **Autonomous on-chain, tuning off-chain.** The hook handles the full rebalance cycle (shift + auction + recenter) autonomously. The agent only tunes parameters on a slow timescale.
 10. **Attract-side fees are the bigger opportunity.** Most LP value comes from charging up to routing headroom on retail, not from arb protection refinements. Charge as much as the routing allows, not a fixed low rate.
 11. **Price each trade independently.** Fee memory (spike decay, attract boost after arbs) always hurts. baseFee floor + oracle-reactive component, no history dependence.
 12. **Design for iteration.** Hot-swappable parameters, minimal state, comprehensive events. Theory narrows the search space, empirical search finds the optimum.
@@ -681,334 +702,334 @@ Fixed V2's threshold problem: triggers based on exposure as % of NAV instead of 
 
 The fee logic (V1 getFee) is good. The auction logic (V2/V3 afterSwap) has fundamental design issues. The new designs preserve the fee formula and rethink the auction from scratch.
 
-## 21. Hook Design Candidates
+## 21. V4 Hook Design
 
-Four designs ordered by complexity. Each builds on the previous. Deploy them sequentially — start simple, add capability as data confirms value.
+Fully autonomous hook. Two modes: normal and equity clearing. No agent needed for the core loop — the hook handles exposure detection, equity clearing via fee-decay auction, and recentering. The agent only tunes parameters on a slow timescale.
 
-All designs share the V1 getFee core (oracle-reactive asymmetric fees). They differ in afterSwap behavior and what the on-chain hook vs off-chain agent handles.
+Pool sets `swapHookedOperations = GET_FEE | AFTER_SWAP` (0x06).
 
-### Design V4a: "Agent-Managed" (getFee only, no afterSwap)
+### Overview
 
-The simplest possible hook. Remove all auction logic. The hook only computes fees. The agent handles all rebalancing externally.
+**Normal mode.** Oracle-reactive asymmetric fees with routing-aware attract pricing, plus a decaying surcharge that protects against recentering errors. The surcharge activates after any reconfigure (equity clearing completion, initial deployment, agent parameter updates) and decays to zero over a few blocks. Most of the time the surcharge is zero and the fee is purely oracle-reactive.
 
-**getFee:** identical to V1 — oracle-reactive asymmetric fees with gasCoeff, captureRate, attractRate, baseFee floor.
+**Equity clearing mode.** When directional exposure — ETH equity or ETH debt — crosses a threshold, the hook reconfigures the curve to create a large arb in the clearing direction and runs a fee-decay auction. Arbers trade to clear the exposure at minimum cost. Once the marginal price converges back to the oracle price (within `clearThreshold`), the hook recenters at market and returns to normal mode.
 
-**afterSwap:** emit an event with post-swap state, then return. No state changes, no reconfigure.
+### Normal mode getFee
 
-```solidity
-function afterSwap(
-    uint256 amount0In, uint256 amount1In,
-    uint256 amount0Out, uint256 amount1Out,
-    uint256 fee0, uint256 fee1,
-    address msgSender, address to,
-    uint112 reserve0, uint112 reserve1
-) external {
-    emit SwapObserved(
-        reserve0, reserve1,
-        amount0In, amount1In, amount0Out, amount1Out,
-        fee0, fee1, block.number, tx.gasprice
-    );
-}
+```
+uniPrice = getUniswapPrice()         // Uniswap V3 slot0
+poolPrice = getMarginalPrice(reserve0, reserve1)
+mismatch = |uniPrice - poolPrice| / uniPrice
+
+if isArbDirection:
+    gasThreshold = gasCoeff × √(tx.gasprice)
+    netEdge = mismatch - gasThreshold - baseFee - externalFee
+    fee = baseFee + captureRate × max(0, netEdge)
+
+if isAttractDirection:
+    headroom = mismatch + externalFee
+    fee = baseFee + attractRate × headroom
+
+// Surcharge: decays to zero after any reconfigure
+fee += currentSurcharge()
+
+return min(fee, maxFee)
 ```
 
-**Storage:** fee params only (baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate). ~6 slots. No auction state.
+**Attract-side formula** (key improvement over V1). In V1, attract fee was `baseFee + attractRate × max(0, mismatch - gasThreshold)` — often just baseFee, because gasThreshold ate the mismatch. The new formula:
+- Removes gasThreshold subtraction (gas is the arber's problem, not the trader's)
+- Adds externalFee (the trader would pay this at Uniswap)
+- attractRate controls what fraction of routing headroom the LP captures (0.5 = take half, leave half as trader incentive)
 
-**Agent responsibility:**
-- Monitor health and exposure continuously
-- Trigger reconfigure via EVC when health threshold breached
-- Adjust fee params based on realized vol, arb frequency
-- Handle all rebalancing (in-pool reconfigure or external swap)
+**Numerical example:**
+- Pool is 15 bps stale, externalFee = 5 bps, baseFee = 3 bps, attractRate = 0.5
+- V1 attract fee: `3 + 0.3 × max(0, 15 - 6) = 5.7 bps`
+- V4 attract fee: `3 + 0.5 × (15 + 5) = 13 bps`
+- Trader's alternative: Uniswap at 5 bps fee + 15 bps worse price = 20 bps total cost
+- Our 13 bps is 7 bps cheaper. Trader happy. LP earns 7.3 bps more per trade.
 
-**What it tests:**
-- Is the fee formula alone sufficient for steady-state operation?
-- How responsive does the agent need to be? (Latency budget)
-- What fraction of value is lost to agent response delay vs on-chain auction?
-- Baseline P&L for comparison with more complex designs
+**computeQuote compatibility:** `computeQuote` calls `getFee(readOnly=true)`, which returns the attract-side fee. Aggregators see the real net-of-fee quote and route accordingly. No special integration needed.
 
-**Strengths:**
-- Minimal audit surface (~100 LOC)
-- No V2/V3 bugs possible (no auction code)
-- Gas-efficient (no state writes in afterSwap beyond event)
-- Maximum flexibility — agent can implement any rebalance strategy off-chain
+**Surcharge.** An additive fee component that decays to zero over a configurable number of blocks after any reconfigure. Protects against arb leakage from recentering errors — whether from equity clearing completion, initial hook deployment, or agent parameter updates that change the curve. If the recenter was clean (marginal price ≈ market), no arb arrives and the surcharge decays harmlessly. If the recenter was slightly off, an arb trades and the surcharge captures most of the error. The surcharge decays to zero (not to baseFee) because it's additive to the already-floored normal fee.
 
-**Risks:**
-- Agent downtime = no rebalance = liquidation risk
-- Agent latency means pool sits exposed between trigger and response
-- Every rebalance requires an agent transaction (gas cost, timing risk)
+### Equity clearing mode
 
-**Recommended duration:** 1-2 weeks. Collect baseline data.
+Triggered when directional exposure crosses a threshold. Works symmetrically for both directions.
 
----
+#### Shift direction logic
 
-### Design V4b: "Fee-Only Auction" (fee lever only, no curve distortion)
+The EulerSwap curve has a natural mispricing when reserves drift from equilibrium. For c=0:
+- Branch 1 (reserve0 ≤ eq0): marginalPrice = px × eq0² / (py × reserve0²)
+- At equilibrium: marginalPrice = px/py = eq price
 
-Adds autonomous on-chain auction, but fixes all V2/V3 bugs. The auction is purely a fee change — no priceY shift, no eq=reserves hack. Arbers rebalance the pool naturally by trading through the decaying fee.
+When **asset0 is deficit** (reserve0 < eq0), marginalPrice > eq price > market. The pool already overprices asset0 — arbers are already incentivized to sell asset0 to us. The shift must **amplify** this by making marginalPrice even higher, which means **decreasing py** (increasing px/py).
 
-**Core insight:** the pool doesn't need to be reconfigured to create an arb opportunity. A mispricing already exists (reserves have drifted from equilibrium). The auction just needs to lower the fee enough for arbers to profitably clear it.
+When **asset1 is deficit** (reserve1 < eq1), marginalPrice < market. The shift must amplify this by **increasing py** (decreasing px/py).
 
-**getFee (auction mode):**
+**Key insight:** the shift amplifies existing mispricing, not creates new mispricing in a different direction. The natural mispricing is always in the correct direction for clearing — it's just too small in concentrated pools. The shift makes it large enough for a fee-decay auction.
+
+Summary:
+- **Asset0 deficit** (short asset0): decrease py → amplify asset0 overpricing → arbers sell asset0 to us
+- **Asset1 deficit** (short asset1): increase py → amplify asset0 underpricing → arbers sell asset1 to us
+
+This matches V3's direction (V3 line 371-379). Verified against the curve math: decreasing py when reserve0 < eq0 increases px × eq0² / (py × reserve0²).
+
+#### Step 1: Shift curve to create clearing arb
+
+afterSwap detects exposure > threshold:
+
+```
+(exposure, isAsset0Deficit) = computeExposure(reserve0, reserve1)
+
+if !auctionActive && exposure > triggerThreshold:
+    // Snapshot pre-shift price for recenter safety clamping
+    preShiftPriceY = currentPriceY
+
+    // Shift eq price to AMPLIFY existing mispricing in clearing direction
+    if isAsset0Deficit:
+        priceY *= WAD / (WAD + shiftMagnitude)    // decrease py → increase marginal price
+    else:
+        priceY *= (WAD + shiftMagnitude) / WAD    // increase py → decrease marginal price
+
+    // Set eq reserves = current reserves so curve invariant holds at shifted price
+    eqReserves = currentReserves
+    minReserves = (0, 0)     // relax boundaries during auction
+
+    pool.reconfigure(
+        dynamicParams with shifted priceY, eqReserves, minReserves,
+        InitialState(reserve0, reserve1)    // vault positions unchanged
+    )
+
+    // Start fee auction at the mispricing level
+    auctionActive = true
+    auctionStartBlock = block.number
+    auctionStartingFee ≈ shiftMagnitude   // first-order approximation
+    auctionClearAsset0 = isAsset0Deficit   // want the deficit asset IN
+    emit AuctionStarted(auctionStartingFee, block.number, auctionClearAsset0)
+```
+
+The shift amplifies the existing arb opportunity. The fee starts at the mispricing level, recapturing the value. Without the fee, arbers would extract the full mispricing in one block. With the fee matching the mispricing, arbers have zero edge on block 1. Each subsequent block the fee decays by d ≈ σ₁, and arbers trade at minimum viable edge ≈ d + σ₁. Net cost per arb ≈ (d + σ₁)² × L / 2 — the theoretical minimum (section 8).
+
+**Why the shift is needed.** With concentrated pools (high boost), reserves can drift significantly with little marginal price change. The pool could have 50% NAV exposure with only 10 bps of natural mispricing — not enough headroom for a fee auction. The shift creates a controlled, large mispricing that the auction can work with.
+
+**Why this avoids V2's double-incentive bug.** V2 shifted the price AND started the fee low — both giving value to arbers, LP double-paid. Here the shift creates the opportunity but the fee starts at the mispricing level and recaptures it. Net cost = arber's minimum edge only.
+
+#### Step 2: Fee-decay auction
+
+getFee in equity clearing mode:
 
 ```
 if auctionActive:
     elapsed = block.number - auctionStartBlock
     auctionFee = max(baseFee, startingFee - elapsed × decayPerBlock)
 
-    if swap is arb direction (clearing exposure):
+    if swap is clearing direction:
         return auctionFee
     else:
-        return maxFee    // block flow that worsens exposure
-
-else:
-    return normal oracle-reactive fee (same as V4a)
+        // Allow non-clearing trades at elevated fee.
+        // Blocking them loses revenue during auction windows.
+        return max(auctionFee, normalFee())
 ```
 
-**afterSwap (trigger + monitor):**
+Arbers gradually clear the exposure as the fee decays. Non-clearing trades are allowed at the higher of the auction fee or normal oracle-reactive fee — preserving retail revenue without undercutting the clearing side.
+
+#### Step 3: Recenter and return to normal
+
+afterSwap detects price convergence (marginal price ≈ oracle price):
 
 ```
-// 1. Compute health or exposure
-exposure = computeExposure(reserve0, reserve1)
-
-// 2. Check if auction should START
-if !auctionActive && exposure > triggerThreshold:
-    auctionActive = true
-    auctionStartBlock = block.number
-    startingFee = estimateMispricing(reserve0, reserve1)  // ≈ α × r
-    emit AuctionStarted(startingFee, block.number)
-
-// 3. Check if auction should END
-if auctionActive:
-    if exposure < clearThreshold:
-        auctionActive = false
-        emit AuctionEnded(block.number)
-
-// 4. Always emit state
-emit SwapObserved(reserve0, reserve1, ...)
-```
-
-**Key differences from V2/V3:**
-- **No priceY shift.** The fee is the only lever (principle #2). The curve stays undistorted.
-- **No eq = currentReserves hack.** Equilibrium doesn't change during auction. The existing mispricing IS the arb opportunity.
-- **Fee floor = baseFee.** Decay stops at baseFee (principle, section 8). Never zero.
-- **Decay per block, not per second.** Aligns with the σ₁ analysis. d ≈ σ₁ ≈ 4.3 bps/block.
-- **Health-based trigger.** Not absolute reserves or NAV percentage. Uses exposure relative to safety margin.
-- **Separate clear vs trigger thresholds.** Trigger at 50% margin consumed, clear when exposure drops below 20%. Prevents oscillation.
-
-**Storage:** fee params + auction state (auctionActive, auctionStartBlock, startingFee, triggerThreshold, clearThreshold, decayPerBlock). ~10 slots.
-
-**Starting fee computation:**
-
-The starting fee should match the known mispricing. For reserves at fraction α of range r:
-```
-startingFee ≈ α × r / 2
-```
-This can be computed from reserves and equilibrium:
-```
-α = (eq0 - reserve0) / (eq0 - minReserve0)    // for ETH-long exposure
-mispricing ≈ α × range / 2                      // approximate
-startingFee = mispricing + margin                // small buffer above mispricing
-```
-
-**What it tests:**
-- Does the fee-only auction work as well as the priceY-shift auction?
-- Is the arber surplus close to the theoretical (d + σ₁)² × L / 2?
-- How many blocks does a typical auction take?
-- Does multi-arb sequencing work (section 8)?
-
-**Strengths:**
-- Fixes all six V2/V3 bugs
-- Autonomous (no agent needed for routine rebalances)
-- Simple — only adds ~50 LOC over V4a
-- Preserves curve shape throughout auction
-- baseFee floor guarantees safe degradation
-
-**Risks:**
-- If mispricing estimate is wrong, starting fee is miscalibrated → slow auction or excessive leakage
-- No reconfigure means the pool stays at its old equilibrium after the auction clears. The agent should reconfigure afterward to reset. Between auction end and agent reconfigure, the pool may re-drift.
-- Clearing threshold needs tuning — too tight = never clears, too loose = clears prematurely
-
-**Agent responsibility (reduced vs V4a):**
-- Monitor auction events, reconfigure after auction completes
-- Tune triggerThreshold, clearThreshold, decayPerBlock
-- Still handles large-scale rebalances (external swaps)
-- Adjusts fee params for vol regime changes
-
-**Recommended duration:** 2-4 weeks after V4a baseline.
-
----
-
-### Design V4c: "Routing-Aware Fees" (attract-side optimization)
-
-V4b plus the routing headroom insight from section 12/16. The attract-side fee is no longer a fixed `baseFee + attractRate × excess` — it charges up to the routing headroom.
-
-**getFee modification (attract side only):**
-
-```
-// Normal mode (no auction):
-uniPrice = getUniswapPrice()
-poolPrice = getMarginalPrice(reserve0, reserve1)
-mismatch = |uniPrice - poolPrice| / uniPrice
-
-if isAttractDirection:
-    // How much better is our price than Uniswap's for this trader?
-    // Our stale price is in their favor by `mismatch`
-    // They'd also pay externalFee at Uniswap
-    headroom = mismatch + externalFee
-
-    // Charge up to headroom, scaled by attractRate
-    attractFee = baseFee + attractRate × headroom
-    return min(attractFee, maxFee)
-
-else:  // arb direction (unchanged)
-    netEdge = mismatch - gasThreshold - baseFee - externalFee
-    return min(baseFee + captureRate × max(0, netEdge), maxFee)
-```
-
-**The change is small but the impact is large.** In V4a/V4b, the attract fee formula is:
-```
-fee = baseFee + attractRate × max(0, mismatch - gasThreshold)
-```
-The gasThreshold subtraction makes the attract fee very low (often just baseFee) when mismatch is moderate. The new formula replaces this with headroom-aware pricing:
-```
-fee = baseFee + attractRate × (mismatch + externalFee)
-```
-No gasThreshold subtraction on attract side — gas cost is the arber's problem, not the retail trader's. And externalFee is *added* (the trader would pay this elsewhere).
-
-**Numerical example:**
-- Pool is 15 bps stale, externalFee = 5 bps, baseFee = 3 bps, attractRate = 0.5
-- V4a/V4b attract fee: `3 + 0.3 × max(0, 15 - 6) = 3 + 2.7 = 5.7 bps`
-- V4c attract fee: `3 + 0.5 × (15 + 5) = 3 + 10 = 13 bps`
-- Trader's alternative: Uniswap at 5 bps fee, but their price is 15 bps worse → net cost 20 bps
-- Our 13 bps is still 7 bps cheaper than Uniswap. Trader happy. LP earns 7.3 bps more per trade.
-
-**attractRate semantics change:** in V4a/V4b, attractRate scales a penalty. In V4c, it controls what fraction of the routing headroom we capture. attractRate = 0.5 means we take half the headroom and leave half for the trader as incentive. This is closer to the AMM challenge insight — charge as much as routing allows.
-
-**What it tests:**
-- Does routing-aware pricing actually capture more retail revenue?
-- What attractRate maximizes revenue? (Theory says the optimum is high — 0.5-0.8)
-- Does higher attract-side fee reduce volume or increase revenue faster?
-- Is the 97/3 split from the AMM challenge reflected in real routing?
-
-**Strengths:**
-- Targets the dominant value opportunity (section 16)
-- Minimal code change from V4b (~10 lines in getFee)
-- Uses existing parameters (no new storage)
-- Self-calibrating: as mismatch grows, headroom grows, attract fee grows proportionally
-
-**Risks:**
-- Aggregators may not route to us if our fee is too high relative to alternatives
-- The headroom formula assumes a single competitor (Uniswap). Real routing involves many venues — actual headroom may be smaller
-- Higher attract fees could reduce volume enough to lose on total revenue (need to find the elasticity)
-
-**Recommended duration:** run V4b and V4c simultaneously on different fee params (A/B test via agent param updates).
-
----
-
-### Design V4d: "Full Autonomous" (auction + reconfigure)
-
-V4c plus afterSwap reconfigure after auction completion. The hook does everything: detects exposure, runs fee-decay auction, then recenters the pool at the new market price. No agent intervention needed for routine rebalances.
-
-**afterSwap (extended):**
-
-```
-if auctionActive && exposure < clearThreshold:
+if auctionActive && block.number >= auctionStartBlock + minAuctionBlocks:
+    marginalPrice = getMarginalPrice(reserve0, reserve1)
+    oraclePrice = getUniswapPrice()
+    priceDiff = |marginalPrice - oraclePrice| / oraclePrice
+    if priceDiff < clearThreshold:
     auctionActive = false
 
-    // Recenter the pool at current market price
-    DynamicParams memory dp = pool.getDynamicParams();
+    // Recenter: eq price to current market, clamped for safety
+    oraclePrice = getUniswapPrice()
+    newPriceY = priceX * WAD / oraclePrice
 
-    // New equilibrium price from Uniswap oracle
-    uint256 newPrice = getUniswapPrice();
-    (dp.priceX, dp.priceY) = encodePriceRatio(newPrice);
+    // Safety: clamp to within maxRecenterDrift of pre-shift price
+    maxPY = preShiftPriceY × (1 + maxRecenterDrift)
+    minPY = preShiftPriceY / (1 + maxRecenterDrift)
+    newPriceY = clamp(newPriceY, minPY, maxPY)
 
-    // New equilibrium reserves: preserve total value at new price
-    // eq0_new × price + eq1_new = total_value
-    // Use symmetric allocation: eq0 × price = eq1
-    uint256 totalValue = reserve0 × newPrice + reserve1;
-    dp.equilibriumReserve0 = totalValue / (2 × newPrice);
-    dp.equilibriumReserve1 = totalValue / 2;
+    // Compute min reserves from recenterRange using curve math:
+    //   minReserve = eq / sqrt(1 + r/(1-c))
+    // where r = recenterRange, c = concentration
+    // This defines the price range the pool supports after recenter.
+    // Calibrate r so that h=1 at the boundary for the pool's leverage/LTV.
+    minReserve0 = reserve0 * sqrt(WAD) / sqrt(WAD + r * WAD / (WAD - cx))
+    minReserve1 = reserve1 * sqrt(WAD) / sqrt(WAD + r * WAD / (WAD - cy))
 
-    // Recompute min reserves for new equilibrium
-    dp.minReserve0 = dp.equilibriumReserve0 × BOUNDARY_FACTOR / WAD;
-    dp.minReserve1 = dp.equilibriumReserve1 × BOUNDARY_FACTOR / WAD;
+    pool.reconfigure(
+        dynamicParams with newPriceY, eqReserves = currentReserves,
+        minReserves from range formula,
+        InitialState(reserve0, reserve1)
+    )
 
-    pool.reconfigure(dp, InitialState(reserve0, reserve1));
-    emit Recentered(dp.priceX, dp.priceY, dp.equilibriumReserve0, dp.equilibriumReserve1);
+    // Activate surcharge to protect the recenter
+    surchargeStart = block.number
+    emit AuctionEnded(block.number)
 ```
 
-**Why this is the hardest design:**
-- Reconfigure during afterSwap changes the curve. If the new params are wrong, the pool could be in a worse state.
-- Price encoding (priceX/priceY with decimal adjustment) is fiddly — off-by-one in decimals = catastrophic mispricing.
-- Equilibrium computation must account for leverage, boost, and the actual vault balances (not just reserves).
-- The "preserve total value" calculation above is simplified — real implementation needs to account for debt, interest, and vault share prices.
+The `minAuctionBlocks` guard prevents premature clearing. Without this guard, a single arb swap could immediately converge the marginal price to within `clearThreshold` of the oracle — the fee hasn't had time to decay, so the arber pays the full starting fee. The minimum duration ensures the fee decays before clearing is checked, giving arbers time to compete and discover the market-clearing price.
 
-**What it tests:**
-- Can the hook autonomously maintain a delta-neutral position?
-- How does on-chain reconfigure compare to agent-managed reconfigure?
-- Does immediate reconfigure after auction reduce subsequent exposure accumulation?
-- Is the gas cost of reconfigure-in-afterSwap acceptable? (~50k additional gas)
+The `recenterRange` parameter defines the pool's supported price range after recentering. Min reserves are derived from this range using the EulerSwap curve formula, accounting for concentration:
 
-**Strengths:**
-- Fully autonomous — agent only tunes parameters
-- Minimizes time between auction completion and recenter (zero blocks)
-- Reduces agent transaction costs (no separate reconfigure tx)
+| recenterRange (r) | c=0 min/eq | c=0.5 min/eq | Price range |
+|---|---|---|---|
+| 0.01e18 (1%) | 99.5% | 99.0% | ±1% |
+| 0.05e18 (5%) | 97.6% | 95.2% | ±5% |
+| 0.50e18 (50%) | 81.6% | 57.7% | ±50% |
+| 1.00e18 (100%) | 70.7% | 40.8% | ±100% |
 
-**Risks:**
-- Most complex design — largest audit surface
-- Oracle dependency for recenter: if Uniswap price is manipulated at the moment of recenter, the new equilibrium is wrong. Unlike getFee (where manipulation is safe-direction), reconfigure with a manipulated price can be permanently damaging.
-- Reconfigure failure in afterSwap could leave the hook in inconsistent state (V2 bug #6 revisited)
-- The "preserve total value" math is a simplification. Real equity computation requires vault state (deposit shares, debt shares, interest accrual). Getting this wrong means the pool is misconfigured.
+**Calibration:** set `recenterRange` so that h=1 at the boundary, i.e., max debt at min reserves equals the health limit for the pool's cross-LTV. For a boosted pool with LTV L, target health H, and range r:
 
-**Mitigation for oracle risk:**
-- Use TWAP (not slot0) for recenter price. TWAP is harder to manipulate and the latency is acceptable (we're setting a new equilibrium, not pricing a trade).
-- Sanity-check: require new price to be within X% of the pre-auction price. If the move is too large, emit an event and let the agent handle it.
-- Separate the "end auction" from "reconfigure" — end the auction (fee returns to normal), but don't reconfigure until the agent confirms.
+```
+maxDebt per side = eq × (1 - 1/sqrt(1 + r/(1-c)))
+health at boundary = collateral × L / maxDebt = H
+```
 
-**Recommendation:** defer V4d until V4b/V4c are battle-tested. The oracle risk during reconfigure is fundamentally different from the oracle risk in getFee, and deserves careful analysis. The agent-managed approach (V4a-V4c where agent reconfigures after auction) is safer and only slightly less responsive.
+Solve for r given L, H, c. The range is absolute — the same formula is used at deployment, after recentering, and if the agent reconfigures.
 
-## 22. Design Comparison
+Since the marginal price has converged to within `clearThreshold` of the oracle, the pool is already near market price — the recenter displacement is small. The `maxRecenterDrift` clamp prevents oracle manipulation from causing a wildly wrong recenter. The surcharge protects against any residual error within the clamp range, then decays to zero. Normal mode resumes.
 
-| Property | V4a Agent-Managed | V4b Fee Auction | V4c Routing-Aware | V4d Full Auto |
-|----------|------------------|-----------------|-------------------|---------------|
-| getFee complexity | Low | Medium | Medium | Medium |
-| afterSwap complexity | None | Low | Low | High |
-| Storage slots | ~6 | ~10 | ~10 | ~12 |
-| Auction on-chain | No | Yes (fee only) | Yes (fee only) | Yes (fee + reconfigure) |
-| Agent latency tolerance | Low (must respond fast) | High (auction buys time) | High | Very high |
-| V2 bugs fixed | All (by removal) | All | All | All (but new risks) |
-| Rebalance mechanism | Agent tx | Fee decay → agent reconfigure | Fee decay → agent reconfigure | Fee decay → auto reconfigure |
-| Gas per swap | ~0 extra | ~5k (auction check) | ~5k | ~5k normal, ~55k on reconfigure |
-| Retail revenue | Baseline | Baseline | Higher (headroom) | Higher (headroom) |
-| Audit surface | Minimal | Small | Small | Large |
-| Oracle risk | None (getFee is safe-direction) | None | None | Yes (reconfigure uses oracle) |
+### Price-convergence clearing
 
-### Recommended deployment order
+The auction clears when the pool's marginal price converges to the oracle price within `clearThreshold`. This directly measures whether the arb created by the shift has been consumed — the marginal price returns to market when arbers have traded enough to close the mispricing.
 
-1. **V4a** (1-2 weeks): establish baseline. Collect experiments 1-3 data. Confirm fee formula works. Measure agent latency requirements.
-2. **V4b** (2-4 weeks): add autonomous auction. Compare auction P&L vs agent-managed. Validate auction mechanics (decay rate, trigger, clearing).
-3. **V4c** (concurrent with V4b): A/B test routing-aware attract fees. Measure revenue impact. Find optimal attractRate.
-4. **V4d** (only if needed): add auto-reconfigure. Only justified if agent latency is proven insufficient and V4b/V4c auction-then-reconfigure is too slow.
+**Why price-convergence, not reserve-based exposure:** After the shift sets eq = current reserves, reserve-based exposure (`(eq - reserve) / (eq - min)`) is always near zero — by construction. The shift changes the curve, not the reserves. Reserve displacement from the shifted curve is a poor signal of clearing progress. Price convergence is the natural metric: the shift creates a marginal-to-oracle gap, arbers close it, and when the gap is within `clearThreshold` the arb is consumed.
 
-### Switching between designs
+**Validation constraint:** `clearThreshold < shiftMagnitude`. If the clearing threshold were >= the shift magnitude, the auction could clear immediately after the shift (the initial mispricing is approximately equal to the shift magnitude). This ensures the arb must actually be partially consumed before clearing.
 
-All designs share the same pool — only the hook contract changes. To switch:
+**How it works:**
+
+1. Shift creates mispricing: marginal price diverges from oracle by ~`shiftMagnitude`
+2. Arbers trade to close the gap, paying decaying fees
+3. `minAuctionBlocks` ensures the fee has time to decay before clearing is checked
+4. When `|marginalPrice - oraclePrice| / oraclePrice < clearThreshold`, the auction clears
+
+Each clearing cycle clears an amount proportional to `shiftMagnitude × pool_depth`, not the full directional exposure. The total clearing trade equals the reserve displacement needed to move marginal price from shifted back to market.
+
+For **boosted pools** (the target use case), the effective liquidity is enormous, so a 108 bps shift causes substantial reserve flow — potentially clearing >50% of exposure per cycle. For un-boosted pools, each cycle clears a small fraction, but un-boosted pools have large natural mispricing and may not need this mechanism.
+
+The design converges iteratively: multiple clearing cycles progressively reduce exposure. After each recenter, normal mode resumes, arb flow accumulates new exposure, and the next cycle triggers when threshold is reached. Each cycle has minimum-cost clearing per section 8.
+
+### Concentration effects on auction dynamics
+
+The starting fee (= shiftMagnitude) is exact for all c — at equilibrium, marginalPrice = px/py regardless of concentration (the (x₀/x)² term is 1). But concentration significantly affects auction behavior *during* clearing:
+
+**Flatter curve → more volume to clear.** At c=0 (constant-product), marginal price changes as (x₀/x)². At c=0.5, it changes as `0.5 + 0.5 × (x₀/x)²` — half the price impact per unit of reserve displacement. At c=0.9, only 10% of the price impact remains. This means arbers must trade proportionally more volume to close the same mispricing gap.
+
+**Implications for stablecoin pools (high c):**
+
+| Parameter | Low c (volatile pairs) | High c (stablecoins) |
+|-----------|----------------------|---------------------|
+| Volume to clear | Lower | Higher (1/(1-c) scaling) |
+| Blocks to clear | ~25 | May need more |
+| shiftMagnitude | ~108 bps | Could use smaller shifts |
+| decayPerBlock | ~4.3 bps | May need slower decay |
+| Fee revenue per cycle | shift × volume | Higher volume → more revenue |
+| triggerThreshold | 15% of range | Tighter ranges → more sensitive |
+
+**Calibration for high c:** the key relationship is `shiftMagnitude ≈ targetBlocks × decayPerBlock`. For stablecoin pools with high c, the same mispricing takes more blocks to clear (more volume needed), so either:
+- Accept more blocks in clearing mode (increase targetBlocks, keep same shift/decay)
+- Use smaller shifts with proportionally slower decay (same ratio, longer auction)
+- Accept that each cycle clears less exposure, requiring more iterations
+
+The choice depends on whether the pool earns more from normal-mode attract fees or from clearing-mode fee revenue. High-c pools may actually earn *more* per clearing cycle (more volume), making longer auctions acceptable.
+
+### The full cycle
+
+```
+Normal mode (surcharge = 0)
+    → pool earns fees on arb and attract flow
+    → exposure accumulates (ETH equity or ETH debt grows)
+    ↓ exposure crosses trigger threshold
+
+Equity clearing mode
+    → afterSwap: shift eq price (amplify mispricing) + start fee auction
+    → getFee: decaying fee on clearing direction, elevated fee on non-clearing
+    → arbers arbitrage the shift, clearing proportional to shift × pool depth
+    ↓ marginal price converges to oracle price within clear threshold
+
+Normal mode (surcharge > 0, decaying)
+    → afterSwap: recenter to market + activate surcharge
+    → getFee: normal fees + decaying surcharge
+    → surcharge decays to zero
+    → remaining exposure may trigger another clearing cycle
+    ↓ back to steady state
+```
+
+### Why the auction is essential
+
+External swaps (orderflow router, CowSwap) are prohibitively costly for equity rebalancing. **Slippage dominates the cost**, far exceeding gas and swap fees. For leveraged pools with large equilibrium reserves, the rebalance amounts are substantial and external venue depth is often insufficient.
+
+The in-pool auction lets arbers bring liquidity TO the pool. The LP pays no slippage — the fee decay discovers the market-clearing price for rebalancing.
+
+### Key differences from V2/V3
+
+- **Fee starts at mispricing, not low.** Shift creates the arb, fee recaptures it. No double incentive (fixing bug #1).
+- **eq = currentReserves is deliberate, not a hack.** V4 sets eq = currentReserves to satisfy the curve invariant after shifting the price. This is required: the shift changes the price, so the curve needs to be re-anchored. Unlike V2/V3 bug #4 where eq = currentReserves was used to "declare equilibrium" with no price change, here the price is deliberately shifted to amplify existing mispricing.
+- **Fee floor = baseFee.** Auction fee decays to baseFee, never zero (fixing bug #5). Surcharge decays to zero but is additive to the already-floored normal fee.
+- **Decay per block.** d ≈ σ₁ ≈ 4.3 bps/block (section 8).
+- **Exposure-based trigger.** Directional exposure (ETH equity or debt) as fraction of range. Works for both long and short exposure. Tracks health since both degrade together at the boundary (fixing bugs #2, #3).
+- **Separate trigger/clear thresholds.** Trigger at ~15% exposure, clear at price convergence (marginal ≈ oracle within 0.5%). Prevents oscillation.
+- **Non-clearing trades allowed during auction.** Floor = auction fee, so they never undercut clearing-side price. Preserves retail revenue during auction windows.
+- **Autonomous recentering.** Hook recenters after clearing, protected by surcharge. No agent intervention needed.
+
+### Storage
+
+Fee params (baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate) + auction params (decayPerBlock, triggerThreshold, clearThreshold, shiftMagnitude, maxRecenterDrift, minAuctionBlocks, recenterRange) + surcharge params (surchargeDecayPerBlock, surchargeInitialAmount) + auction state (auctionActive, auctionStartBlock, auctionStartingFee, auctionClearAsset0, preShiftPriceY) + surcharge state (surchargeStartBlock). ~15 slots.
+
+### Agent role
+
+The agent is not needed for the core loop. Its only job is parameter tuning on a slow timescale:
+
+- Adjust baseFee, attractRate, captureRate, gasCoeff based on realized vol, observed arb frequency, and routing data
+- Tune triggerThreshold, clearThreshold, shiftMagnitude, decayPerBlock, minAuctionBlocks
+- Calibrate recenterRange to maintain h=1 at boundary given current LTVs and boost level
+- Monitor pool health as a safety backstop (emergency intervention via maxFee or manual reconfigure)
+
+### Risks
+
+- **Eq price shift magnitude.** Too small = insufficient clearing arb, auction takes too long. Too large = auction takes many blocks, pool sits in clearing mode longer. The cost per arb is independent of shift magnitude (section 8) — the trade-off is purely auction duration vs. time spent in clearing mode. **Calibration rule:** `shiftMagnitude ≈ targetBlocks × decayPerBlock`. For ~25 blocks (~5 min) at d ≈ 4.3 bps/block: `shiftMagnitude ≈ 108 bps ≈ 0.0108e18`. This keeps the shift a fixed parameter rather than computed — simple and predictable.
+- **Correlated oracle risk (clearing + recenter).** The same slot0 read both triggers clearing (marginal ≈ oracle) and sets the recenter price. An attacker could manipulate slot0 to match the pool's still-shifted marginal price, causing premature clearing when the arb isn't actually consumed, and simultaneously recentering at the manipulated price. Example: pool marginal is 1.01 after a 1% shift, true market is 1.0. Attacker pushes slot0 to 1.01 → clearing triggers (|1.01 - 1.01| < 0.5%), recenter sets eq price to 1.01 (within drift clamp). The arb wasn't consumed — the pool just accepted a wrong price. **Mitigations:** (1) **maxRecenterDrift** bounds the damage — the recenter is clamped to within x% of pre-shift price, so the worst-case error is bounded. (2) **minAuctionBlocks** narrows the manipulation window — attacker must sustain the manipulation or time it precisely. (3) **surcharge** captures residual arb from the wrong recenter. (4) The next clearing cycle corrects the error. (5) Manipulating Uniswap V3 slot0 requires substantial capital and is typically unprofitable after accounting for the arb cost. **Possible hardening:** use TWAP instead of slot0 for the clearing check (harder to manipulate, latency is acceptable during auction mode). Or require price convergence for N consecutive blocks. Both add complexity — slot0 + drift clamp + surcharge is the simpler starting point.
+- **Oracle risk during recenter (independent of clearing).** Even without the correlated attack above, if slot0 is manipulated at the exact clearing block, the recenter price is wrong. The same mitigations apply: maxRecenterDrift clamp, surcharge, and next-cycle correction. TWAP could replace slot0 for recentering, but adds a dependency on Uniswap observation cardinality.
+- **Clearing threshold tuning.** Too tight = never clears (marginal price never exactly matches oracle). Too loose = clears before arb is fully consumed. The `clearThreshold` is a price-convergence metric: `|marginalPrice - oraclePrice| / oraclePrice`. Must be < `shiftMagnitude` to prevent immediate clearing. Starting value: 0.5% (50 bps). The `minAuctionBlocks` guard ensures the fee-decay mechanism has time to work before clearing is checked. Set to roughly `shiftMagnitude / decayPerBlock / 2` so the fee decays ~50% before clearing is permitted. **Interaction to verify:** at minAuctionBlocks ≈ 12, the remaining fee is ~54 bps (108 - 12 × 4.3). The clearing swap that triggers the recenter pays this fee. Is ~54 bps adequate LP protection on the final clearing trade? If the pool has converged most of the way, the remaining edge is small and ~54 bps is likely sufficient. Empirical testing should confirm.
+- **recenterRange calibration.** Defines the pool's tradeable range after recenter. Too tight = pool hits SwapLimitExceeded quickly and re-triggers rapidly. Too wide = pool is under-leveraged, lower capital efficiency. Must satisfy h=1 at the boundary for the pool's cross-LTV. Recalibrate if LTVs change.
+- **Reconfigure gas cost.** afterSwap calls `pool.reconfigure()` at mode transitions (~50k extra gas). Two reconfigures per cycle: shift (Step 1) and recenter (Step 3). Only happen on the triggering swap and the clearing swap — not every swap during the auction. Vault accounting (interest accrual, share prices) between the two reconfigures is negligible over ~25 blocks (~5 min).
+
+### Switching hooks
+
+All hooks share the same pool — only the hook contract changes:
 1. Deploy new hook contract
 2. Reconfigure pool via EVC: set `swapHook = newHook`, update `swapHookedOperations`
-3. Old hook is abandoned (no state migration needed — each hook initializes fresh)
+3. Old hook is abandoned (no state migration needed)
 
-This means we can run experiments on each design without redeploying the pool. The pool's static params (vaults, assets, euler account) stay the same. Only the dynamic params change.
+Pool's static params (vaults, assets, euler account) stay the same.
 
-## 23. Open Questions
+## 22. Open Questions
 
-1. **Clearing threshold calibration.** V4b uses separate trigger (50% margin consumed) and clear (20%) thresholds. What values minimize total cost? Too tight = oscillating auctions, too loose = exposure lingers.
+1. **Clearing threshold calibration.** The `clearThreshold` is a price-convergence metric (`|marginalPrice - oraclePrice| / oraclePrice`). Must be < `shiftMagnitude`. Starting value: 0.5% (50 bps). What values minimize total cost? Too tight = never clears (marginal price has noise). Too loose = clears before arb is fully consumed. With `minAuctionBlocks`, the convergence check is deferred — the threshold now gates clearing only after the minimum duration, not immediately after the shift.
 
-2. **Starting fee accuracy.** The formula `startingFee ≈ α × r / 2` is approximate. How sensitive is auction performance to starting fee errors? If s is 20% too high, how much time (gas, staleness) is wasted? If 20% too low, how much leakage?
+2. **Shift magnitude.** Calibration rule: `shiftMagnitude ≈ targetBlocks × decayPerBlock`. For ~25 blocks at σ₁ ≈ 4.3 bps/block → ~108 bps. Remaining question: is ~25 blocks the right target? Shorter = less time in clearing mode but fewer arbers see the opportunity. Longer = more competition but pool earns no attract-side revenue during auction.
 
-3. **attractRate optimal value.** Section 16 suggests high values (0.5-0.8) based on the AMM challenge. But that was single-competitor. With multi-venue routing, is the optimal attractRate lower?
+3. ~~**Starting fee from shift.**~~ **Resolved.** The starting fee = shiftMagnitude is exact for all c, not an approximation. At equilibrium (where eq = reserves after the shift), marginalPrice = px/py regardless of concentration — the concentration terms cancel when x = x₀. The shift changes py by factor (1 ± s), so mispricing = s exactly. The second-order term (s²/2 ≈ 0.6 bps at 108 bps shift) is from the asymmetry of the py adjustment formula, not from concentration.
 
-4. **Interaction between auction and attract fees.** During an auction, should attract-side routing optimization be active? Or should the auction mode override everything (only arb-direction trades allowed)?
+4. **attractRate optimal value.** Section 16 suggests high values (0.5-0.8) based on the AMM challenge. But that was single-competitor. With multi-venue routing, is the optimal attractRate lower?
 
-5. **Multi-pool agent strategy.** If we run WETH/USDC and USDC/USDT pools simultaneously, should the agent coordinate rebalances? E.g., a USDC surplus in one pool could be routed to the other.
+5. **Surcharge calibration.** How high should the initial surcharge be after recentering? Too high = blocks legitimate trades for a few blocks. Too low = doesn't capture recentering errors. How many blocks should the decay take?
 
-6. **Reconfigure-after-auction timing.** In V4b/V4c, the agent reconfigures after the auction clears. What's the optimal delay? Immediate reconfigure may be suboptimal if the price is still moving. Waiting too long means re-accumulating exposure.
+6. **Reconfigure mechanics.** The hook calls `pool.reconfigure()` in afterSwap. What exactly should the new DynamicParams contain? The eq price and eq reserves need to be computed from: the shift direction, shift magnitude, current reserves, and (for recentering) the oracle price. Getting the priceX/priceY encoding right with decimal adjustment is critical.
 
-7. **Vol regime detection.** The agent should adjust baseFee based on realized vol. What's the right lookback window? Too short = noisy. Too long = stale. The AMM challenge found fixed parameters beat adaptive ones — does this hold for the agent's slower timescale?
+7. **Iterative vs single-cycle clearing.** The current design clears exposure proportional to `shiftMagnitude × pool_depth` per cycle, not the full exposure. For boosted pools this may clear >50% per cycle; for un-boosted pools much less. Should we store pre-shift equilibrium and measure clearing against it for full single-cycle clearing? Or is iterative clearing acceptable? What's the expected number of cycles to clear 90% of exposure for a typical boosted pool?
+
+8. **Multi-pool coordination.** If we run WETH/USDC and USDC/USDT pools simultaneously, should equity clearing auctions be coordinated? E.g., a USDC surplus in one pool could be routed to the other.
+
+9. **Vol regime detection.** The agent should adjust baseFee based on realized vol. What's the right lookback window? Too short = noisy. Too long = stale. The AMM challenge found fixed parameters beat adaptive ones — does this hold for the agent's slower timescale?
+
+10. **Correlated oracle hardening.** The clearing check and recenter both read slot0 in the same afterSwap call. A single-block manipulation could trigger premature clearing at a wrong price (see Risks). Two hardening options: (a) use TWAP for the clearing check (slot0 for recenter is bounded by drift clamp), or (b) require price convergence across N consecutive blocks (add a `convergenceBlocks` counter). Both reduce the attack surface at the cost of complexity and latency. Is the current mitigation stack (drift clamp + minAuctionBlocks + surcharge) sufficient for launch, or does the correlated vector warrant hardening before deployment?
+
+11. **Stablecoin pool calibration.** High-c pools (c ≥ 0.8) need 5-10x more arb volume to clear the same mispricing. Should shiftMagnitude and decayPerBlock be parameterized per pool type, or can a single calibration work across volatile and stable pairs? Empirical testing with realistic stablecoin pool parameters would resolve this.
