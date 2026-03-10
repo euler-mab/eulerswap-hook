@@ -57,6 +57,9 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
     address public immutable owner;
     address public immutable supplyVault0;
     address public immutable supplyVault1;
+    address public immutable borrowVault0;
+    address public immutable borrowVault1;
+    address public immutable eulerAccount;
     address public immutable asset0;
     address public immutable asset1;
     address public immutable uniswapPool;
@@ -82,6 +85,9 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
     uint64 public surchargeDecayPerBlock; // WAD: surcharge decay per block
     uint64 public surchargeInitialAmount; // WAD: initial surcharge after any reconfigure
 
+    // --- Debt trigger parameters (owner-updatable) ---
+    uint64 public debtTriggerThreshold; // WAD: debt/NAV fraction to trigger clearing (e.g. 0.25e18 = 25%)
+
     // --- Recenter safety (owner-updatable) ---
     uint64 public maxRecenterDrift; // WAD: max allowed price change from pre-shift (e.g. 0.03e18 = 3%)
 
@@ -91,6 +97,9 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
     uint64 public auctionStartingFee; // WAD: fee at auction start (≈ mispricing from shift)
     bool public auctionClearAsset0; // true = want asset0 in (clearing asset1-long / asset0-deficit)
     uint80 public preShiftPriceY; // priceY before the shift — reference for recenter clamping
+
+    // --- Debt trigger state ---
+    uint128 public approxNav; // approximate NAV in asset0 terms, updated on recenter
 
     // --- Surcharge state ---
     uint64 public surchargeStartBlock; // block when surcharge was activated
@@ -128,6 +137,7 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
         uint64 maxRecenterDrift;
         uint64 minAuctionBlocks;
         uint64 recenterRange;
+        uint64 debtTriggerThreshold;
     }
 
     // --- Errors ---
@@ -169,11 +179,15 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
         maxRecenterDrift = _auctionConfig.maxRecenterDrift;
         minAuctionBlocks = _auctionConfig.minAuctionBlocks;
         recenterRange = _auctionConfig.recenterRange;
+        debtTriggerThreshold = _auctionConfig.debtTriggerThreshold;
 
         // Cache vault and asset addresses from pool's static params
         IEulerSwap.StaticParams memory sParams = IEulerSwap(_pool).getStaticParams();
         supplyVault0 = sParams.supplyVault0;
         supplyVault1 = sParams.supplyVault1;
+        borrowVault0 = sParams.borrowVault0;
+        borrowVault1 = sParams.borrowVault1;
+        eulerAccount = sParams.eulerAccount;
         asset0 = IEVault(sParams.supplyVault0).asset();
         asset1 = IEVault(sParams.supplyVault1).asset();
 
@@ -182,6 +196,9 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
 
         // Activate surcharge on deployment to protect initial configuration
         surchargeStartBlock = uint64(block.number);
+
+        // Set initial approxNav from current vault state
+        approxNav = _computeApproxNav();
     }
 
     // --- IEulerSwapHookTarget ---
@@ -252,6 +269,9 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
             (uint256 exposure, bool asset0Deficit) = _computeExposure(reserve0, reserve1, d);
             if (exposure > uint256(triggerThreshold)) {
                 _startEquityClearing(reserve0, reserve1, asset0Deficit, d);
+            } else {
+                // --- Debt trigger: check vault-level imbalance ---
+                _checkDebtTrigger(reserve0, reserve1, d);
             }
         } else {
             // --- Auction mode: price-convergence clearing ---
@@ -306,7 +326,8 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
         uint64 _shiftMagnitude,
         uint64 _maxRecenterDrift,
         uint64 _minAuctionBlocks,
-        uint64 _recenterRange
+        uint64 _recenterRange,
+        uint64 _debtTriggerThreshold
     ) external onlyOwner {
         require(_clearThreshold < _shiftMagnitude, "clear threshold must be < shift magnitude");
         decayPerBlock = _decayPerBlock;
@@ -316,6 +337,7 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
         maxRecenterDrift = _maxRecenterDrift;
         minAuctionBlocks = _minAuctionBlocks;
         recenterRange = _recenterRange;
+        debtTriggerThreshold = _debtTriggerThreshold;
         emit AuctionParamsUpdated(
             _decayPerBlock, _triggerThreshold, _clearThreshold, _shiftMagnitude, _minAuctionBlocks
         );
@@ -335,10 +357,10 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
 
     // --- Internal: equity clearing lifecycle ---
 
-    /// @notice Step 1: Shift eq price to create clearing arb + start fee-decay auction.
-    /// For asset0 deficit (long asset1): shift eq price DOWN → pool underprices asset1 →
+    /// @notice Step 1: Recenter at market, shift past it to create clearing arb, start fee-decay auction.
+    /// For asset0 deficit: recenter → decrease py → underprices asset1 →
     ///   arbers buy asset1 from us, sending asset0 → asset0 deficit decreases.
-    /// For asset1 deficit (long asset0): shift eq price UP → pool underprices asset0 →
+    /// For asset1 deficit: recenter → increase py → underprices asset0 →
     ///   arbers buy asset0 from us, sending asset1 → asset1 deficit decreases.
     function _startEquityClearing(
         uint112 reserve0,
@@ -348,22 +370,26 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
     ) internal {
         uint256 shift = uint256(shiftMagnitude);
 
-        // Snapshot pre-shift priceY as reference for recenter clamping
+        // Step 1: Recenter priceY at market price BEFORE shifting.
+        // The pool's priceY may be stale if the market moved since last reconfigure.
+        // Shifting from a stale price can leave us on the wrong side of market.
+        uint256 uniPrice = _getUniswapPrice();
+        if (uniPrice > 0) {
+            uint256 marketPriceY = uint256(d.priceX).mulDiv(WAD, uniPrice);
+            if (marketPriceY > 0 && marketPriceY <= type(uint80).max) {
+                d.priceY = uint80(marketPriceY);
+            }
+        }
+
+        // Snapshot recentered priceY as reference for post-auction recenter clamping
         preShiftPriceY = d.priceY;
 
-        // Shift the equilibrium price (priceX/priceY ratio) to AMPLIFY existing mispricing.
-        // When reserve0 < eq0, marginalPrice = px*x0²/(py*x²) is already above market.
-        // The shift must increase marginalPrice further → decrease py.
-        // When reserve1 < eq1, marginalPrice is already below market → increase py.
+        // Step 2: Shift priceY PAST market to create deliberate mispricing.
+        // Decrease py → increase px/py → asset1 cheaper → arbers buy asset1, send asset0.
+        // Increase py → decrease px/py → asset0 cheaper → arbers buy asset0, send asset1.
         if (asset0Deficit) {
-            // Pool is short asset0: marginalPrice already > market (asset0 overpriced).
-            // Decrease py → increase px/py → amplify mispricing.
-            // Arbers sell asset0 to us (clearing direction) to buy overpriced asset1.
             d.priceY = uint80(uint256(d.priceY) * WAD / (WAD + shift));
         } else {
-            // Pool is short asset1: marginalPrice already < market (asset0 underpriced).
-            // Increase py → decrease px/py → amplify mispricing.
-            // Arbers sell asset1 to us (clearing direction) to buy underpriced asset0.
             d.priceY = uint80(uint256(d.priceY) * (WAD + shift) / WAD);
         }
 
@@ -377,20 +403,19 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
         d.equilibriumReserve1 = reserve1;
 
         try IEulerSwap(pool).reconfigure(d, IEulerSwap.InitialState(reserve0, reserve1)) {
-            // Starting fee = exact mispricing created by the shift.
-            // At equilibrium (eq = reserves), marginalPrice = px/py regardless of concentration.
-            // Shift changes py by factor (1 ± s), so mispricing = s exactly for all c.
-            uint256 startFee = shift;
+            // Starting fee = 150% of shift to ensure no arber can profit immediately.
+            // The shift creates exact mispricing = s (at eq, marginal = px/py for all c).
+            // At 1.5x, arbers must wait for ~shift/(2*decayPerBlock) blocks before trading profitably.
+            uint256 startFee = shift * 3 / 2;
             if (startFee > uint256(maxFee)) startFee = uint256(maxFee);
             if (startFee < uint256(baseFee)) startFee = uint256(baseFee);
-
             auctionActive = true;
             auctionStartBlock = uint64(block.number);
             auctionStartingFee = uint64(startFee);
             // Clearing direction: if asset0 is deficit, we want asset0 IN
             auctionClearAsset0 = asset0Deficit;
 
-            emit AuctionStarted(uint64(startFee), uint64(block.number), asset0Deficit);
+            emit AuctionStarted(auctionStartingFee, uint64(block.number), asset0Deficit);
         } catch {
             // Reconfigure failed — don't block the swap, stay in normal mode
         }
@@ -442,6 +467,9 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
                 emit Recentered(uint64(block.number));
             } catch {}
         }
+
+        // Update approxNav after clearing
+        approxNav = _computeApproxNav();
 
         // Activate surcharge regardless of reconfigure success
         surchargeStartBlock = uint64(block.number);
@@ -574,6 +602,84 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
         // else: at or above equilibrium → exposure = 0
     }
 
+    // --- Internal: vault debt trigger ---
+
+    /// @notice Check if vault-level debt exceeds threshold relative to approxNav.
+    /// Triggers clearing when reserves are at equilibrium but vault has accumulated debt.
+    /// Only one side can have debt at a time — short-circuit after the first hit.
+    function _checkDebtTrigger(uint112 reserve0, uint112 reserve1, IEulerSwap.DynamicParams memory d) internal {
+        uint64 _threshold = debtTriggerThreshold;
+        if (_threshold == 0) return;
+
+        uint128 _nav = approxNav;
+        if (_nav == 0) return;
+
+        address _eulerAccount = eulerAccount;
+        uint256 debt0;
+        uint256 debt1;
+        bool asset0Deficit;
+
+        address _bv0 = borrowVault0;
+        if (_bv0 != address(0)) {
+            debt0 = IEVault(_bv0).debtOf(_eulerAccount);
+        }
+
+        if (debt0 > 0) {
+            asset0Deficit = true;
+        } else {
+            address _bv1 = borrowVault1;
+            if (_bv1 != address(0)) {
+                debt1 = IEVault(_bv1).debtOf(_eulerAccount);
+            }
+            if (debt1 == 0) return; // no debt on either side
+            asset0Deficit = false;
+        }
+
+        // Convert debt to asset0 terms using oracle price for comparison with NAV
+        uint256 debtInAsset0;
+        if (asset0Deficit) {
+            debtInAsset0 = debt0;
+        } else {
+            uint256 uniPrice = _getUniswapPrice();
+            if (uniPrice == 0) return;
+            debtInAsset0 = debt1 * uniPrice / WAD;
+        }
+
+        // Trigger if debt/NAV exceeds threshold
+        if (debtInAsset0 * WAD / uint256(_nav) > uint256(_threshold)) {
+            _startEquityClearing(reserve0, reserve1, asset0Deficit, d);
+        }
+    }
+
+    /// @notice Compute approximate NAV in asset0 terms from vault deposits and debts.
+    function _computeApproxNav() internal view returns (uint128) {
+        address _eulerAccount = eulerAccount;
+
+        // Deposits: convert eToken shares to underlying assets
+        uint256 deposit0 = IEVault(supplyVault0).convertToAssets(IEVault(supplyVault0).balanceOf(_eulerAccount));
+        uint256 deposit1 = IEVault(supplyVault1).convertToAssets(IEVault(supplyVault1).balanceOf(_eulerAccount));
+
+        // Debts
+        uint256 debt0;
+        uint256 debt1;
+        address _bv0 = borrowVault0;
+        address _bv1 = borrowVault1;
+        if (_bv0 != address(0)) debt0 = IEVault(_bv0).debtOf(_eulerAccount);
+        if (_bv1 != address(0)) debt1 = IEVault(_bv1).debtOf(_eulerAccount);
+
+        // Convert asset1 amounts to asset0 terms using oracle price
+        uint256 uniPrice = _getUniswapPrice();
+        if (uniPrice == 0) return 0;
+
+        uint256 totalDeposits = deposit0 + deposit1 * uniPrice / WAD;
+        uint256 totalDebts = debt0 + debt1 * uniPrice / WAD;
+
+        if (totalDebts >= totalDeposits) return 0;
+        uint256 nav = totalDeposits - totalDebts;
+
+        return nav > type(uint128).max ? type(uint128).max : uint128(nav);
+    }
+
     // --- Internal: price reads ---
 
     /// @notice Read Uniswap V3 spot price from slot0.
@@ -645,29 +751,9 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
         return (baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate);
     }
 
-    function getAuctionParams()
-        external
-        view
-        returns (
-            uint64 _decayPerBlock,
-            uint64 _triggerThreshold,
-            uint64 _clearThreshold,
-            uint64 _shiftMagnitude,
-            uint64 _maxRecenterDrift,
-            uint64 _minAuctionBlocks,
-            uint64 _recenterRange
-        )
-    {
-        return (
-            decayPerBlock,
-            triggerThreshold,
-            clearThreshold,
-            shiftMagnitude,
-            maxRecenterDrift,
-            minAuctionBlocks,
-            recenterRange
-        );
-    }
+    // Auction params are accessible via individual public getters:
+    // decayPerBlock(), triggerThreshold(), clearThreshold(), shiftMagnitude(),
+    // maxRecenterDrift(), minAuctionBlocks(), recenterRange()
 
     function getSurchargeParams()
         external

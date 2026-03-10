@@ -50,6 +50,7 @@ contract LPAgentHookV4ForkTest is Test {
     uint64 constant TRIGGER_THRESHOLD = 0.15e18;
     uint64 constant CLEAR_THRESHOLD = 0.005e18;
     uint64 constant SHIFT_MAGNITUDE = 0.0108e18;
+
     uint64 constant MAX_RECENTER_DRIFT = 0.03e18;
     uint64 constant MIN_AUCTION_BLOCKS = 12;
     uint64 constant RECENTER_RANGE = 0.05e18;
@@ -115,11 +116,13 @@ contract LPAgentHookV4ForkTest is Test {
                 triggerThreshold: TRIGGER_THRESHOLD,
                 clearThreshold: CLEAR_THRESHOLD,
                 shiftMagnitude: SHIFT_MAGNITUDE,
+
                 surchargeDecayPerBlock: SURCHARGE_DECAY,
                 surchargeInitialAmount: SURCHARGE_INITIAL,
                 maxRecenterDrift: MAX_RECENTER_DRIFT,
                 minAuctionBlocks: MIN_AUCTION_BLOCKS,
-                recenterRange: RECENTER_RANGE
+                recenterRange: RECENTER_RANGE,
+                debtTriggerThreshold: 0.25e18
             })
         );
         console.log("V4 hook deployed:", address(hook));

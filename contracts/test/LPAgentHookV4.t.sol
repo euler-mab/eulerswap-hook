@@ -60,6 +60,7 @@ contract LPAgentHookV4Test is EulerSwapTestBase {
     uint64 constant TRIGGER_THRESHOLD = 0.15e18; // 15% of range
     uint64 constant CLEAR_THRESHOLD = 0.005e18; // 0.5% price convergence (must be < SHIFT_MAGNITUDE)
     uint64 constant SHIFT_MAGNITUDE = 0.01e18; // 1% shift
+
     uint64 constant SURCHARGE_DECAY = 10e14; // 10 bps/block
     uint64 constant SURCHARGE_INITIAL = 50e14; // 50 bps
     uint64 constant MAX_RECENTER_DRIFT = 0.03e18; // 3%
@@ -100,11 +101,13 @@ contract LPAgentHookV4Test is EulerSwapTestBase {
                 triggerThreshold: TRIGGER_THRESHOLD,
                 clearThreshold: CLEAR_THRESHOLD,
                 shiftMagnitude: SHIFT_MAGNITUDE,
+
                 surchargeDecayPerBlock: SURCHARGE_DECAY,
                 surchargeInitialAmount: SURCHARGE_INITIAL,
                 maxRecenterDrift: MAX_RECENTER_DRIFT,
                 minAuctionBlocks: MIN_AUCTION_BLOCKS,
-                recenterRange: RECENTER_RANGE
+                recenterRange: RECENTER_RANGE,
+                debtTriggerThreshold: 0.25e18
             })
         );
 
@@ -272,22 +275,21 @@ contract LPAgentHookV4Test is EulerSwapTestBase {
 
     function test_setAuctionParams() public {
         // clearThreshold (0.01) must be < shiftMagnitude (0.02)
-        hook.setAuctionParams(5e14, 0.6e18, 0.01e18, 0.02e18, 0.05e18, 10, 0.5e18);
-        (uint64 d, uint64 t, uint64 c, uint64 s, uint64 m, uint64 minBlocks, uint64 range) =
-            hook.getAuctionParams();
-        assertEq(d, 5e14);
-        assertEq(t, 0.6e18);
-        assertEq(c, 0.01e18);
-        assertEq(s, 0.02e18);
-        assertEq(m, 0.05e18);
-        assertEq(minBlocks, 10);
-        assertEq(range, 0.5e18);
+        hook.setAuctionParams(5e14, 0.6e18, 0.01e18, 0.02e18, 0.05e18, 10, 0.5e18, 0.3e18);
+        assertEq(hook.decayPerBlock(), 5e14);
+        assertEq(hook.triggerThreshold(), 0.6e18);
+        assertEq(hook.clearThreshold(), 0.01e18);
+        assertEq(hook.shiftMagnitude(), 0.02e18);
+
+        assertEq(hook.maxRecenterDrift(), 0.05e18);
+        assertEq(hook.minAuctionBlocks(), 10);
+        assertEq(hook.recenterRange(), 0.5e18);
+        assertEq(hook.debtTriggerThreshold(), 0.3e18);
     }
 
     function test_setAuctionParams_validates_thresholds() public {
         vm.expectRevert("clear threshold must be < shift magnitude");
-        // clearThreshold (0.02) >= shiftMagnitude (0.01) → revert
-        hook.setAuctionParams(5e14, 0.5e18, 0.02e18, 0.01e18, 0.03e18, 5, 1e18);
+        hook.setAuctionParams(5e14, 0.5e18, 0.02e18, 0.01e18, 0.03e18, 5, 1e18, 0.25e18);
     }
 
     function test_setSurchargeParams() public {
@@ -534,11 +536,12 @@ contract LPAgentHookV4Test is EulerSwapTestBase {
         hook.setAuctionParams(
             DECAY_PER_BLOCK,
             TRIGGER_THRESHOLD,
-            0.005e18,   // clearThreshold (must be < shiftMagnitude)
+            0.005e18,   // clearThreshold
             0.10e18,    // 10% shift magnitude
             MAX_RECENTER_DRIFT,
             MIN_AUCTION_BLOCKS,
-            RECENTER_RANGE
+            RECENTER_RANGE,
+            0.25e18     // debtTriggerThreshold
         );
 
         address swapper = makeAddr("swapper");
