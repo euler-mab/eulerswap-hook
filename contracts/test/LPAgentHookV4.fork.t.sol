@@ -246,7 +246,7 @@ contract LPAgentHookV4ForkTest is Test {
     }
 
     // ===================================================================
-    // Test 4: Pool health check — verify vault state is sound
+    // Test 4: Pool health check -verify vault state is sound
     // ===================================================================
     function test_fork_pool_health() public {
         IEulerSwap.StaticParams memory sp = pool.getStaticParams();
@@ -382,6 +382,108 @@ contract LPAgentHookV4ForkTest is Test {
 
         // Mismatch should be reasonable (< 10% for a functioning pool)
         assertTrue(mismatch < 0.10e18, "mismatch should be < 10% for healthy pool");
+    }
+
+    // ===================================================================
+    // Test 7: Debt trigger -verify NAV computation and trigger logic
+    // ===================================================================
+    function test_fork_debt_trigger() public {
+        vm.roll(block.number + 10); // let surcharge decay
+
+        IEulerSwap.StaticParams memory sp = pool.getStaticParams();
+
+        // Read real vault state
+        uint256 deposit0 = IEVault(sp.supplyVault0).convertToAssets(
+            IEVault(sp.supplyVault0).balanceOf(sp.eulerAccount)
+        );
+        uint256 deposit1 = IEVault(sp.supplyVault1).convertToAssets(
+            IEVault(sp.supplyVault1).balanceOf(sp.eulerAccount)
+        );
+        uint256 debt0 = sp.borrowVault0 != address(0)
+            ? IEVault(sp.borrowVault0).debtOf(sp.eulerAccount)
+            : 0;
+        uint256 debt1 = sp.borrowVault1 != address(0)
+            ? IEVault(sp.borrowVault1).debtOf(sp.eulerAccount)
+            : 0;
+
+        console.log("=== Debt Trigger Test ===");
+        console.log("Deposit0:", deposit0);
+        console.log("Deposit1:", deposit1);
+        console.log("Debt0:", debt0);
+        console.log("Debt1:", debt1);
+
+        // Verify approxNav was set in constructor
+        uint128 nav = hook.approxNav();
+        console.log("approxNav:", uint256(nav));
+        assertTrue(nav > 0, "approxNav should be > 0 after deployment");
+
+        // Compute expected NAV manually for comparison
+        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(UNI_USDC_WETH).slot0();
+        uint256 sqrtP = uint256(sqrtPriceX96);
+        uint256 uniPriceWad = sqrtP.mulDiv(sqrtP, Q192).mulDiv(WAD, 1);
+
+        uint256 totalDeposits = deposit0 + deposit1 * uniPriceWad / WAD;
+        uint256 totalDebts = debt0 + debt1 * uniPriceWad / WAD;
+        uint256 expectedNav = totalDeposits > totalDebts ? totalDeposits - totalDebts : 0;
+        console.log("Expected NAV:", expectedNav);
+        console.log("Nav difference:", expectedNav > nav ? expectedNav - nav : nav - expectedNav);
+
+        // NAV should be in the right ballpark (within 1% -small rounding from share conversion)
+        if (expectedNav > 0) {
+            uint256 diff = expectedNav > nav ? expectedNav - nav : nav - expectedNav;
+            assertTrue(diff * 100 / expectedNav < 1, "NAV should match within 1%");
+        }
+
+        // Check debt/NAV ratio
+        uint256 debtValue;
+        bool hasDebt;
+        if (debt0 > 0) {
+            debtValue = debt0;
+            hasDebt = true;
+            console.log("Debt on side 0 (asset0 deficit)");
+        } else if (debt1 > 0) {
+            debtValue = debt1 * uniPriceWad / WAD;
+            hasDebt = true;
+            console.log("Debt on side 1 (asset1 deficit)");
+        }
+
+        if (hasDebt && nav > 0) {
+            uint256 debtNavRatio = debtValue * WAD / uint256(nav);
+            console.log("Debt/NAV ratio (WAD):", debtNavRatio);
+            console.log("Trigger threshold:", uint256(hook.debtTriggerThreshold()));
+
+            if (debtNavRatio > uint256(hook.debtTriggerThreshold())) {
+                console.log("Debt/NAV exceeds threshold -trigger expected on next swap");
+
+                // Do a tiny swap to trigger the debt check
+                (uint112 r0,,) = pool.getReserves();
+                uint256 swapIn = uint256(r0) / 10000; // 0.01% of reserves
+                if (swapIn == 0) swapIn = 1;
+
+                uint256 expectedOut = pool.computeQuote(asset0, asset1, swapIn, true);
+                if (expectedOut > 0) {
+                    SwapCallback callback = new SwapCallback(asset0, swapIn);
+                    deal(asset0, address(callback), swapIn);
+
+                    vm.prank(address(callback));
+                    pool.swap(0, expectedOut, address(callback), abi.encode(swapIn));
+
+                    bool auctionActive = hook.auctionActive();
+                    console.log("Auction active after small swap:", auctionActive);
+                    assertTrue(auctionActive, "debt trigger should have started auction");
+
+                    // Verify clearing direction
+                    bool clearAsset0 = hook.auctionClearAsset0();
+                    if (debt0 > 0) {
+                        assertTrue(clearAsset0, "should clear asset0 (USDC debt)");
+                    } else {
+                        assertFalse(clearAsset0, "should clear asset1 (WETH debt)");
+                    }
+                }
+            } else {
+                console.log("Debt/NAV below threshold -no trigger expected");
+            }
+        }
     }
 
     // ===================================================================

@@ -642,7 +642,7 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
         } else {
             uint256 uniPrice = _getUniswapPrice();
             if (uniPrice == 0) return;
-            debtInAsset0 = debt1 * uniPrice / WAD;
+            debtInAsset0 = debt1 * WAD / uniPrice;
         }
 
         // Trigger if debt/NAV exceeds threshold
@@ -671,8 +671,8 @@ contract LPAgentHookV4 is IEulerSwapHookTarget {
         uint256 uniPrice = _getUniswapPrice();
         if (uniPrice == 0) return 0;
 
-        uint256 totalDeposits = deposit0 + deposit1 * uniPrice / WAD;
-        uint256 totalDebts = debt0 + debt1 * uniPrice / WAD;
+        uint256 totalDeposits = deposit0 + deposit1 * WAD / uniPrice;
+        uint256 totalDebts = debt0 + debt1 * WAD / uniPrice;
 
         if (totalDebts >= totalDeposits) return 0;
         uint256 nav = totalDeposits - totalDebts;
