@@ -276,6 +276,15 @@ function routeOrder(
 
 // ─── Execute retail swap on our pool ────────────────────────────────
 
+/**
+ * Execute a retail swap on our pool with fee-on-input.
+ *
+ * Fee is deducted from the INPUT before curve math runs (matching EulerSwap's
+ * QuoteLib: `amount = amount - amount * fee / 1e18`). The curve only sees
+ * the net input. Fee revenue goes to LP, not into the pool's reserves.
+ *
+ * amountUSDC: gross order size in USDC terms (before fee).
+ */
 function executeRetailOnPool(
   pool: PoolState,
   vault: VaultState,
@@ -283,27 +292,65 @@ function executeRetailOnPool(
   amountUSDC: number,
   ethPrice: number,
   fee: number,
-): { newVault: VaultState; feeRevenue: number; newCurX: number; newCurY: number } {
+): { newVault: VaultState; feeRevenue: number; newCurX: number; newCurY: number; executed: boolean } {
   const { x0, y0, params } = pool;
   let curX = pool.curX;
   let curY = pool.curY;
   let newVault = { ...vault };
-  let feeRevenue = 0;
+  const gamma = 1 - fee;  // can be > 1 for negative fees (rebate)
+  const noExec = { newVault: vault, feeRevenue: 0, newCurX: curX, newCurY: curY, executed: false };
+
+  // Compute actual curve boundaries (not y0*0.99 or x0*0.99)
+  const xb = computeXb(x0, params.rx, params.cx);
+  const yb = computeYb(y0, params.ry, params.cy);
+  // Max Y when X hits boundary (X-side limit)
+  const yAtXb = fX(xb, params.cx, x0, y0, params.px, params.py);
+  // Max X when Y hits boundary (Y-side limit)
+  const xAtYb = gY(yb, params.cy, y0, x0, params.px, params.py);
 
   if (isBuyX) {
     // Trader buys X (USDC out), sends WETH in → curY increases, curX decreases
-    const dyTarget = amountUSDC / ethPrice;
-    const yb = computeYb(y0, params.ry, params.cy);
-    const newY = Math.min(curY + dyTarget, y0 * 0.99);  // stay within range
-    if (newY <= curY + 1e-10) return { newVault: vault, feeRevenue: 0, newCurX: curX, newCurY: curY };
+    // Fee-on-input: deduct fee from WETH input before curve
+    const dyGross = amountUSDC / ethPrice;
+    const dyNet = dyGross * gamma;
+
+    // Clamp to curve boundary (yAtXb is the max Y on the curve)
+    const yMax = yAtXb * 0.999;  // stay slightly inside boundary
+    const newY = Math.min(curY + dyNet, yMax);
+    if (newY <= curY + 1e-10) return noExec;
 
     const dy = newY - curY;
-    const xBefore = (curY >= y0 - 1e-8) ? x0 : gY(curY, 0, y0, x0, 1, params.py);
-    const xAfter = gY(newY, 0, y0, x0, 1, params.py);
-    const dxOut = xBefore - xAfter;
-    if (dxOut < 0.01) return { newVault: vault, feeRevenue: 0, newCurX: curX, newCurY: curY };
+    // Compute X position from Y on the correct side of the curve
+    let xAfter: number;
+    if (newY >= y0) {
+      // X-side: use fX inverse → need to find x such that fX(x)=newY
+      // For c=0: fX(x) = y0 + (px/py)(x0²/x - x0), solve for x
+      // x = (px/py)*x0² / (newY - y0 + (px/py)*x0)
+      const pxpy = params.px / params.py;
+      xAfter = pxpy * x0 * x0 / (newY - y0 + pxpy * x0);
+    } else {
+      // Y-side: gY gives x from y
+      xAfter = gY(newY, params.cy, y0, x0, params.px, params.py);
+    }
 
-    feeRevenue = dxOut * fee;  // can be negative
+    let xBefore: number;
+    if (curY >= y0 - 1e-8) {
+      if (curY >= y0) {
+        const pxpy = params.px / params.py;
+        xBefore = pxpy * x0 * x0 / (curY - y0 + pxpy * x0);
+      } else {
+        xBefore = x0;
+      }
+    } else {
+      xBefore = gY(curY, params.cy, y0, x0, params.px, params.py);
+    }
+
+    const dxOut = xBefore - xAfter;
+    if (dxOut < 0.01) return noExec;
+
+    // Fee: proportional to what was actually used (may be clamped)
+    const dyActualGross = dy / gamma;
+    const feeRevenue = (dyActualGross - dy) * ethPrice;
 
     const xrUsed = Math.min(dxOut, newVault.xr);
     const wethRepaid = Math.min(dy, newVault.yd);
@@ -313,21 +360,51 @@ function executeRetailOnPool(
       xd: newVault.xd + (dxOut - xrUsed),
       yd: newVault.yd - wethRepaid,
     };
-    curX = xAfter;
-    curY = newY;
+
+    return { newVault, feeRevenue, newCurX: xAfter, newCurY: newY, executed: true };
   } else {
     // Trader sells X (USDC in), receives WETH out → curX increases, curY decreases
-    const dxTarget = amountUSDC;
-    const newX = Math.min(curX + dxTarget, x0 * 0.99);
-    if (newX <= curX + 0.01) return { newVault: vault, feeRevenue: 0, newCurX: curX, newCurY: curY };
+    // Fee-on-input: deduct fee from USDC input before curve
+    const dxGross = amountUSDC;
+    const dxNet = dxGross * gamma;
+
+    // Clamp to curve boundary (xAtYb is the max X on the curve)
+    const xMax = xAtYb * 0.999;
+    const newX = Math.min(curX + dxNet, xMax);
+    if (newX <= curX + 0.01) return noExec;
 
     const dx = newX - curX;
-    const yBefore = (curX >= x0 - 0.01) ? y0 : fX(curX, 0, x0, y0, 1, params.py);
-    const yAfter = fX(newX, 0, x0, y0, 1, params.py);
-    const dyOut = yBefore - yAfter;
-    if (dyOut < 1e-10) return { newVault: vault, feeRevenue: 0, newCurX: curX, newCurY: curY };
+    // Compute Y position from X on the correct side of the curve
+    let yAfter: number;
+    if (newX >= x0) {
+      // Y-side: use gY inverse → find y such that gY(y)=newX
+      // For c=0: gY(y) = x0 + (py/px)(y0²/y - y0), solve for y
+      // y = (py/px)*y0² / (newX - x0 + (py/px)*y0)
+      const pypx = params.py / params.px;
+      yAfter = pypx * y0 * y0 / (newX - x0 + pypx * y0);
+    } else {
+      // X-side: fX gives y from x
+      yAfter = fX(newX, params.cx, x0, y0, params.px, params.py);
+    }
 
-    feeRevenue = dx * fee;  // can be negative
+    let yBefore: number;
+    if (curX >= x0 - 0.01) {
+      if (curX >= x0) {
+        const pypx = params.py / params.px;
+        yBefore = pypx * y0 * y0 / (curX - x0 + pypx * y0);
+      } else {
+        yBefore = y0;
+      }
+    } else {
+      yBefore = fX(curX, params.cx, x0, y0, params.px, params.py);
+    }
+
+    const dyOut = yBefore - yAfter;
+    if (dyOut < 1e-10) return noExec;
+
+    // Fee: proportional to what was actually used (may be clamped)
+    const dxActualGross = dx / gamma;
+    const feeRevenue = dxActualGross - dx;
 
     const yrUsed = Math.min(dyOut, newVault.yr);
     const usdcRepaid = Math.min(dx, newVault.xd);
@@ -337,11 +414,9 @@ function executeRetailOnPool(
       xd: newVault.xd - usdcRepaid,
       yd: newVault.yd + (dyOut - yrUsed),
     };
-    curX = newX;
-    curY = yAfter;
-  }
 
-  return { newVault, feeRevenue, newCurX: curX, newCurY: curY };
+    return { newVault, feeRevenue, newCurX: newX, newCurY: yAfter, executed: true };
+  }
 }
 
 // ─── Main simulation ────────────────────────────────────────────────
@@ -405,14 +480,61 @@ function runV7(pricePath: number[], overrides?: {
     const t = i / SIM_CONFIG.stepsPerDay;
     const extPrice = pricePath[i];
     const ethPrice = 1 / extPrice;
+    const pEquil = pool.params.px / pool.params.py;
+    const priceOffset = Math.abs(extPrice - pEquil) / pEquil;
 
-    // 1. Arb to market price
+    // 1. Compute arb fee at PRE-ARB state (EulerSwap's getFee sees pre-swap reserves)
+    const preArbVault = vaultStateAt(pool.curX, pool.curY, pool.x0, pool.y0, pool.vault);
+    const preArbNav = computeNAV(preArbVault, ethPrice);
+    const preArbExposure = computeExposure(preArbVault, ethPrice);
+    const preArbExposurePct = preArbNav > 0 ? preArbExposure / preArbNav : 0;
+    const arbFee = ourPoolFee(preArbExposurePct, false, priceOffset);
+    const arbGamma = 1 - arbFee;
+
+    // 2. Arb with fee friction — fee-on-input creates a no-arb band.
+    //    For fee-on-input γ:
+    //    - Arb buys X (extPrice > pEquil): stops when p_curve = γ·extPrice
+    //    - Arb sells X (extPrice < pEquil): stops when p_curve = extPrice/γ
+    //    The arb can't profitably push price closer than this to the external price.
     const preArb = { curX: pool.curX, curY: pool.curY };
-    const arbed = arbToPrice(pool, extPrice);
-    pool.curX = arbed.curX;
-    pool.curY = arbed.curY;
+    let targetPrice: number;
+    let shouldArb = false;
+    if (extPrice > pEquil && arbGamma > 0) {
+      targetPrice = arbGamma * extPrice;
+      shouldArb = targetPrice > pEquil;  // target still above equilibrium
+    } else if (extPrice < pEquil && arbGamma > 0) {
+      targetPrice = extPrice / arbGamma;
+      shouldArb = targetPrice < pEquil;  // target still below equilibrium
+    } else {
+      targetPrice = extPrice;
+    }
+
+    if (shouldArb) {
+      const arbed = arbToPrice(pool, targetPrice);
+      pool.curX = arbed.curX;
+      pool.curY = arbed.curY;
+    }
+
     const arbDx = Math.abs(pool.curX - preArb.curX);
     arbVolume += arbDx;
+
+    // Arb fee revenue: fee fraction of the GROSS input.
+    // The curve moved by net input; gross = net / γ; fee = gross - net = net * (1-γ)/γ.
+    // For arb buying X (sending Y): net Y input = pool.curY - preArb.curY, fee in Y
+    // For arb selling X (sending X): net X input = pool.curX - preArb.curX, fee in X
+    if (arbDx > 0.01 && arbGamma > 0) {
+      if (extPrice > pEquil) {
+        // Arb sent Y (WETH), received X. Fee on Y input.
+        const dyNet = pool.curY - preArb.curY;
+        const feeY = dyNet * (1 - arbGamma) / arbGamma;
+        arbFeeRevenue += feeY * ethPrice;  // convert to USDC
+      } else {
+        // Arb sent X (USDC), received Y. Fee on X input.
+        const dxNet = pool.curX - preArb.curX;
+        const feeX = dxNet * (1 - arbGamma) / arbGamma;
+        arbFeeRevenue += feeX;
+      }
+    }
 
     // Vault after arb
     let vault = vaultStateAt(pool.curX, pool.curY, pool.x0, pool.y0, pool.vault);
@@ -420,66 +542,66 @@ function runV7(pricePath: number[], overrides?: {
     let exposure = computeExposure(vault, ethPrice);
     let exposurePct = nav > 0 ? exposure / nav : 0;
 
-    // Arb fee (capture fee — arbs increase exposure)
-    const pEquil = pool.params.px / pool.params.py;
-    const priceOffset = Math.abs(extPrice - pEquil) / pEquil;
-    if (arbDx > 0.01) {
-      arbFeeRevenue += arbDx * ourPoolFee(exposurePct, false, priceOffset);
-    }
-
-    // 2. Generate retail orders (Poisson arrivals)
+    // 3. Generate retail orders (Poisson arrivals)
+    // After EACH swap (arb or retail), check triggers — mirrors EulerSwap afterSwap.
     const nOrders = poissonSample(rng, arrivalRate);
-    const wethNet = vault.yr - vault.yd;
+    let wethNet = vault.yr - vault.yd;
+    let health = computeHealth(pool);
+    if (health < minHealth) minHealth = health;
+    let needsRecenter = health < FEE_CONFIG.healthRecenterThreshold && health < 10;
+    let needsAuction = !needsRecenter && exposurePct > auctionTrigger && nav > 1;
 
-    for (let j = 0; j < nOrders; j++) {
-      const orderSize = lognormalSample(rng, meanSize, RETAIL_CONFIG.sizeSigma);
-      const isBuyX = rng() < RETAIL_CONFIG.buyProb;  // buy USDC / sell WETH
-      totalRetailGenerated += orderSize;
+    if (!needsRecenter && !needsAuction) {
+      for (let j = 0; j < nOrders; j++) {
+        const orderSize = lognormalSample(rng, meanSize, RETAIL_CONFIG.sizeSigma);
+        const isBuyX = rng() < RETAIL_CONFIG.buyProb;
+        totalRetailGenerated += orderSize;
 
-      // Determine if this trade reduces our exposure
-      const isReducing = isBuyX ? (wethNet > 0) : (wethNet < 0);
-      // Fee for this direction
-      const fee = ourPoolFee(exposurePct, isReducing, priceOffset);
+        const isReducing = isBuyX ? (wethNet > 0) : (wethNet < 0);
+        const fee = ourPoolFee(exposurePct, isReducing, priceOffset);
+        const fraction = routeOrder(isBuyX, orderSize, pool, fee, ethPrice);
+        const ourAmount = orderSize * fraction;
 
-      // Route: what fraction goes to our pool?
-      const fraction = routeOrder(isBuyX, orderSize, pool, fee, ethPrice);
-      const ourAmount = orderSize * fraction;
+        if (ourAmount > 1) {
+          const result = executeRetailOnPool(pool, vault, isBuyX, ourAmount, ethPrice, fee);
+          if (result.executed) {
+            vault = result.newVault;
+            pool.curX = result.newCurX;
+            pool.curY = result.newCurY;
+            retailFeeRevenue += result.feeRevenue;
+            retailVolume += ourAmount;
+            retailOrders++;
 
-      if (ourAmount > 1) {
-        const result = executeRetailOnPool(pool, vault, isBuyX, ourAmount, ethPrice, fee);
-        vault = result.newVault;
-        pool.curX = result.newCurX;
-        pool.curY = result.newCurY;
-        retailFeeRevenue += result.feeRevenue;
-        retailVolume += ourAmount;
-        retailOrders++;
+            nav = computeNAV(vault, ethPrice);
+            exposure = computeExposure(vault, ethPrice);
+            exposurePct = nav > 0 ? exposure / nav : 0;
+            wethNet = vault.yr - vault.yd;
 
-        // Update exposure for next order's routing
-        nav = computeNAV(vault, ethPrice);
-        exposure = computeExposure(vault, ethPrice);
-        exposurePct = nav > 0 ? exposure / nav : 0;
+            // afterSwap trigger check
+            health = computeHealth(pool);
+            if (health < minHealth) minHealth = health;
+            needsRecenter = health < FEE_CONFIG.healthRecenterThreshold && health < 10;
+            needsAuction = !needsRecenter && exposurePct > auctionTrigger && nav > 1;
+            if (needsRecenter || needsAuction) break;
+          }
+        }
       }
     }
 
     if (exposurePct > maxExposurePct) maxExposurePct = exposurePct;
     sumExposurePct += exposurePct;
 
-    const health = computeHealth(pool);
-    if (health < minHealth) minHealth = health;
-
-    // 3. Emergency recenter
-    if (health < FEE_CONFIG.healthRecenterThreshold && health < 10) {
+    // 4. Emergency recenter
+    if (needsRecenter) {
       pool = recenterPool(vault, ethPrice, rx);
       approxNav = computeNAV(vault, ethPrice);
-      totalRecenters++;
-      bareRecenters++;
+      totalRecenters++; bareRecenters++;
       log.push(`Day ${t.toFixed(1).padStart(5)} BARE_RECENTER h=${health.toFixed(2)} exp=${(exposurePct*100).toFixed(0)}%`);
       continue;
     }
 
-    // 4. Auction backstop
-    if (exposurePct > auctionTrigger && nav > 1) {
-      // Simplified auction (same as V6)
+    // 5. Auction backstop
+    if (needsAuction) {
       const asset0Deficit = wethNet > 0;
       const shift = FEE_CONFIG.shiftMagnitude;
       const pyOff = asset0Deficit ? ethPrice / (1 + shift) : ethPrice * (1 + shift);
@@ -493,7 +615,6 @@ function runV7(pricePath: number[], overrides?: {
         let aCost = 0, aFees = 0, cleared = false;
         const startFee = Math.min(shift * 1.5, FEE_CONFIG.maxCaptureFee);
 
-        // Run auction (simplified — attract USDC side only shown for brevity)
         if (asset0Deficit) {
           let yCur = y0Off;
           const ybOff = computeYb(y0Off, offParams.ry, offParams.cy);
