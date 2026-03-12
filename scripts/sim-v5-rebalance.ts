@@ -672,7 +672,7 @@ function runV3Strategy(pricePath: number[]): StrategyResult {
 
     if (exposurePct > V3_CONFIG.triggerPct) {
       const newPy = 1 / extPrice;
-      pool.vault = vault;
+      // Note: do NOT set pool.vault = vault here — causes delta double-counting (same as V5 fix #4)
       const delta = V3_CONFIG.auctionDeltaBps / 10000;
       const wethNet = (vault.yr - vault.yd) * ethPrice;
       const attractUsdc = wethNet >= 0;
@@ -808,7 +808,6 @@ function runStaticStrategy(pricePath: number[]): StrategyResult {
     if (health < minHealth) minHealth = health;
 
     if (i % 24 === 0) {
-      pool.vault = vault;
       pool = recenterPool(vault, 1 / extPrice);
     }
   }
@@ -953,10 +952,15 @@ function runSensitivityAnalysis() {
   console.log('\n--- 3. Theoretical IL vs Simulated ---');
 
   const x0 = computeX0Additive(BASE_PARAMS);
-  const leverage = x0 / BASE_PARAMS.xr;
+  const y0 = computeY0Additive(BASE_PARAMS);
   const ethStart = BASE_PARAMS.py;
   const ethEnd = 1 / pricePath[pricePath.length - 1];
   const k = ethEnd / ethStart;  // price ratio
+
+  // Effective leverage = pool_value / LP_equity (NOT x0/xr — both sides contribute)
+  const poolValue = x0 + y0 * ethStart;
+  const lpEquity = v5baseline.initialNAV;
+  const leverage = poolValue / lpEquity;
 
   // Constant-product IL for c=0
   const poolIL = 2 * Math.sqrt(k) / (1 + k) - 1;
@@ -967,7 +971,9 @@ function runSensitivityAnalysis() {
 
   const nRecenters = v5baseline.auctionsCleared;
 
-  console.log(`  Pool leverage: x0/xr = ${x0.toFixed(0)} / ${BASE_PARAMS.xr} = ${leverage.toFixed(0)}x`);
+  console.log(`  Pool value: x0=${x0.toFixed(0)} + y0×p=${(y0 * ethStart).toFixed(0)} = $${poolValue.toFixed(0)}`);
+  console.log(`  LP equity: $${lpEquity.toFixed(0)}`);
+  console.log(`  Effective leverage: pool_value/equity = ${leverage.toFixed(0)}x`);
   console.log(`  ETH price: $${ethStart.toFixed(0)} -> $${ethEnd.toFixed(0)} (k = ${k.toFixed(4)})`);
   console.log(`  Pool IL (c=0, no leverage): ${(poolIL * 100).toFixed(4)}%`);
   console.log(`  Single-period leveraged IL (no recenter): ${(leveragedIL * 100).toFixed(1)}% -> NAV $${theoreticalNAV.toFixed(0)}`);
