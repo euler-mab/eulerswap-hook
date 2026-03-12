@@ -16,6 +16,7 @@ Working document capturing the analysis and design reasoning for the next-genera
 | 18 | Empirical validation experiments |
 | 19 | Design principles summary |
 | 20-22 | **Hook designs:** V1-V3 recap, V4 design, open questions |
+| 23 | **Variance drain:** the fundamental cost of rebalancing leveraged pools |
 
 ## 1. EulerSwap Building Blocks
 
@@ -738,7 +739,7 @@ function afterSwap(... reserve0, reserve1):
         // Normal mode: check if exposure warrants equity clearing
         d = pool.getDynamicParams()
         (exposure, asset0Deficit) = computeExposure(reserve0, reserve1, d)
-        if exposure > triggerThreshold:
+        if exposure > equityTriggerThreshold:
             startEquityClearing(reserve0, reserve1, asset0Deficit, d)
 
     else:
@@ -813,10 +814,10 @@ This matches V3's direction (V3 line 371-379). Verified against the curve math: 
 
 #### Step 1: Shift curve to create clearing arb
 
-When `afterSwap` detects exposure > triggerThreshold (see "Exposure metric" above), it starts the auction:
+When `afterSwap` detects exposure exceeds the equity or debt trigger threshold, it starts the auction:
 
 ```
-// Already inside: if !auctionActive && exposure > triggerThreshold
+// Already inside: if !auctionActive && (equityExposure > threshold || debtExposure > threshold)
     // Snapshot pre-shift price for recenter safety clamping
     preShiftPriceY = currentPriceY
 
@@ -966,7 +967,7 @@ The starting fee (= shiftMagnitude) is exact for all c — at equilibrium, margi
 | shiftMagnitude | ~108 bps | Could use smaller shifts |
 | decayPerBlock | ~4.3 bps | May need slower decay |
 | Fee revenue per cycle | shift × volume | Higher volume → more revenue |
-| triggerThreshold | 15% of range | Tighter ranges → more sensitive |
+| equityTriggerThreshold | 15% of NAV | Tighter ranges → more sensitive |
 
 **Calibration for high c:** the key relationship is `shiftMagnitude ≈ targetBlocks × decayPerBlock`. For stablecoin pools with high c, the same mispricing takes more blocks to clear (more volume needed), so either:
 - Accept more blocks in clearing mode (increase targetBlocks, keep same shift/decay)
@@ -1016,14 +1017,14 @@ The in-pool auction lets arbers bring liquidity TO the pool. The LP pays no slip
 
 ### Storage
 
-Fee params (baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate) + auction params (decayPerBlock, triggerThreshold, clearThreshold, shiftMagnitude, maxRecenterDrift, minAuctionBlocks, recenterRange) + surcharge params (surchargeDecayPerBlock, surchargeInitialAmount) + auction state (auctionActive, auctionStartBlock, auctionStartingFee, auctionClearAsset0, preShiftPriceY) + surcharge state (surchargeStartBlock). ~15 slots.
+Fee params (baseFee, maxFee, gasCoeff, externalFee, captureRate, attractRate) + auction params (decayPerBlock, clearThreshold, shiftMagnitude, maxRecenterDrift, minAuctionBlocks, recenterRange) + trigger params (debtTriggerThreshold, approxNav) + surcharge params (surchargeDecayPerBlock, surchargeInitialAmount) + auction state (auctionActive, auctionStartBlock, auctionStartingFee, auctionClearAsset0, preShiftPriceY) + surcharge state (surchargeStartBlock). ~15 slots.
 
 ### Agent role
 
 The agent is not needed for the core loop. Its only job is parameter tuning on a slow timescale:
 
 - Adjust baseFee, attractRate, captureRate, gasCoeff based on realized vol, observed arb frequency, and routing data
-- Tune triggerThreshold, clearThreshold, shiftMagnitude, decayPerBlock, minAuctionBlocks
+- Tune clearThreshold, shiftMagnitude, decayPerBlock, minAuctionBlocks, debtTriggerThreshold
 - Calibrate recenterRange to maintain h=1 at boundary given current LTVs and boost level
 - Monitor pool health as a safety backstop (emergency intervention via maxFee or manual reconfigure)
 
@@ -1068,3 +1069,219 @@ Pool's static params (vaults, assets, euler account) stay the same.
 10. **Correlated oracle hardening.** The clearing check and recenter both read slot0 in the same afterSwap call. A single-block manipulation could trigger premature clearing at a wrong price (see Risks). Two hardening options: (a) use TWAP for the clearing check (slot0 for recenter is bounded by drift clamp), or (b) require price convergence across N consecutive blocks (add a `convergenceBlocks` counter). Both reduce the attack surface at the cost of complexity and latency. Is the current mitigation stack (drift clamp + minAuctionBlocks + surcharge) sufficient for launch, or does the correlated vector warrant hardening before deployment?
 
 11. **Stablecoin pool calibration.** High-c pools (c ≥ 0.8) need 5-10x more arb volume to clear the same mispricing. Should shiftMagnitude and decayPerBlock be parameterized per pool type, or can a single calibration work across volatile and stable pairs? Empirical testing with realistic stablecoin pool parameters would resolve this.
+
+## 23. Variance Drain: The Fundamental Cost of Rebalancing Leveraged Pools
+
+Rebalancing is not free. Each recenter crystallizes the pool's impermanent loss into a permanent NAV reduction. For leveraged pools, this loss is amplified by the leverage factor and compounds multiplicatively across recenters. This section derives the cost analytically and validates against simulation.
+
+### The crystallization problem
+
+Consider the pool's lifecycle between recenters:
+
+1. Pool is at equilibrium after a recenter. LP NAV = V₀.
+2. Price moves. The pool's reserves shift, creating directional exposure and impermanent loss.
+3. An auction clears the exposure. The pool recenters at the new market price.
+4. LP NAV is now V₁ < V₀. This is the new starting point — the loss is permanent.
+
+Without recentering, the IL is unrealized: if price reverts, the pool recovers. With recentering, the loss is locked in and the LP starts the next cycle from a reduced base. Over many cycles, these losses compound multiplicatively.
+
+The competing risk: without recentering, exposure grows unbounded and the pool approaches liquidation. The LP must recenter to survive — but each recenter costs them.
+
+### Impermanent loss for constant-product (c = 0)
+
+For a standard constant-product AMM, the IL for a price change by factor k = p_new/p_old is:
+
+```
+IL(k) = 2√k / (1 + k) − 1
+```
+
+This is the fractional loss of pool value relative to holding the pool's assets. For small moves ε = k − 1:
+
+```
+IL ≈ −ε² / 8    (valid to ~1% for |ε| < 1%, ~5% for |ε| < 5%)
+```
+
+Note: IL is always non-positive. The pool always underperforms a hold strategy, regardless of price direction.
+
+### Leverage amplification
+
+The pool has virtual reserves x₀, y₀ with total pool value V_pool = x₀ + y₀p₀. The LP's equity is E = xr + yr·p₀ − xd − yd·p₀. The LP targets 100% quote (USDC) — at the ideal equilibrium after a recenter, yr = yd = 0 and E = xr.
+
+The effective leverage is:
+
+```
+L = V_pool / E
+```
+
+For this pool: V_pool = 831,287 + 358.24 × 1,986 = 1,542,755. E = 3,611. So L = 427×.
+
+Note: L ≠ x₀/xr (= 230×). The leverage is pool_value/equity, not single-side reserve/deposit, because the pool has reserves on both sides. For a balanced constant-product pool (y₀p₀ = x₀), L ≈ 2 · x₀/xr. The factor of 2 matters.
+
+The LP bears the pool's entire IL on their equity. The exact NAV change for a price move by factor k = 1 + ε:
+
+```
+ΔNAV = (√k − 1) · (x₀ − y₀ · p · √k)
+```
+
+For a balanced pool (x₀ = y₀p₀) this simplifies to −x₀(√k − 1)² ≈ −(V_pool/2)·ε²/4. For an unbalanced pool (the one-sided USDC LP has x₀ > y₀p₀), there is an additional first-order directional term:
+
+```
+ΔNAV ≈ (ε/2)(x₀ − y₀p₀) − (ε²/8)(x₀ + y₀p₀)
+```
+
+The first term is directional exposure from the imbalance — positive when ETH rises (LP was long USDC), negative when ETH falls. It has zero expectation under GBM. The second term is the IL, always negative. The expected loss per recenter as a fraction of LP equity:
+
+```
+E[ΔV/V] = −L · ε² / 8     (same for balanced and unbalanced pools)
+```
+
+Verified via Monte Carlo (1000 sims × 100 recenters): simulated E[ln(V/V₀)] = −0.2210, predicted = −0.2195. Match within 0.7%.
+
+A 1% price move with L = 427 costs the LP 427 × 0.01² / 8 = 0.53% of their equity in expectation. Small in isolation; devastating when compounded.
+
+### One-sided deposit and clearing conditions
+
+The LP targets 100% USDC equity. In the hook, the recenter (`_endAuctionAndRecenter`) sets equilibrium reserves to the current reserves and adjusts priceY to market. It does not trade the vault back to single-asset. Whether the LP achieves its USDC target depends on the clearing condition:
+
+- **equity_zero:** non-quote (ETH) net equity reaches zero → LP is at ~100% USDC. This is the ideal outcome.
+- **debt_zero:** clearing-side debt reaches zero → LP has reduced but not eliminated exposure.
+- **price_convergence:** marginal price matches oracle within threshold → no guarantee on vault composition. The LP may retain residual ETH exposure.
+
+In simulation, price_convergence is the dominant clearing condition (100% of auctions). This means the LP gradually drifts from the 100% USDC target, accumulating directional exposure across recenters. The first-order directional term adds noise to individual cycles but does not change the expected drain rate.
+
+However, residual exposure creates **asymmetric liquidation risk**: a USDC-targeting LP with accumulated long-ETH exposure is disproportionately harmed by ETH drops. The variance drain formula captures the expected cost; the asymmetric tail risk is a separate concern that equity_zero clearing would address.
+
+### Variance drain formula
+
+Over N recenters with independent price moves ε₁, ε₂, ..., εₙ:
+
+```
+V_final = V₀ · ∏(1 − L·εᵢ²/8)
+```
+
+Taking logarithms and using E[εᵢ²] = σ²·Δt where Δt is the time between recenters:
+
+```
+E[ln(V_final/V₀)] = −(L·σ²/8) · N·Δt = −L·σ²·T/8
+```
+
+Therefore:
+
+```
+V_final ≈ V₀ · exp(−L · σ² · T / 8)
+```
+
+where T is total time in years, σ is annualized volatility, and L is the effective leverage.
+
+This is the **variance drain** — the systematic NAV erosion from rebalancing a leveraged position in a volatile market. It depends only on L, σ², and T. The rebalancing frequency cancels: more frequent recenters mean smaller per-recenter losses but more of them.
+
+### Validation against simulation
+
+Predictions from V₀ · exp(−L·σ²·T/8) with L = 427, T = 30/365:
+
+| σ (annual) | Exponent | Predicted NAV | Simulated V5 NAV | Auction cost | Predicted − cost |
+|-----------|----------|--------------|-----------------|-------------|-----------------|
+| 30% | 0.39 | $2,434 | $2,138 | $279 | $2,155 |
+| 60% | 1.58 | $744 | $509 | $457 | — |
+| 90% | 3.55 | $104 | $53 | $425 | — |
+
+At 30% vol, the formula minus auction costs ($2,155) closely matches the simulation ($2,138). At higher vol, the simple subtraction breaks down because auction costs are incurred throughout the simulation on declining NAV, not as a lump sum. The formula captures the dominant effect; auction costs are a secondary correction.
+
+### Implications for pool design
+
+**1. The leverage-volatility product Lσ² determines viability.**
+
+The decay rate is L·σ²/8 per year. For the pool to retain meaningful NAV over a holding period T:
+
+```
+L · σ² · T / 8 ≲ 1    →    L ≲ 8 / (σ² · T)
+```
+
+| σ (annual) | Max L for 50% survival (30d) | Max L for 50% survival (1yr) |
+|-----------|--------------------------|--------------------------|
+| 30% | 749× | 62× |
+| 60% | 187× | 15× |
+| 90% | 83× | 7× |
+
+This pool (L = 427×) is viable only at σ ≲ 25% for 30-day horizons. At the 60-90% realized vol typical of ETH, the leverage is 2-5× too high.
+
+**2. Lower leverage does not change the fee-to-drain ratio.**
+
+Fee revenue scales with pool depth (proportional to L). Variance drain also scales with L. The ratio:
+
+```
+fee_revenue / drain ∝ (L · volume · fee_rate) / (L · σ²) = volume · fee_rate / σ²
+```
+
+The L cancels. Reducing leverage proportionally reduces both fees and drain. The profitability question — whether fees exceed drain — depends on volume × fee_rate vs σ², which is independent of leverage.
+
+What lower leverage does: it slows down both the earning and the bleeding, giving the LP more time to observe whether the fee/drain ratio is favorable before being wiped out. High leverage is a bet that fees exceed drain, amplified to maximum. If that bet is wrong, you lose everything fast.
+
+**3. Rebalancing frequency is irrelevant in the continuous limit.**
+
+The formula shows V = V₀ · exp(−Lσ²T/8) regardless of how many recenters occur. This is because the NΔt product is fixed at T. In theory, rebalancing every block or once a month gives the same expected drain.
+
+In practice, discrete effects break this symmetry:
+- **Very frequent recentering** (every block): each recenter has a fixed cost (auction net cost, gas). These costs don't scale with the move size, creating a floor cost per recenter. At high frequency, fixed costs dominate.
+- **Very infrequent recentering** (monthly): the ε²/8 approximation breaks down for large moves. At 60% vol, a 30-day move can be 20%+, where the approximation error is >20%. More importantly, health factor may breach 1.0 before the next recenter.
+
+The optimal frequency balances: fixed costs per recenter (favors less frequent) vs health floor violations (favors more frequent) vs higher-order IL terms (favors more frequent). Simulation results (section below) suggest the optimal frequency is surprisingly low for this pool — a few dozen recenters per month, not hundreds.
+
+**4. The real constraint is health, not drain.**
+
+The variance drain formula treats all rebalancing frequencies as equivalent. The reason to rebalance at all is health: without recentering, a sustained directional move pushes health below 1.0, triggering liquidation.
+
+The minimum rebalancing frequency is set by: how much can price move before health breaches the safety floor?
+
+For this pool with rx = ry = 0.05 (5% range), a ~4.5% price move exhausts the range on one side. The health factor at the boundary depends on the cross-LTV:
+
+```
+h_boundary = 1.0    (by construction — the range is calibrated so h = 1 at the boundary)
+```
+
+The pool's range parameters (rx, ry) are chosen precisely so that the health factor equals 1.0 at the reserve boundary. This is the design constraint from section 21 (recenterRange). Any trigger threshold that lets reserves reach the boundary risks liquidation. For rx = 0.05, the 50% trigger means health is ~1.3 at trigger time — reasonable margin, but a fast move can overshoot.
+
+Wider range (higher rx) simultaneously:
+- Increases the distance to liquidation (more health margin)
+- Reduces leverage (L ∝ 1/rx approximately)
+- Reduces variance drain (∝ L)
+- Allows less frequent rebalancing
+
+All four effects work in the same direction. **Range width is the single most important parameter for pool viability.**
+
+### Simulation evidence: trigger threshold sweep
+
+Varying the equity trigger threshold at 60% vol (same price path, 30 days):
+
+| Threshold | Auctions | Final NAV | Avg exposure | Min health |
+|-----------|----------|-----------|-------------|------------|
+| 25% | 571 | $509 (−86%) | 66% | 1.21 |
+| 50% | 438 | $498 (−86%) | 68% | 1.21 |
+| 100% | 217 | $510 (−86%) | 76% | 1.15 |
+| 500% | 44 | $562 (−84%) | 153% | 1.06 |
+| Static (daily) | 30 | $3,684 (+2%) | 385% | 1.00 |
+
+The threshold barely matters: 571 vs 44 auctions produce nearly identical NAV (−86% vs −84%). This confirms the variance drain formula — total drain depends on Lσ²T, not on rebalancing frequency. The equity trigger fires frequently at high leverage regardless of threshold setting.
+
+The static strategy's +2% return at 30 daily recenters vs −84% at 44 auctions appears to contradict the theory. It doesn't: the static strategy's "NAV" includes massive unrealized directional exposure (385% average, 845% peak) that would crystallize as loss if the pool ever needed to close. It also sits at min health 1.00 — a single adverse tick triggers liquidation. The static result is a leveraged directional bet that happened to win on this seed, not a viable LP strategy.
+
+### Summary
+
+The core tension of leveraged AMM rebalancing:
+
+- **If you rebalance:** you crystallize IL at rate L·σ²/8 per year. At L = 427× and σ = 60%, the exponent is 19.2/year — half-life of 13 days. The pool bleeds out in weeks.
+- **If you don't rebalance:** directional exposure grows and the pool is liquidated on the first sustained move.
+
+The hook's auction mechanism (shift + fee decay + recenter) is efficient at executing individual recenters — 100% clearing rate, 2-4 minute clearing time, fee revenue recaptures ~60% of LP cost. But it cannot change the fundamental cost of rebalancing. The variance drain is a property of the pool's leverage and market volatility, not the rebalancing mechanism.
+
+The actionable conclusion: **reduce leverage.** Computed leverage and survival for different range widths (60% vol, 30 days):
+
+| rx = ry | L_eff | 30d survival | Half-life |
+|---------|-------|-------------|-----------|
+| 0.05 | 427× | 20.6% | 13 days |
+| 0.10 | 196× | 48.5% | 29 days |
+| 0.25 | 65× | 78.6% | 87 days |
+| 0.50 | 27× | 90.3% | 209 days |
+| 1.00 | 12× | 95.6% | 1.3 years |
+
+At rx = 0.25 (L = 65×), the pool retains ~79% of NAV over 30 days — aggressive but survivable, giving fee revenue time to accumulate. At rx = 1.00 (L = 12×), drain is modest (half-life 1.3 years) and plausibly offset by fee revenue. The tradeoff: lower leverage means less pool depth and less fee revenue per unit of volume.
