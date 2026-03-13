@@ -84,9 +84,11 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     // --- Recenter parameters (owner-updatable) ---
     uint64 public recenterRange;
     uint64 public maxRecenterDrift;
+    uint64 public minRecenterDelta; // WAD: minimum exposure decrease to trigger recenter
 
     // --- Mutable state: exposure tracking ---
     uint64 public lastExposure; // WAD: vault-based relative exposure after previous swap
+    bool public lastNetLongWeth; // direction at last exposure measurement
     int128 public baseNetAsset1; // net WETH at last recenter (deposits1 - debts1)
     uint128 public cachedNav; // NAV in asset0 terms at last recenter
 
@@ -109,7 +111,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         uint64 decayPerBlock, uint64 auctionTriggerThreshold, uint64 clearThreshold, uint64 maxShiftMagnitude,
         uint64 minAuctionBlocks
     );
-    event RecenterParamsUpdated(uint64 recenterRange, uint64 maxRecenterDrift);
+    event RecenterParamsUpdated(uint64 recenterRange, uint64 maxRecenterDrift, uint64 minRecenterDelta);
     event SurchargeParamsUpdated(uint64 surchargeDecayPerBlock, uint64 surchargeMultiplier);
     event AuctionStarted(uint64 startingFee, uint64 blockNumber, bool clearAsset0);
     event AuctionEnded(uint64 blockNumber);
@@ -133,6 +135,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         uint64 minAuctionBlocks;
         uint64 recenterRange;
         uint64 maxRecenterDrift;
+        uint64 minRecenterDelta;
         uint64 surchargeDecayPerBlock;
         uint64 surchargeMultiplier;
     }
@@ -177,6 +180,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         minAuctionBlocks = _auctionConfig.minAuctionBlocks;
         recenterRange = _auctionConfig.recenterRange;
         maxRecenterDrift = _auctionConfig.maxRecenterDrift;
+        minRecenterDelta = _auctionConfig.minRecenterDelta;
         surchargeDecayPerBlock = _auctionConfig.surchargeDecayPerBlock;
         require(_auctionConfig.surchargeMultiplier <= 10e18, "surchargeMultiplier too large");
         surchargeMultiplier = _auctionConfig.surchargeMultiplier;
@@ -308,10 +312,14 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         );
     }
 
-    function setRecenterParams(uint64 _recenterRange, uint64 _maxRecenterDrift) external onlyOwner {
+    function setRecenterParams(uint64 _recenterRange, uint64 _maxRecenterDrift, uint64 _minRecenterDelta)
+        external
+        onlyOwner
+    {
         recenterRange = _recenterRange;
         maxRecenterDrift = _maxRecenterDrift;
-        emit RecenterParamsUpdated(_recenterRange, _maxRecenterDrift);
+        minRecenterDelta = _minRecenterDelta;
+        emit RecenterParamsUpdated(_recenterRange, _maxRecenterDrift, _minRecenterDelta);
     }
 
     function setSurchargeParams(uint64 _surchargeDecayPerBlock, uint64 _surchargeMultiplier) external onlyOwner {
@@ -367,23 +375,43 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         uint256 last = uint256(lastExposure);
 
         if (relExposure < last) {
-            // Vault exposure decreased → recenter and apply smart surcharge
-            // Cache pre-recenter eq before _recenterAtMarket mutates d
-            uint112 preEq0 = d.equilibriumReserve0;
-            uint112 preEq1 = d.equilibriumReserve1;
-            uint256 recenterMag = _recenterAtMarket(reserve0, reserve1, d);
-            _initSurcharge(recenterMag, reserve0, reserve1, preEq0, preEq1, d);
-            _cacheVaultState();
+            // Exposure decreased — check if recenter is warranted
+            bool shouldRecenter = true;
 
-            // Measure actual post-recenter vault exposure
-            IEulerSwap.DynamicParams memory dNew = IEulerSwap(pool).getDynamicParams();
-            (uint256 postExposure,,) = _computeVaultExposure(reserve1, dNew);
-            lastExposure = uint64(postExposure > type(uint64).max ? type(uint64).max : postExposure);
+            // Gate 1: minimum delta — skip noise recenters
+            if (last - relExposure < uint256(minRecenterDelta)) {
+                shouldRecenter = false;
+            }
+
+            // Gate 2: sign flip — exposure decreased by crossing zero, not moving toward zero.
+            // E.g. long 60% → short 10% is a decrease but not an improvement — pool just
+            // crossed through neutral and is building exposure in the new direction.
+            if (last > 0 && netLongWeth != lastNetLongWeth) {
+                shouldRecenter = false;
+            }
+
+            if (shouldRecenter) {
+                uint112 preEq0 = d.equilibriumReserve0;
+                uint112 preEq1 = d.equilibriumReserve1;
+                uint256 recenterMag = _recenterAtMarket(reserve0, reserve1, d);
+                _initSurcharge(recenterMag, reserve0, reserve1, preEq0, preEq1, d);
+                _cacheVaultState();
+
+                // Measure actual post-recenter vault exposure
+                IEulerSwap.DynamicParams memory dNew = IEulerSwap(pool).getDynamicParams();
+                (uint256 postExposure,, bool postDir) = _computeVaultExposure(reserve1, dNew);
+                lastExposure = uint64(postExposure > type(uint64).max ? type(uint64).max : postExposure);
+                lastNetLongWeth = postDir;
+            } else {
+                // Just update tracking without recentering
+                lastExposure = uint64(relExposure > type(uint64).max ? type(uint64).max : relExposure);
+                lastNetLongWeth = netLongWeth;
+            }
         } else {
             lastExposure = uint64(relExposure > type(uint64).max ? type(uint64).max : relExposure);
+            lastNetLongWeth = netLongWeth;
 
             if (relExposure > uint256(auctionTriggerThreshold)) {
-                // net long WETH → make WETH cheap → arbs buy it from us
                 _startAuction(reserve0, reserve1, netLongWeth, d, absExposure);
             }
         }
@@ -578,12 +606,13 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
                 if (newPriceY < minPY) newPriceY = minPY;
             }
 
-            // Compute recenter magnitude: |oraclePrice - preShiftPrice| / max(...)
-            if (_preShiftPY > 0) {
+            // Compute recenter magnitude from clamped price (not raw oracle)
+            if (_preShiftPY > 0 && newPriceY > 0) {
                 uint256 preShiftPrice = uint256(d.priceX) * WAD / _preShiftPY;
-                recenterMag = uniPrice > preShiftPrice
-                    ? (uniPrice - preShiftPrice) * WAD / uniPrice
-                    : (preShiftPrice - uniPrice) * WAD / preShiftPrice;
+                uint256 actualPrice = uint256(d.priceX) * WAD / newPriceY;
+                recenterMag = actualPrice > preShiftPrice
+                    ? (actualPrice - preShiftPrice) * WAD / actualPrice
+                    : (preShiftPrice - actualPrice) * WAD / preShiftPrice;
             }
 
             if (newPriceY > 0 && newPriceY <= type(uint80).max) {
@@ -603,8 +632,9 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         // Measure actual post-recenter vault exposure
         {
             IEulerSwap.DynamicParams memory dPost = IEulerSwap(pool).getDynamicParams();
-            (uint256 postExposure,,) = _computeVaultExposure(reserve1, dPost);
+            (uint256 postExposure,, bool postDir) = _computeVaultExposure(reserve1, dPost);
             lastExposure = uint64(postExposure > type(uint64).max ? type(uint64).max : postExposure);
+            lastNetLongWeth = postDir;
         }
 
         // Post-auction surcharge: derived from actual price displacement
@@ -721,8 +751,9 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         require(net >= type(int128).min && net <= type(int128).max, "baseNetAsset1 overflow");
         baseNetAsset1 = int128(net);
 
-        // Cache NAV (deposits - debts in asset0 terms)
-        cachedNav = _computeNav();
+        // Cache NAV (deposits - debts in asset0 terms); preserve on oracle failure
+        uint128 newNav = _computeNav();
+        if (newNav > 0) cachedNav = newNav;
     }
 
     /// @notice Compute NAV = total deposits - total debts, all in asset0 terms.
@@ -873,8 +904,12 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         return (decayPerBlock, auctionTriggerThreshold, clearThreshold, maxShiftMagnitude, minAuctionBlocks);
     }
 
-    function getRecenterParams() external view returns (uint64 _recenterRange, uint64 _maxRecenterDrift) {
-        return (recenterRange, maxRecenterDrift);
+    function getRecenterParams()
+        external
+        view
+        returns (uint64 _recenterRange, uint64 _maxRecenterDrift, uint64 _minRecenterDelta)
+    {
+        return (recenterRange, maxRecenterDrift, minRecenterDelta);
     }
 
     function getSurchargeParams()

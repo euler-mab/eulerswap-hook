@@ -118,6 +118,7 @@ contract LPAgentHookV7ForkTest is Test {
                 minAuctionBlocks: MIN_AUCTION_BLOCKS,
                 recenterRange: RECENTER_RANGE,
                 maxRecenterDrift: MAX_RECENTER_DRIFT,
+                minRecenterDelta: 0,
                 surchargeDecayPerBlock: SURCHARGE_DECAY,
                 surchargeMultiplier: SURCHARGE_MULTIPLIER
             })
@@ -468,8 +469,8 @@ contract LPAgentHookV7ForkTest is Test {
     function test_fork_relative_exposure() public {
         vm.roll(block.number + 10);
 
-        // Initial relative exposure (should be near 0 at equilibrium)
-        uint256 relExp0 = hook.computeCurrentRelativeExposure();
+        // Initial relative exposure
+        (uint256 relExp0,,) = hook.computeCurrentVaultExposure();
         console.log("Initial relative exposure:", relExp0);
 
         // Create some exposure
@@ -483,10 +484,10 @@ contract LPAgentHookV7ForkTest is Test {
         vm.prank(address(cb));
         pool.swap(0, out, address(cb), abi.encode(swapIn));
 
-        uint256 relExp1 = hook.computeCurrentRelativeExposure();
-        uint256 absExp = hook.computeCurrentAbsoluteExposure();
+        (uint256 relExp1, uint256 absExp, bool netLong) = hook.computeCurrentVaultExposure();
         console.log("Relative exposure after swap:", relExp1);
         console.log("Absolute exposure after swap:", absExp);
+        console.log("Net long WETH:", netLong);
     }
 
     // ===================================================================
@@ -548,7 +549,7 @@ contract LPAgentHookV7ForkTest is Test {
             uint64 auctionFee = hook.getFee(clearAsset0, postR0, postR1, false);
             console.log("Auction fee (clearing dir):", uint256(auctionFee));
         } else {
-            uint256 relExp = hook.computeCurrentRelativeExposure();
+            (uint256 relExp,,) = hook.computeCurrentVaultExposure();
             console.log("Relative exposure:", relExp);
             console.log("Trigger threshold:", uint256(AUCTION_TRIGGER));
             console.log("Auction did not trigger - exposure below threshold for this pool depth");

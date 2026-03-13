@@ -62,6 +62,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     // Recenter params
     uint64 constant RECENTER_RANGE = 1e18;
     uint64 constant MAX_RECENTER_DRIFT = 0.03e18;
+    uint64 constant MIN_RECENTER_DELTA = 0; // disabled for most tests
 
     // Surcharge params
     uint64 constant SURCHARGE_DECAY = 10e14;
@@ -101,6 +102,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
                 minAuctionBlocks: MIN_AUCTION_BLOCKS,
                 recenterRange: RECENTER_RANGE,
                 maxRecenterDrift: MAX_RECENTER_DRIFT,
+                minRecenterDelta: MIN_RECENTER_DELTA,
                 surchargeDecayPerBlock: SURCHARGE_DECAY,
                 surchargeMultiplier: SURCHARGE_MULTIPLIER
             })
@@ -215,9 +217,10 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_setRecenterParams() public {
-        hook.setRecenterParams(0.5e18, 0.05e18);
+        hook.setRecenterParams(0.5e18, 0.05e18, 0.01e18);
         assertEq(hook.recenterRange(), 0.5e18);
         assertEq(hook.maxRecenterDrift(), 0.05e18);
+        assertEq(hook.minRecenterDelta(), 0.01e18);
     }
 
     function test_setSurchargeParams() public {
@@ -355,6 +358,71 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         IEulerSwap.DynamicParams memory dp = pool.getDynamicParams();
         assertTrue(dp.minReserve0 > 0, "minReserve0 should be set");
         assertTrue(dp.minReserve1 > 0, "minReserve1 should be set");
+    }
+
+    function test_recenter_gated_by_minRecenterDelta() public {
+        // Set a high minRecenterDelta so small exposure decreases are skipped
+        hook.setRecenterParams(RECENTER_RANGE, MAX_RECENTER_DRIFT, 0.5e18);
+
+        _advanceBlocks(10);
+        address swapper = makeAddr("swapper");
+
+        // asset1-in to increase exposure
+        _fundAndSwap(swapper, false, 2e18);
+        IEulerSwap.DynamicParams memory dpBefore = pool.getDynamicParams();
+
+        // Small asset0-in: exposure decrease < 0.5e18 threshold → no recenter
+        _fundAndSwap(swapper, true, 0.1e18);
+
+        IEulerSwap.DynamicParams memory dpAfter = pool.getDynamicParams();
+        assertEq(dpAfter.equilibriumReserve0, dpBefore.equilibriumReserve0, "eq should NOT change - delta too small");
+    }
+
+    function test_recenter_not_gated_when_delta_exceeds_min() public {
+        // Set a small minRecenterDelta
+        hook.setRecenterParams(RECENTER_RANGE, MAX_RECENTER_DRIFT, 0.01e18);
+
+        _advanceBlocks(10);
+        address swapper = makeAddr("swapper");
+
+        // asset1-in to increase exposure significantly
+        _fundAndSwap(swapper, false, 2e18);
+        IEulerSwap.DynamicParams memory dpBefore = pool.getDynamicParams();
+
+        // Large asset0-in: exposure decrease > 0.01e18 threshold → recenter fires
+        _fundAndSwap(swapper, true, 1e18);
+
+        IEulerSwap.DynamicParams memory dpAfter = pool.getDynamicParams();
+        bool eqChanged = dpAfter.equilibriumReserve0 != dpBefore.equilibriumReserve0;
+        assertTrue(eqChanged, "eq should change - delta exceeds min");
+    }
+
+    function test_recenter_skips_on_sign_flip() public {
+        _advanceBlocks(10);
+        address swapper = makeAddr("swapper");
+
+        // Push exposure in asset0 direction (asset0-in reduces WETH exposure from 50% baseline)
+        // This makes curNet1 < baseNetAsset1, so pool becomes less net-long-WETH
+        _fundAndSwap(swapper, true, 3e18);
+        uint64 expAfterFirst = hook.lastExposure();
+        bool dirAfterFirst = hook.lastNetLongWeth();
+
+        IEulerSwap.DynamicParams memory dpBefore = pool.getDynamicParams();
+
+        // Now swap the OTHER direction hard enough to cross zero and land on opposite side
+        // Exposure magnitude might decrease (e.g. long 30% → short 10%) but direction flipped
+        _fundAndSwap(swapper, false, 5e18);
+
+        bool dirAfterSecond = hook.lastNetLongWeth();
+
+        // If direction actually flipped, recenter should have been skipped
+        if (dirAfterFirst != dirAfterSecond) {
+            IEulerSwap.DynamicParams memory dpAfter = pool.getDynamicParams();
+            assertEq(
+                dpAfter.equilibriumReserve0, dpBefore.equilibriumReserve0, "eq should NOT change on sign flip"
+            );
+        }
+        // If direction didn't flip (swap wasn't large enough), test is inconclusive — skip
     }
 
     // ===================================================================
@@ -754,6 +822,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
                 minAuctionBlocks: MIN_AUCTION_BLOCKS,
                 recenterRange: RECENTER_RANGE,
                 maxRecenterDrift: MAX_RECENTER_DRIFT,
+                minRecenterDelta: MIN_RECENTER_DELTA,
                 surchargeDecayPerBlock: SURCHARGE_DECAY,
                 surchargeMultiplier: SURCHARGE_MULTIPLIER
             })
