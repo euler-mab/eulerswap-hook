@@ -40,24 +40,22 @@ ES unlev orc+rctr   -$5,652    $3,022   -$2,515    -$6,159    1%     91
 ES unlev 30bps      -$6,862      $552   -$1,394    -$6,021    0%      0
 ```
 
-### Equal-Leverage Comparison (No LLTV Boost)
+### Mechanism Comparison (Capture Rate)
 
-The last two rows control for the leverage difference: unleveraged EulerSwap (vyx=vxy=0, ~50/50 equity split) uses the same curve depth as a standard pool. This isolates the mechanism:
+The capture rate (arbFees / |edge|) is a ratio independent of curve depth, so it isolates the fee mechanism even across different leverage levels:
 
 ```
-Strategy               NetFees   |Edge|   Arb Capture   ΔNAV
-──────────────────────────────────────────────────────────────
-xy=k 30bps              $1,431   $3,732        38%    -$8,793
-YB L=2 70bps            $3,090   $4,537        68%   -$17,000
-ES unlev orc+rctr       $3,022   $2,515        92%    -$5,652
-ES unlev 30bps            $552   $1,394        38%    -$6,862
+Strategy               NetFees   |Edge|   Arb Capture
+──────────────────────────────────────────────────────
+xy=k 30bps              $1,431   $3,732        38%
+YB L=2 70bps            $3,090   $4,537        68%
+ES unlev orc+rctr       $3,022   $2,515        92%
+ES unlev 30bps            $552   $1,394        38%
 ```
 
-Key findings at equal leverage:
-1. **Dynamic fees dominate**: ES unlev oracle captures 92% of arb edge vs YB's 68% — the mechanism advantage persists independent of leverage.
-2. **YB pays more LVR**: $4,537 edge vs $2,515 (1.8×). YB's recenter-every-swap at 70 bps creates more arb opportunity than ES's oracle-reactive fees.
-3. **YB's leverage hurts ΔNAV**: Despite similar fee revenue ($3,090 vs $3,022), YB's 2× leverage amplifies DirPnL variance ($185K std vs $93K), producing much worse mean ΔNAV.
-4. **Without leverage, ES beats YB on ΔNAV**: -$5,652 vs -$17,000, because ES has lower LVR and no leveraged directional drag.
+The unleveraged ES rows (vyx=vxy=0, ~50/50 equity split, no borrowing) are included for reference but note this is not a true equal-leverage comparison: YB at L=2 has 2× curve depth from borrowed USDC, while ES unlev has 1× (no borrowing). The ΔNAV figures (-$17,000 vs -$5,652) are **not comparable** across these leverage levels — YB's 2× leverage amplifies directional PnL variance ($185K std vs $93K), which dominates the ΔNAV difference.
+
+What IS comparable: the capture rate. Oracle-reactive fees capture 92% of arb edge vs fixed 70bps capturing 68%. This holds regardless of leverage because it's a ratio — deeper curves attract proportionally more arb volume and LVR, but the fraction recaptured depends on the fee mechanism.
 
 ### Volatility (Standard Deviation)
 
@@ -166,7 +164,7 @@ The YB paper's value proposition is about the base pool (CryptoSwap) returns amp
 - Dynamic fee optimization
 - Auction-based rebalancing (less frequent but capital-efficient)
 
-## Hidden Costs: The Two-AMM Architecture Problem
+## The Two-AMM Architecture
 
 Both YB and EulerSwap solve the identical rebalancing problem with the identical mechanism:
 
@@ -175,13 +173,11 @@ Both YB and EulerSwap solve the identical rebalancing problem with the identical
 3. Pool pays the arber (via LVR) but recaptures some via fees
 4. Pool resets to neutral leverage
 
-The difference is packaging. EulerSwap does this in one pool with explicit cost tracking (`auctionCost` in the P&L decomposition). YB does it in a separate AMM where the cost manifests as net-negative P&L buried in equity dynamics.
+The difference is packaging. EulerSwap does this in one pool with explicit cost tracking (`auctionCost` in the P&L decomposition). YB does it in a separate releverage AMM.
 
-### Where YB hides the cost
+### The releverage cost
 
-The releverage AMM is a **cost center**: it earns $3,090/month in fees but leaks $4,537/month in LVR, for a net cost of ~$1,450/month. This cost doesn't appear as a line item — it silently erodes the LP's equity through the gap between discrete and ideal re-leveraging.
-
-The LP's profitability depends on the **base pool** (CryptoSwap) earning enough to absorb this cost:
+The YB paper is upfront about this: the releverage AMM is a cost center, not a profit center. It earns $3,090/month in fees but leaks $4,537/month in LVR, for a net cost of ~$1,450/month. The paper's Eq. 12 explicitly models this as the price of maintaining leverage:
 
 ```
 Net APR = 2 × base_pool_APR − borrow_cost − releverage_loss
@@ -189,25 +185,28 @@ Net APR = 2 × base_pool_APR − borrow_cost − releverage_loss
         = 23.3% (if base pool earns 15%)
 ```
 
-This creates a **dependency chain**: the LP's position is only profitable if two separate mechanisms are jointly profitable.
+This is not a hidden cost — the paper treats it as known overhead justified by the 2× amplification of base pool returns. The question is whether 1.7% annualized drag (at 60% vol) is acceptable given the base pool APR. At BTC's ~40% vol, the drag drops to ~0.75% annualized.
 
-### Why would anyone supply to the releverage AMM?
+### The dependency chain
 
-The releverage AMM isn't a separate pool with separate LPs — it's the LP's own capital managed by the mechanism. The LP deposits equity; YB creates both the base pool position and the releverage AMM position from that equity. Arbers trade against the releverage AMM to keep leverage constant, earning the LVR-minus-fee spread as profit.
+The LP's position is only profitable if `2 × base_pool_APR > borrow_cost + releverage_loss`. This requires two separate mechanisms to jointly work: the CryptoSwap base pool must generate sufficient returns, AND the releverage AMM must keep costs reasonable.
 
-But the LP must accept that the releverage mechanism is a drag on returns. This drag is justified only if:
-- The base pool returns are high enough (CryptoSwap's concentrated liquidity must outperform)
-- No single-pool alternative can achieve equivalent returns with less complexity
+EulerSwap also has dependencies (Euler vaults, oracle accuracy, arber participation), but its profitability doesn't hinge on a separate base pool's performance.
 
-### EulerSwap's structural advantages
+### Architectural comparison
 
-By integrating rebalancing into the same pool that serves retail:
+**EulerSwap advantages:**
 
-1. **Transparent costs** — auction cost is an explicit P&L line item, not hidden in equity dynamics
-2. **Higher arb capture rate** — dynamic fees recover 96% of arb LVR vs YB's 68% (net of auction costs: 89% vs 68%), because fees adapt per-swap rather than using a fixed rate that's only optimal in aggregate
-3. **Retail as profit center** — YB's releverage AMM at 70 bps captures 0% of retail (all goes to base pool). EulerSwap captures 18% with low attract-side fees on the same capital
-4. **Co-optimized fees** — EulerSwap optimizes arb capture and retail attraction in a single fee function. YB must independently optimize the releverage AMM fee and the base pool fee, which is a harder problem
-5. **Simpler dependency chain** — EulerSwap still depends on external infrastructure (Euler vaults for leverage, oracles for dynamic fees, arbers for rebalancing), but profitability doesn't require a separate base pool to generate the returns that justify the rebalancing cost
+1. **Higher arb capture rate** — dynamic fees recover 92% of arb LVR vs YB's 68%, because fees adapt per-swap rather than using a fixed rate
+2. **Integrated retail** — the same pool serves both arb and retail with direction-aware fees. YB's releverage AMM serves only arb; retail goes to the separate base pool
+3. **Single-pool profitability** — revenue and costs are in the same pool, so the LP can evaluate performance directly without needing a separate mechanism to justify the cost
+
+**YB advantages:**
+
+1. **Proven at scale** — $200M TVL, $1.63B volume, operating for a year on mainnet. EulerSwap's hook-based approach is newer and less battle-tested
+2. **Simpler on-chain mechanism** — the releverage AMM is a standard xy=k curve with a fixed fee. No oracle dependency in the fee path, no auction state machine
+3. **Base pool returns** — the 2× amplification of CryptoSwap returns is the actual value proposition. If the base pool earns well, the releverage cost is justified overhead. We don't simulate this benefit, so our analysis structurally undervalues YB
+4. **Lower smart contract risk** — fewer moving parts (no oracle-reactive fees, no auction backstop, no surcharge decay) means a smaller attack surface
 
 ## On-Chain Performance: Reality vs Claims
 
@@ -273,13 +272,32 @@ This is a real-world demonstration of the arber dependency risk: the entire mech
 
 1. **The mechanism works mechanically** — YB has processed $1.63B in volume and maintained leverage across multiple BTC pools for a year.
 
-2. **The economics are marginal** — 1.9% organic yield on BTC is modest. The protocol depends on token emissions for competitive APY. Without emissions, LPs would likely withdraw.
+2. **Organic yield is modest but real** — 1.9% in real BTC terms, without impermanent loss, is competitive with many BTC yield sources. The headline 20-30% APY includes token emissions, which is standard DeFi bootstrapping — not unique to YB.
 
 3. **The DAO take is comparable to the releverage drag** — $158K/month DAO revenue vs $128K/month estimated LVR drag. These are different costs (governance extraction vs arb leakage), but their similar magnitude means the LP bears roughly 2× the releverage drag: once from LVR, once from the DAO fee split.
 
 4. **The dependency chain is real** — 72% crvUSD concentration, $1B credit line dependency, governance risk, and arber availability all represent failure modes. EulerSwap has its own dependencies (Euler vaults, oracles), but avoids the two-AMM revenue split.
 
 5. **Scale matters** — $200M TVL is significant, proving market demand for "BTC yield without IL." But the sustainable yield (post-emissions) is the real test.
+
+## Fair Assessment
+
+**What this analysis proves:**
+- Oracle-reactive dynamic fees capture more arb edge than fixed fees (92% vs 68%). This is a clean, leverage-independent result.
+- Integrating retail into the rebalancing pool is strictly better than a separate AMM that can't serve retail.
+
+**What this analysis does NOT prove:**
+- That EulerSwap is a better product for LPs. YB's full value proposition is `2× base_pool_APR − costs`. We only simulate the cost side (the releverage AMM). If Curve CryptoSwap earns 8-15% APY on concentrated BTC liquidity, the 0.75-1.7% releverage drag may be acceptable. We never estimate this benefit.
+- That ΔNAV comparisons across leverage levels are meaningful. YB at L=2 vs ES unlev conflates mechanism quality with leverage choice.
+- That the 466× leveraged ES strategies are practical at the simulated scale. In production, the EulerSwap pool operates at much more modest depth.
+
+**Where this analysis is biased toward EulerSwap:**
+- We simulate YB's cost center in isolation but not its revenue center (base pool returns).
+- The "hidden cost" framing in earlier versions was unfair — the YB paper explicitly models the releverage cost and treats it as known overhead. It is not hidden.
+- The emissions criticism (1.9% organic vs 20-30% headline) applies to most DeFi protocols at scale, not specifically to YB.
+- YB has operated at $200M TVL for a year. EulerSwap's hook architecture is newer, with less production validation.
+
+**Bottom line:** EulerSwap has a genuinely better fee mechanism (higher capture rate, integrated retail). Whether that translates to a better LP product depends on whether the integrated approach outperforms YB's `2× base_pool − costs` at comparable scale — a question this simulation cannot answer.
 
 ## Simulation Details
 
