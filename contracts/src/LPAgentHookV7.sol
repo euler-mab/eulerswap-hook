@@ -48,6 +48,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     uint256 constant Q192 = 2 ** 192;
     uint256 constant Q128 = 2 ** 128;
     uint256 constant Q64 = 2 ** 64;
+    uint256 constant SQRT_WAD = 1e9; // sqrt(1e18)
 
     // --- Immutables ---
     address public immutable pool;
@@ -398,9 +399,8 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
                 _initSurcharge(recenterMag, reserve0, reserve1, preEq0, preEq1, d);
                 _cacheVaultState(uniPrice);
 
-                // Measure actual post-recenter vault exposure
-                IEulerSwap.DynamicParams memory dNew = IEulerSwap(pool).getDynamicParams();
-                (uint256 postExposure,, bool postDir) = _computeVaultExposure(reserve1, dNew, uniPrice);
+                // Measure post-recenter vault exposure (d was mutated in-place by _recenterAtMarket)
+                (uint256 postExposure,, bool postDir) = _computeVaultExposure(reserve1, d, uniPrice);
                 lastExposure = uint64(postExposure > type(uint64).max ? type(uint64).max : postExposure);
                 lastNetLongWeth = postDir;
             } else {
@@ -792,12 +792,10 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
             return;
         }
 
-        uint256 sqrtWAD = WAD.sqrt();
-
         uint256 cx = uint256(d.concentrationX);
         if (cx < WAD) {
             uint256 inner = WAD + _range * WAD / (WAD - cx);
-            d.minReserve0 = uint112(uint256(reserve0) * sqrtWAD / inner.sqrt());
+            d.minReserve0 = uint112(uint256(reserve0) * SQRT_WAD / inner.sqrt());
         } else {
             d.minReserve0 = 0;
         }
@@ -805,7 +803,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         uint256 cy = uint256(d.concentrationY);
         if (cy < WAD) {
             uint256 inner = WAD + _range * WAD / (WAD - cy);
-            d.minReserve1 = uint112(uint256(reserve1) * sqrtWAD / inner.sqrt());
+            d.minReserve1 = uint112(uint256(reserve1) * SQRT_WAD / inner.sqrt());
         } else {
             d.minReserve1 = 0;
         }
