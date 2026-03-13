@@ -199,9 +199,11 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         // Init vault state
         _cacheVaultState(_getUniswapPrice());
 
-        // Deployment protection surcharge
+        // Deployment protection surcharge — start high so mispriced deploys are expensive
+        // to arb, giving the deployer time to detect and correct.
+        // 500 bps at 10 bps/block decays in ~50 blocks (~10 minutes).
         surchargeStartBlock = uint64(block.number);
-        surchargeInitialAmount = _feeConfig.baseFee;
+        surchargeInitialAmount = 500e14; // 500 bps
     }
 
     // =========================================================================

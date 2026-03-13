@@ -158,19 +158,20 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     function test_getFee_baseFee_plus_surcharge_at_deployment() public view {
         (uint112 r0, uint112 r1,) = pool.getReserves();
         uint64 fee = hook.getFee(true, r0, r1, false);
-        assertTrue(fee >= BASE_FEE + BASE_FEE, "fee should include deployment surcharge");
+        // Deploy surcharge = 500 bps, so total fee = baseFee (25 bps) + 500 bps = 525 bps
+        assertTrue(fee >= 525e14, "fee should include deployment surcharge");
     }
 
     function test_getFee_surcharge_decays_to_zero() public {
-        // Deployment surcharge = baseFee = 25e14, decay = 10e14/block
-        // Decays in ceil(25e14 / 10e14) = 3 blocks
-        _advanceBlocks(3);
+        // Deployment surcharge = 500e14, decay = 10e14/block
+        // Decays in ceil(500e14 / 10e14) = 50 blocks
+        _advanceBlocks(50);
         (, uint256 surcharge) = hook.getSurchargeState();
         assertEq(surcharge, 0, "surcharge should be zero after enough blocks");
     }
 
     function test_getFee_elevated_on_arb_direction() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.1e18));
 
         (uint112 r0, uint112 r1,) = pool.getReserves();
@@ -182,7 +183,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_getFee_clamped_to_maxFee() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(2e18));
         (uint112 r0, uint112 r1,) = pool.getReserves();
         uint64 fee = hook.getFee(false, r0, r1, false);
@@ -190,7 +191,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_getFee_baseFee_when_uniswap_fails() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
         mockUniPool.setShouldRevert(true);
         (uint112 r0, uint112 r1,) = pool.getReserves();
         uint64 fee = hook.getFee(true, r0, r1, false);
@@ -267,7 +268,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     // ===================================================================
 
     function test_first_swap_no_recenter() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         IEulerSwap.DynamicParams memory dpBefore = pool.getDynamicParams();
@@ -279,7 +280,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_lastExposure_tracks() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
 
@@ -295,7 +296,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_recenter_on_exposure_decrease() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
 
@@ -319,7 +320,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_recenter_sets_eq_to_current_reserves() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         // asset1-in to increase exposure, then asset0-in to decrease → recenter
@@ -333,7 +334,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_recenter_aligns_price_to_oracle() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.05e18));
 
@@ -348,7 +349,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_recenter_restores_min_reserves() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         // asset1-in to increase exposure, then asset0-in to decrease → recenter
@@ -364,7 +365,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         // Set a high minRecenterDelta so small exposure decreases are skipped
         hook.setRecenterParams(RECENTER_RANGE, MAX_RECENTER_DRIFT, 0.5e18);
 
-        _advanceBlocks(10);
+        _advanceBlocks(60);
         address swapper = makeAddr("swapper");
 
         // asset1-in to increase exposure
@@ -382,7 +383,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         // Set a small minRecenterDelta
         hook.setRecenterParams(RECENTER_RANGE, MAX_RECENTER_DRIFT, 0.01e18);
 
-        _advanceBlocks(10);
+        _advanceBlocks(60);
         address swapper = makeAddr("swapper");
 
         // asset1-in to increase exposure significantly
@@ -398,7 +399,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_recenter_skips_on_sign_flip() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
         address swapper = makeAddr("swapper");
 
         // Push exposure in asset0 direction (asset0-in reduces WETH exposure from 50% baseline)
@@ -430,7 +431,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     // ===================================================================
 
     function test_surcharge_covers_curvature_component() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
 
@@ -447,7 +448,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_surcharge_increases_with_exposure() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
 
@@ -468,7 +469,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_surcharge_includes_price_component() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
 
@@ -485,7 +486,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_surcharge_has_floor() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
 
@@ -508,7 +509,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_cachedNav_updated_on_recenter() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         hook.getExposureState();
@@ -522,7 +523,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_baseNetAsset1_cached_on_recenter() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         _fundAndSwap(swapper, true, 2e18);
@@ -537,7 +538,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     // ===================================================================
 
     function test_auction_triggers_on_high_relative_exposure() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
 
@@ -549,7 +550,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_auction_shift_sized_to_exposure() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         _fundAndSwap(swapper, false, 5e18);
@@ -562,7 +563,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_auction_fee_decays() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         _fundAndSwap(swapper, false, 5e18);
@@ -582,7 +583,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_auction_clears_and_recenters() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         _fundAndSwap(swapper, false, 5e18);
@@ -599,7 +600,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_auction_respects_minAuctionBlocks() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         _fundAndSwap(swapper, false, 5e18);
@@ -617,7 +618,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     }
 
     function test_endAuction_force_clears() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         _fundAndSwap(swapper, false, 5e18);
@@ -632,7 +633,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     // ===================================================================
 
     function test_full_cycle_recenter_then_auction_then_normal() public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
 
@@ -644,7 +645,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         assertTrue(hook.lastExposure() < exposureAfterIncrease, "lastExposure should decrease after recenter");
 
         // Phase 2: Large directional move → auction
-        _advanceBlocks(10);
+        _advanceBlocks(60);
         _fundAndSwap(swapper, false, 5e18);
         assertTrue(hook.auctionActive(), "auction should trigger");
 
@@ -694,7 +695,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     // ===================================================================
 
     function test_fuzz_recenter_on_every_decrease(uint8 numSwaps, uint256 seed) public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         uint256 rng = seed;
@@ -755,7 +756,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
 
     /// @notice Invariant: after a successful recenter, lastExposure must match the external view.
     function test_fuzz_postRecenter_exposure_consistent(uint256 swapAmount1, uint256 swapAmount2) public {
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         address swapper = makeAddr("swapper");
         uint256 amt1 = bound(swapAmount1, 0.5e18, 2e18);
@@ -839,7 +840,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         vm.prank(holder);
         IEVC(evc).call(address(testPool), holder, 0, abi.encodeCall(IEulerSwap.reconfigure, (dParams, is0)));
 
-        _advanceBlocks(10);
+        _advanceBlocks(60);
 
         // Swap to create exposure
         uint256 amt = bound(swapAmount, 0.1e18, 3e18);
