@@ -429,6 +429,8 @@ export interface EulerSwapConfig {
   cx?: number;
   /** Hook for dynamic fees and afterSwap logic */
   hook?: SimHook;
+  /** Override strategy name */
+  name?: string;
 }
 
 /** Create an EulerSwap strategy with full leverage and vault tracking. */
@@ -450,7 +452,7 @@ export function eulerSwapStrategy(config: EulerSwapConfig): AMMStrategy {
   }
 
   return {
-    name: "EulerSwap",
+    name: config.name ?? "EulerSwap",
     curve: eulerSwapCurve,
     hook,
     hasVault: true,
@@ -504,6 +506,145 @@ export function eulerSwapStrategy(config: EulerSwapConfig): AMMStrategy {
         if (isFinite(h)) return Math.min(h, 10);
       }
       return 10;
+    },
+  };
+}
+
+// ─── Yield Basis Releverage Strategy ────────────────────────────────
+
+export interface YBReleverageConfig {
+  /** Leverage factor (default 2). */
+  leverage?: number;
+  /** Fixed fee for the releverage AMM (default 0.007 = 70 bps, optimal per YB paper). */
+  fee?: number;
+  /** Annual borrow rate for structural debt (default 0). */
+  borrowRateAnnual?: number;
+  /** Override strategy name. */
+  name?: string;
+}
+
+/**
+ * Yield Basis releverage AMM strategy.
+ *
+ * Models the YB two-AMM architecture's releverage component:
+ * - Leveraged xy=k curve (L=2 default): LP equity E controls L×E/2 per side
+ * - Recenters after every swap (arb + retail) to maintain target leverage
+ * - Fixed fee (default 70 bps from YB paper's optimization)
+ *
+ * Per-step equity dynamics:
+ *   Discrete:  E_new = E × (L√r − (L−1))     (residual IL ≈ σ²T/4)
+ *   Ideal:     E_new = E × r                  (IL = 0, continuous limit)
+ *
+ * This implements the discrete version — arb trades on the leveraged xy=k
+ * curve, then afterSwap recenters. The gap from ideal measures the cost
+ * of discrete re-leveraging.
+ *
+ * Vault encoding:
+ *   xr = curX (total USDC on curve, including borrowed)
+ *   yr = curY (total WETH on curve)
+ *   xd = debt (USDC borrowed = (L-1)×equity)
+ *   yd = 0
+ *   NAV = curX + curY×ethPrice − debt = equity
+ */
+export function yieldBasisReleverageStrategy(config?: YBReleverageConfig): AMMStrategy {
+  const L = config?.leverage ?? 2;
+  const fee = config?.fee ?? 0.007;  // 70 bps default
+  const borrowRate = config?.borrowRateAnnual ?? 0;
+
+  // Track structural debt interest internally.
+  // The engine's vault-based interest accrual doesn't work for YB because
+  // after recenter, vaultStateAt reports zero net debt (the borrowed USDC
+  // is on the curve, cancelling against the vault's xd).
+  // Instead, we deduct interest from equity on each recenter.
+  let debtBalance = 0;        // current debt (USDC)
+  let pendingInterest = 0;    // interest accrued since last recenter
+
+  /** Build state at equilibrium for given equity and ethPrice. */
+  function buildState(equity: number, ethPrice: number): StrategyState {
+    const curX = L * equity / 2;             // USDC on curve
+    const curY = L * equity / (2 * ethPrice); // WETH on curve
+    const debt = (L - 1) * equity;            // borrowed USDC
+    debtBalance = debt;
+    pendingInterest = 0;
+    return {
+      curX, curY,
+      x0: curX, y0: curY,
+      xb: 0, yb: 0,
+      pEquil: 1 / ethPrice,  // Y per X = WETH per USDC
+      vault: { xr: curX, yr: curY, xd: debt, yd: 0 },
+      params: null,
+    };
+  }
+
+  const hook: SimHook = {
+    getFee(): number {
+      return fee;
+    },
+
+    afterSwap(ctx: AfterSwapContext): void {
+      if (!ctx.state.vault) return;
+
+      // Accrue interest on structural debt
+      const stepsPerDay = ctx.stepsPerDay ?? 24;
+      const dt = 1 / (365 * stepsPerDay);
+      const stepInterest = debtBalance * borrowRate * dt;
+      pendingInterest += stepInterest;
+      debtBalance += stepInterest;
+
+      // Compute current equity from vault state, minus accrued interest
+      const vault = vaultStateAt(
+        ctx.state.curX, ctx.state.curY,
+        ctx.state.x0, ctx.state.y0,
+        ctx.state.vault,
+      );
+      const rawEquity = computeNAV(vault, ctx.ethPrice);
+      const equity = rawEquity - pendingInterest;
+
+      if (equity <= 0) return;  // wiped out
+
+      // Recenter: rebuild state at current price preserving equity
+      ctx.reconfiguredState = buildState(equity, ctx.ethPrice);
+      ctx.accum.totalRecenters++;
+    },
+  };
+
+  return {
+    name: config?.name ?? `YB relev L=${L} ${(fee * 10000).toFixed(0)}bps`,
+    curve: xyKCurve,
+    hook,
+    hasVault: true,
+
+    init(xr: number, _yr: number, price: number): StrategyState {
+      // price = ethPrice (USDC per WETH), xr = equity in USDC
+      return buildState(xr, price);
+    },
+
+    recenter(vault: VaultState, newPrice: number): StrategyState {
+      // newPrice is extPrice (Y per X), convert to ethPrice
+      const ethPrice = 1 / newPrice;
+      const equity = computeNAV(vault, ethPrice);
+      return buildState(Math.max(equity, 0), ethPrice);
+    },
+
+    computeHealth(state: StrategyState): number {
+      if (!state.vault) return 10;
+      if (state.curX <= 0 || state.curY <= 0) return 0;
+
+      // Infer ethPrice from curve position (marginal price of xy=k)
+      const ethPrice = state.curX / state.curY;
+      const vault = vaultStateAt(
+        state.curX, state.curY,
+        state.x0, state.y0,
+        state.vault,
+      );
+      const equity = computeNAV(vault, ethPrice);
+      if (equity <= 0) return 0;
+
+      // Collateral / debt ratio. For L=2 at equilibrium: 2E/E = 2.
+      const totalValue = vault.xr + vault.yr * ethPrice;
+      const totalDebt = vault.xd + vault.yd * ethPrice;
+      if (totalDebt <= 0) return 10;
+      return totalValue / totalDebt;
     },
   };
 }

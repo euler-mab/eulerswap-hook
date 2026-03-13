@@ -82,6 +82,18 @@ export interface StrategyResult {
   liquidated: boolean;
   /** Step number at which liquidation occurred, or null. */
   liquidationStep: number | null;
+
+  // ─── P&L decomposition ─────────────────────────────────────────
+  /** Total interest accrued on vault debt (USDC-equivalent). Always >= 0. */
+  interestPaid: number;
+  /** Net fees: arbFees + retailFees - auctionCost */
+  netFees: number;
+  /**
+   * Directional P&L: the residual mark-to-market from holding a non-neutral
+   * position. Computed as ΔNAV - netFees - edge + interestPaid.
+   * Mean-zero across many seeds; dominates single-seed results for exposed pools.
+   */
+  directionalPnL: number;
 }
 
 export interface SimResult {
@@ -109,6 +121,7 @@ interface StrategyRuntime {
   minHealth: number;
   liquidated: boolean;
   liquidationStep: number | null;
+  interestPaid: number;
 }
 
 // ─── Engine ──────────────────────────────────────────────────────────
@@ -164,6 +177,7 @@ export function runSimulation(config: EngineConfig): SimResult {
       minHealth: 10,
       liquidated: false,
       liquidationStep: null,
+      interestPaid: 0,
     };
   });
 
@@ -501,6 +515,8 @@ export function runSimulation(config: EngineConfig): SimResult {
         );
         const xInterest = curVault.xd * (interestFactor - 1);
         const yInterest = curVault.yd * (interestFactor - 1);
+        // Track interest paid in USDC-equivalent terms
+        rt.interestPaid += xInterest + yInterest * ethPrice;
         // Adding interest to stored debt increases effective debt
         rt.state.vault.xd += xInterest;
         rt.state.vault.yd += yInterest;
@@ -534,6 +550,12 @@ export function runSimulation(config: EngineConfig): SimResult {
       finalNAV = rt.state.curX + rt.state.curY * finalEthPrice;
     }
 
+    const netFees = rt.arbFeeRevenue + rt.retailFeeRevenue - rt.accum.auctionCost;
+    const deltaNAV = finalNAV - rt.initialNAV;
+    // Decomposition: ΔNAV = netFees + edge - interestPaid + directionalPnL
+    // => directionalPnL = ΔNAV - netFees - edge + interestPaid
+    const directionalPnL = deltaNAV - netFees - rt.edge + rt.interestPaid;
+
     return {
       name: rt.strategy.name,
       initialNAV: rt.initialNAV,
@@ -556,6 +578,9 @@ export function runSimulation(config: EngineConfig): SimResult {
       minHealth: rt.minHealth,
       liquidated: rt.liquidated,
       liquidationStep: rt.liquidationStep,
+      interestPaid: rt.interestPaid,
+      netFees,
+      directionalPnL,
     };
   });
 
