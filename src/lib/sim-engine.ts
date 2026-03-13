@@ -12,7 +12,7 @@ import type {
   VaultState, ResultAccumulators,
 } from "./sim-strategy";
 import { vaultStateAt, computeNAV, computeExposure } from "./sim-strategy";
-import { poissonSample, lognormalSample, routeOrder, type RetailConfig, type RouteVenue } from "./sim-retail";
+import { poissonSample, lognormalSample, routeBestVenue, type RetailConfig, type QuoteVenue } from "./sim-retail";
 
 // ─── Config ──────────────────────────────────────────────────────────
 
@@ -276,8 +276,10 @@ export function runSimulation(config: EngineConfig): SimResult {
           rt.totalRetailGenerated += orderSize;
         }
 
-        // Build venue list: all strategies + reference venue
-        const venues: RouteVenue[] = [];
+        // Quote each venue: compute effective price (output per input after fee)
+        // and pick the best one. For small orders vs deep pools, marginal price
+        // is a good proxy — no need for full executeSwap quote.
+        const quoteVenues: QuoteVenue[] = [];
         const venueFees: number[] = [];
 
         for (const rt of runtimes) {
@@ -310,79 +312,101 @@ export function runSimulation(config: EngineConfig): SimResult {
             if (hookFee !== null) fee = hookFee;
           }
 
-          venues.push({ curX: state.curX, curY: state.curY, fee });
           venueFees.push(fee);
+
+          // Marginal price = Y per X at current cursor position
+          const mp = strategy.curve.marginalPrice(state);
+          const gamma = 1 - fee;
+
+          if (isBuyX) {
+            // Trader sends Y (WETH), receives X (USDC).
+            // Effective price = X output per Y input = (1/mp) × γ
+            // Higher = better for trader (more USDC per WETH).
+            quoteVenues.push({
+              effectivePrice: mp > 0 ? gamma / mp : 0,
+              available: gamma > 0 && mp > 0,
+            });
+          } else {
+            // Trader sends X (USDC), receives Y (WETH).
+            // Effective price = Y output per X input = mp × γ
+            // Higher = better for trader (more WETH per USDC).
+            quoteVenues.push({
+              effectivePrice: mp > 0 ? mp * gamma : 0,
+              available: gamma > 0 && mp > 0,
+            });
+          }
         }
 
-        // Add reference venue
-        const refX = refVenue.depthUSDC;
-        const refY = refX / ethPrice;
-        venues.push({ curX: refX, curY: refY, fee: refVenue.fee });
+        // Reference venue: xy=k at fair price with refVenue.fee
+        const refGamma = 1 - refVenue.fee;
+        if (isBuyX) {
+          // ref marginal price = extPrice (Y per X), effective = γ / mp
+          quoteVenues.push({
+            effectivePrice: refGamma / extPrice,
+            available: true,
+          });
+        } else {
+          quoteVenues.push({
+            effectivePrice: extPrice * refGamma,
+            available: true,
+          });
+        }
 
-        // Route optimally
-        const fracs = routeOrder(isBuyX, orderSize, venues, ethPrice);
+        // Route to best venue
+        const bestIdx = routeBestVenue(quoteVenues);
+        if (bestIdx < 0 || bestIdx >= runtimes.length) continue;  // went to ref venue or none
 
-        // Execute on each strategy
-        for (let s = 0; s < runtimes.length; s++) {
-          const rt = runtimes[s];
-          const frac = fracs[s];
-          const ourAmount = orderSize * frac;
+        // Execute on the winning strategy
+        const rt = runtimes[bestIdx];
+        const { strategy, state } = rt;
+        const fee = venueFees[bestIdx];
+        const preX = state.curX;
+        const preY = state.curY;
 
-          if (ourAmount < 1) continue;
+        const result = strategy.curve.executeSwap(state, isBuyX, orderSize, ethPrice, fee);
 
-          const { strategy, state } = rt;
-          const fee = venueFees[s];
-          const preX = state.curX;
-          const preY = state.curY;
+        if (result.executed) {
+          state.curX = result.newCurX;
+          state.curY = result.newCurY;
+          if (result.newVault && state.vault) {
+            Object.assign(state.vault, result.newVault);
+          }
 
-          const result = strategy.curve.executeSwap(state, isBuyX, ourAmount, ethPrice, fee);
+          // Edge: pure trade impact. Computed before fee deposit.
+          rt.edge += computeEdge(preX, preY, state.curX, state.curY, ethPrice);
 
-          if (result.executed) {
-            state.curX = result.newCurX;
-            state.curY = result.newCurY;
-            if (result.newVault && state.vault) {
-              Object.assign(state.vault, result.newVault);
-            }
-
-            // Edge: pure trade impact. Computed before fee deposit.
-            rt.edge += computeEdge(preX, preY, state.curX, state.curY, ethPrice);
-
-            // Deposit fee into vault supply (EulerSwap) or reserves (xy=k)
-            if (result.feeRevenue > 0) {
-              if (isBuyX) {
-                // Fee in Y terms (WETH)
-                const feeY = result.feeRevenue / ethPrice;
-                if (state.vault) {
-                  state.vault.yr += feeY;
-                } else {
-                  state.curY += feeY;
-                }
+          // Deposit fee into vault supply (EulerSwap) or reserves (xy=k)
+          if (result.feeRevenue > 0) {
+            if (isBuyX) {
+              const feeY = result.feeRevenue / ethPrice;
+              if (state.vault) {
+                state.vault.yr += feeY;
               } else {
-                // Fee in X terms (USDC)
-                const feeX = result.feeRevenue;
-                if (state.vault) {
-                  state.vault.xr += feeX;
-                } else {
-                  state.curX += feeX;
-                }
+                state.curY += feeY;
+              }
+            } else {
+              const feeX = result.feeRevenue;
+              if (state.vault) {
+                state.vault.xr += feeX;
+              } else {
+                state.curX += feeX;
               }
             }
+          }
 
-            rt.retailFeeRevenue += result.feeRevenue;
-            rt.retailVolume += ourAmount;
-            rt.retailOrders++;
+          rt.retailFeeRevenue += result.feeRevenue;
+          rt.retailVolume += orderSize;
+          rt.retailOrders++;
 
-            // afterSwap callback
-            if (strategy.hook?.afterSwap) {
-              const afterCtx = makeAfterSwapCtx(
-                state, preX, preY, fee, extPrice, ethPrice, false, rt.accum,
-              );
-              strategy.hook.afterSwap(afterCtx);
-              if (afterCtx.reconfiguredState) {
-                Object.assign(rt.state, afterCtx.reconfiguredState);
-              }
+          // afterSwap callback
+          if (strategy.hook?.afterSwap) {
+            const afterCtx = makeAfterSwapCtx(
+              state, preX, preY, fee, extPrice, ethPrice, false, rt.accum,
+            );
+            strategy.hook.afterSwap(afterCtx);
+            if (afterCtx.reconfiguredState) {
+              Object.assign(rt.state, afterCtx.reconfiguredState);
             }
-
           }
         }
       }

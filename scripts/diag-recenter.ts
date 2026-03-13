@@ -324,3 +324,100 @@ console.log(`  D4 actual edge = $${Math.abs(result2.strategies[0].edge).toFixed(
 console.log(`  D5 actual edge = $${Math.abs(result2.strategies[1].edge).toFixed(0)}`);
 console.log(`\n  D4 edge is ${(Math.abs(result2.strategies[0].edge) / (theoreticalLVRPerStep * totalSteps) * 100).toFixed(1)}% of theoretical LVR`);
 console.log(`  D5 edge is ${(Math.abs(result2.strategies[1].edge) / (theoreticalLVRPerStep * totalSteps) * 100).toFixed(1)}% of theoretical LVR`);
+
+// ─── Part 3: With Retail Flow ────────────────────────────────────────
+// The hypothesis: recentering's value is on the retail side. A centered
+// pool offers tighter spreads and attracts more routed volume.
+
+import { DEFAULT_RETAIL } from "../src/lib/sim-retail";
+
+console.log("\n" + "═".repeat(80));
+console.log("=== WITH RETAIL FLOW ===");
+console.log("═".repeat(80));
+
+// Sweep retail arrival rates to find the crossover point
+const retailRates = [1, 3, 5, 10, 20, 50];
+
+for (const rate of retailRates) {
+  const retail = { ...DEFAULT_RETAIL, arrivalRate: rate };
+
+  // Fresh strategy instances per run (hooks have internal state)
+  const d4r = eulerSwapStrategy({
+    name: "D4-noRctr",
+    baseParams: DEFAULT_EULER_PARAMS,
+    rx: 10,
+    hook: oracleFeeHook(oracleConfig),
+  });
+  const d5r = eulerSwapStrategy({
+    name: "D5-rctr",
+    baseParams: DEFAULT_EULER_PARAMS,
+    rx: 10,
+    hook: compositeHook(
+      oracleFeeHook(oracleConfig),
+      continuousRecenterHook({ rx: 10 }),
+    ),
+  });
+
+  const res = runSimulation({
+    strategies: [d4r, d5r],
+    initialValueUSDC: initialValue,
+    startPrice,
+    sim,
+    retail,
+    refVenue: { depthUSDC: 50_000_000, fee: 0.0005 },
+    defaultFee: 0.003,
+  });
+
+  const [r4, r5] = res.strategies;
+  const net4 = r4.arbFeeRevenue + r4.retailFeeRevenue + r4.edge;
+  const net5 = r5.arbFeeRevenue + r5.retailFeeRevenue + r5.edge;
+  const winner = net5 > net4 ? "D5" : "D4";
+
+  console.log(`\nRetail rate=${rate}/hr (${rate * 24}/day), mean=$5K:`);
+  console.log(`  ${"".padEnd(12)} ArbFee   RetailFee  Edge      Net       RetailVol  RetailCap%  Rctr`);
+  console.log(`  D4-noRctr  $${r4.arbFeeRevenue.toFixed(0).padStart(7)}  $${r4.retailFeeRevenue.toFixed(0).padStart(8)}  $${r4.edge.toFixed(0).padStart(8)}  $${net4.toFixed(0).padStart(8)}  $${r4.retailVolume.toFixed(0).padStart(9)}  ${(r4.retailCaptureRate * 100).toFixed(1).padStart(6)}%     ${r4.totalRecenters}`);
+  console.log(`  D5-rctr    $${r5.arbFeeRevenue.toFixed(0).padStart(7)}  $${r5.retailFeeRevenue.toFixed(0).padStart(8)}  $${r5.edge.toFixed(0).padStart(8)}  $${net5.toFixed(0).padStart(8)}  $${r5.retailVolume.toFixed(0).padStart(9)}  ${(r5.retailCaptureRate * 100).toFixed(1).padStart(6)}%     ${r5.totalRecenters}`);
+  console.log(`  Winner: ${winner} (Δ=$${Math.abs(net5 - net4).toFixed(0)})`);
+}
+
+// Summarize: what's the total fee revenue picture?
+console.log("\n=== Summary: Total Fees (Arb + Retail) vs Edge ===");
+console.log("The D4 arb fees grow with retail because retail creates displacement that arbs recapture.");
+console.log("The oracle fee on the arb side captures most of this recapture value.");
+console.log("\nBut is this real alpha? Or is it just charging retail indirectly via the arb cycle?");
+console.log("To answer: compare NAV vs HODL (captures everything including exposure P&L).");
+
+for (const rate of retailRates) {
+  const retail = { ...DEFAULT_RETAIL, arrivalRate: rate };
+
+  const d4r = eulerSwapStrategy({
+    name: "D4",
+    baseParams: DEFAULT_EULER_PARAMS,
+    rx: 10,
+    hook: oracleFeeHook(oracleConfig),
+  });
+  const d5r = eulerSwapStrategy({
+    name: "D5",
+    baseParams: DEFAULT_EULER_PARAMS,
+    rx: 10,
+    hook: compositeHook(
+      oracleFeeHook(oracleConfig),
+      continuousRecenterHook({ rx: 10 }),
+    ),
+  });
+
+  const res = runSimulation({
+    strategies: [d4r, d5r],
+    initialValueUSDC: initialValue,
+    startPrice,
+    sim,
+    retail,
+    refVenue: { depthUSDC: 50_000_000, fee: 0.0005 },
+    defaultFee: 0.003,
+  });
+
+  const [r4, r5] = res.strategies;
+  const d4vsHodl = r4.finalNAV - res.hodlNAV;
+  const d5vsHodl = r5.finalNAV - res.hodlNAV;
+  console.log(`  rate=${String(rate).padStart(2)}/hr: D4 vs HODL = $${d4vsHodl.toFixed(0).padStart(8)}, D5 vs HODL = $${d5vsHodl.toFixed(0).padStart(8)}, D4 NAV=$${r4.finalNAV.toFixed(0)}, D5 NAV=$${r5.finalNAV.toFixed(0)}`);
+}
