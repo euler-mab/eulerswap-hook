@@ -124,7 +124,43 @@ The oracle-only strategy's >100% "fee capture" means fee revenue exceeds edge, w
 
 ---
 
-## 4. Known Limitations
+## 4. Recentering vs LVR Shielding
+
+A key finding: continuous recentering increases the total LVR leaked to arbs, even though the oracle fee captures a high fraction of each individual arb opportunity.
+
+### Setup
+
+$1M equity, rx=10 (wide range), LTV=0.84, 60% vol, 30 days, arb-only (no retail). The virtual pool depth is ~$3.83M (2 × x0). Theoretical LVR = σ²T/8 × V ≈ $14,182.
+
+### Results
+
+| Strategy | Edge (LVR leaked) | % of Theoretical | Arb Fees | Net (Fees+Edge) | Recenters |
+|----------|-------------------|------------------|----------|-----------------|-----------|
+| Oracle fee, no recenter | −$1,839 | 13% | $4,420 | +$2,581 | 0 |
+| Oracle fee + continuous recenter | −$5,594 | 39% | $4,854 | −$739 | 183 |
+| Static 30bps + continuous recenter | −$7,655 | 54% | $3,308 | −$4,347 | 160 |
+
+### Mechanism: Displacement as LVR Shield
+
+Without recentering, the pool drifts off-center as the price moves. On subsequent steps, the arber's trade is small because the pool is already near its fee-adjusted target from the previous step. The accumulated offset produces a high fee rate (2–3%), but more importantly the pool **self-limits arb volume** by staying displaced. Only 13% of theoretical LVR leaks through.
+
+With recentering, the pool snaps back to equilibrium at the current price whenever exposure decreases. Each step presents a fresh, fully centered pool. The fee rate is low (0.1–0.5% near equilibrium), and the arber trades through the full depth. The oracle fee captures 87% of each step's LVR, but 87% of a 3× larger number yields a worse net outcome. 39% of theoretical LVR leaks through.
+
+The fee revenue is similar in both cases (~$4.4K vs ~$4.9K) because the higher fee rate without recentering roughly offsets the lower trade volume. The critical difference is in edge: the non-recentered pool exposes less total value to arbs.
+
+### Implications
+
+1. **Recentering is not free** — it trades directional risk (exposure) for adverse selection cost (LVR). The exposure from not recentering acts as a natural LVR shield.
+
+2. **Oracle fee + no recenter** produces net profit in arb-only conditions because accumulated offset charges a toll that exceeds the (small) edge leaked. However, this strategy carries directional exposure risk.
+
+3. **Recentering's value is on the retail side** — a centered pool offers tighter spreads, attracting retail flow. In arb-only conditions, this benefit goes entirely to the arber. With sufficient retail flow, the better retail capture could outweigh the increased LVR.
+
+4. **Threshold-based recentering** (recenter only when exposure exceeds some limit) may offer a better tradeoff than continuous recentering — maintaining some displacement as an LVR shield while periodically resetting to manage exposure risk.
+
+---
+
+## 5. Known Limitations
 
 1. **Single price path**: All results above are seed=42. Expected values require Monte Carlo over many seeds.
 2. **Discrete time**: Hourly steps (24/day) vs continuous-time theory. The 1–3% error in edge vs σ²T/8 is partly from discretization.
