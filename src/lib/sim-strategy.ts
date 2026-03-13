@@ -330,10 +330,8 @@ class EulerSwapCurve implements AMMCurve {
       const dyFee = dy / gamma - dy;  // fee in Y terms
       const feeRevenue = dyFee * ethPrice;
 
-      // Only deposit fee into vault supply. Position-related vault changes
-      // are derived by vaultStateAt(curX, curY, x0, y0, vault).
-      newVault = { ...newVault, yr: newVault.yr + dyFee };
-
+      // Don't deposit fee here — engine handles fee deposit uniformly
+      // for both arb and retail paths. Only return raw vault state.
       return { newCurX: xAfter, newCurY: newY, executed: true, feeRevenue, newVault };
     } else {
       const dxGross = grossAmountUSDC;
@@ -369,10 +367,8 @@ class EulerSwapCurve implements AMMCurve {
       const dxFee = dx / gamma - dx;  // fee in X terms
       const feeRevenue = dxFee;
 
-      // Only deposit fee into vault supply. Position-related vault changes
-      // are derived by vaultStateAt(curX, curY, x0, y0, vault).
-      newVault = { ...newVault, xr: newVault.xr + dxFee };
-
+      // Don't deposit fee here — engine handles fee deposit uniformly
+      // for both arb and retail paths. Only return raw vault state.
       return { newCurX: newX, newCurY: yAfter, executed: true, feeRevenue, newVault };
     }
   }
