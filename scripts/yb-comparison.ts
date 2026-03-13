@@ -103,6 +103,24 @@ const strategies: StrategyFactory[] = [
       hook: staticFeeHook(0.003),
       name: 'ES static 30bps',
     }) },
+
+  // ─── Equal-leverage comparison (no LLTV boost) ─────────────────
+  // Isolates mechanism difference: dynamic fees + integrated retail vs fixed fee
+  { name: 'ES unlevered orc',
+    make: () => eulerSwapStrategy({
+      baseParams: { ...DEFAULT_EULER_PARAMS, vyx: 0, vxy: 0 }, rx: RX,
+      hook: compositeHook(
+        oracleFeeHook(oracleCfg),
+        continuousRecenterHook({ rx: RX, surchargeInitial: 0.005, surchargeDecayPerStep: 0.02 }),
+      ),
+      name: 'ES unlev orc+rc',
+    }) },
+  { name: 'ES unlevered 30bp',
+    make: () => eulerSwapStrategy({
+      baseParams: { ...DEFAULT_EULER_PARAMS, vyx: 0, vxy: 0 }, rx: RX,
+      hook: staticFeeHook(0.003),
+      name: 'ES unlev 30bps',
+    }) },
 ];
 
 // ─── Accumulator ─────────────────────────────────────────────────────

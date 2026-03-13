@@ -300,7 +300,7 @@ export function runSimulation(config: EngineConfig): SimResult {
       // afterSwap callback
       if (hook?.afterSwap) {
         const afterCtx = makeAfterSwapCtx(
-          state, preX, preY, arbFee, extPrice, ethPrice, true, rt.accum, sim.vol, sim.stepsPerDay,
+          state, preX, preY, arbFee, extPrice, ethPrice, true, rt.accum, sim.vol, sim.stepsPerDay, i,
         );
         hook.afterSwap(afterCtx);
         if (afterCtx.reconfiguredState) {
@@ -488,7 +488,7 @@ export function runSimulation(config: EngineConfig): SimResult {
           // afterSwap callback
           if (strategy.hook?.afterSwap) {
             const afterCtx = makeAfterSwapCtx(
-              state, preX, preY, fee, extPrice, ethPrice, false, rt.accum, sim.vol, sim.stepsPerDay,
+              state, preX, preY, fee, extPrice, ethPrice, false, rt.accum, sim.vol, sim.stepsPerDay, i,
             );
             strategy.hook.afterSwap(afterCtx);
             if (afterCtx.reconfiguredState) {
@@ -633,6 +633,7 @@ function makeAfterSwapCtx(
   accum: ResultAccumulators,
   vol?: number,
   stepsPerDay?: number,
+  stepIndex?: number,
 ): AfterSwapContext {
   const dx = state.curX - preX;
   const dy = state.curY - preY;
@@ -651,5 +652,6 @@ function makeAfterSwapCtx(
     accum,
     vol,
     stepsPerDay,
+    stepIndex,
   };
 }

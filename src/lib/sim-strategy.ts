@@ -135,6 +135,8 @@ export interface AfterSwapContext {
   vol?: number;
   /** Steps per day (for dt calculation). */
   stepsPerDay?: number;
+  /** Current simulation step index (0-based). */
+  stepIndex?: number;
 }
 
 export interface ResultAccumulators {
@@ -558,6 +560,7 @@ export function yieldBasisReleverageStrategy(config?: YBReleverageConfig): AMMSt
   // Instead, we deduct interest from equity on each recenter.
   let debtBalance = 0;        // current debt (USDC)
   let pendingInterest = 0;    // interest accrued since last recenter
+  let lastAccrualStep = 0;    // last step at which interest was accrued
 
   /** Build state at equilibrium for given equity and ethPrice. */
   function buildState(equity: number, ethPrice: number): StrategyState {
@@ -584,12 +587,20 @@ export function yieldBasisReleverageStrategy(config?: YBReleverageConfig): AMMSt
     afterSwap(ctx: AfterSwapContext): void {
       if (!ctx.state.vault) return;
 
-      // Accrue interest on structural debt
+      // Accrue interest on structural debt for ALL elapsed steps since last accrual,
+      // not just the current step. This ensures interest is correct even when
+      // multiple steps pass without a swap (no afterSwap call).
       const stepsPerDay = ctx.stepsPerDay ?? 24;
       const dt = 1 / (365 * stepsPerDay);
-      const stepInterest = debtBalance * borrowRate * dt;
-      pendingInterest += stepInterest;
-      debtBalance += stepInterest;
+      const currentStep = ctx.stepIndex ?? (lastAccrualStep + 1);
+      const elapsedSteps = Math.max(currentStep - lastAccrualStep, 1);
+      lastAccrualStep = currentStep;
+
+      for (let s = 0; s < elapsedSteps; s++) {
+        const stepInterest = debtBalance * borrowRate * dt;
+        pendingInterest += stepInterest;
+        debtBalance += stepInterest;
+      }
 
       // Compute current equity from vault state, minus accrued interest
       const vault = vaultStateAt(
