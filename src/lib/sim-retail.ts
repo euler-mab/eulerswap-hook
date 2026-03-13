@@ -35,6 +35,10 @@ export interface RetailConfig {
   meanSize: number;       // mean order size in USDC
   sizeSigma: number;      // lognormal sigma (typical: 1.2)
   buyProb: number;        // probability of buy-X order (0.5 = balanced)
+  /** Fraction of orders that are toxic (informed). Default 0. */
+  toxicFraction?: number;
+  /** Correlation strength for toxic orders (0=random, 1=perfect). Default 1.0. */
+  toxicCorrelation?: number;
 }
 
 export const DEFAULT_RETAIL: RetailConfig = {

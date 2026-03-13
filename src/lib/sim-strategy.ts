@@ -131,6 +131,10 @@ export interface AfterSwapContext {
   reconfiguredState: StrategyState | null;
   /** Mutable accumulators */
   accum: ResultAccumulators;
+  /** Annualized volatility (for auction sub-simulation). */
+  vol?: number;
+  /** Steps per day (for dt calculation). */
+  stepsPerDay?: number;
 }
 
 export interface ResultAccumulators {
@@ -242,6 +246,50 @@ export function xyKStrategy(fee: number, name?: string): AMMStrategy {
 
 // ─── EulerSwap Strategy ──────────────────────────────────────────────
 
+/**
+ * Invert fX: given y on the X-side curve (x <= x0), find x.
+ * y = y0 + (px/py) * (x0 - x) * (cx + (1-cx) * x0/x)
+ * For cx=0: x = (px/py) * x0² / (y - y0 + (px/py) * x0)
+ * For cx>0: quadratic  cx·x² + (D - (2cx-1)·x0)·x - (1-cx)·x0² = 0
+ */
+function invertFX(y: number, cx: number, x0: number, y0: number, px: number, py: number): number {
+  const pxpy = px / py;
+  const D = (y - y0) / pxpy;  // normalized displacement
+  if (cx < 1e-12) {
+    // cx=0 simplification
+    return pxpy * x0 * x0 / (y - y0 + pxpy * x0);
+  }
+  // Quadratic: cx·x² + (D - (2cx-1)·x0)·x - (1-cx)·x0² = 0
+  const a = cx;
+  const b = D - (2 * cx - 1) * x0;
+  const c = -(1 - cx) * x0 * x0;
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return x0;  // shouldn't happen
+  return (-b + Math.sqrt(disc)) / (2 * a);  // positive root
+}
+
+/**
+ * Invert gY: given x on the Y-side curve (y <= y0), find y.
+ * x = x0 + (py/px) * (y0 - y) * (cy + (1-cy) * y0/y)
+ * For cy=0: y = (py/px) * y0² / (x - x0 + (py/px) * y0)
+ * For cy>0: quadratic  cy·y² + (D - (2cy-1)·y0)·y - (1-cy)·y0² = 0
+ */
+function invertGY(x: number, cy: number, y0: number, x0: number, px: number, py: number): number {
+  const pypx = py / px;
+  const D = (x - x0) / pypx;  // normalized displacement
+  if (cy < 1e-12) {
+    // cy=0 simplification
+    return pypx * y0 * y0 / (x - x0 + pypx * y0);
+  }
+  // Quadratic: cy·y² + (D - (2cy-1)·y0)·y - (1-cy)·y0² = 0
+  const a = cy;
+  const b = D - (2 * cy - 1) * y0;
+  const c = -(1 - cy) * y0 * y0;
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return y0;
+  return (-b + Math.sqrt(disc)) / (2 * a);
+}
+
 /** EulerSwap curve implementation with full leverage and vault tracking. */
 class EulerSwapCurve implements AMMCurve {
   solveForPrice(state: StrategyState, targetPrice: number): { x: number; y: number } | null {
@@ -306,8 +354,7 @@ class EulerSwapCurve implements AMMCurve {
       const dy = newY - curY;
       let xAfter: number;
       if (newY >= y0) {
-        const pxpy = p.px / p.py;
-        xAfter = pxpy * x0 * x0 / (newY - y0 + pxpy * x0);
+        xAfter = invertFX(newY, p.cx, x0, y0, p.px, p.py);
       } else {
         xAfter = gY(newY, p.cy, y0, x0, p.px, p.py);
       }
@@ -315,8 +362,7 @@ class EulerSwapCurve implements AMMCurve {
       let xBefore: number;
       if (curY >= y0 - 1e-8) {
         if (curY >= y0) {
-          const pxpy = p.px / p.py;
-          xBefore = pxpy * x0 * x0 / (curY - y0 + pxpy * x0);
+          xBefore = invertFX(curY, p.cx, x0, y0, p.px, p.py);
         } else {
           xBefore = x0;
         }
@@ -343,8 +389,7 @@ class EulerSwapCurve implements AMMCurve {
       const dx = newX - curX;
       let yAfter: number;
       if (newX >= x0) {
-        const pypx = p.py / p.px;
-        yAfter = pypx * y0 * y0 / (newX - x0 + pypx * y0);
+        yAfter = invertGY(newX, p.cy, y0, x0, p.px, p.py);
       } else {
         yAfter = fX(newX, p.cx, x0, y0, p.px, p.py);
       }
@@ -352,8 +397,7 @@ class EulerSwapCurve implements AMMCurve {
       let yBefore: number;
       if (curX >= x0 - 0.01) {
         if (curX >= x0) {
-          const pypx = p.py / p.px;
-          yBefore = pypx * y0 * y0 / (curX - x0 + pypx * y0);
+          yBefore = invertGY(curX, p.cy, y0, x0, p.px, p.py);
         } else {
           yBefore = y0;
         }
@@ -412,6 +456,12 @@ export function eulerSwapStrategy(config: EulerSwapConfig): AMMStrategy {
     hasVault: true,
 
     init(xr: number, _yr: number, price: number): StrategyState {
+      // If no leverage (vyx=0 and vxy=0), split equity 50/50 across both sides.
+      // With leverage, one-sided equity works because the pool borrows the other side.
+      const hasLeverage = config.baseParams.vyx > 0 || config.baseParams.vxy > 0;
+      const xEquity = hasLeverage ? xr : xr / 2;
+      const yEquity = hasLeverage ? 0 : (xr / 2) / price;
+
       const params: Params = {
         ...config.baseParams,
         px: 1,
@@ -420,8 +470,8 @@ export function eulerSwapStrategy(config: EulerSwapConfig): AMMStrategy {
         ry: config.rx,
         cx,
         cy: cx,
-        xr,
-        yr: 0,
+        xr: xEquity,
+        yr: yEquity,
       };
       return makeState(params);
     },

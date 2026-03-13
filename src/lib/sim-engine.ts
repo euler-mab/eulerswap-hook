@@ -5,7 +5,7 @@
  * optimal retail routing. Tracks NAV, fees, edge, exposure, health.
  */
 
-import { mulberry32, generatePricePath } from "./simulate";
+import { mulberry32, generatePricePath, generateGarchPricePath, type GarchParams } from "./simulate";
 import type {
   AMMStrategy, StrategyState, SimHook,
   FeeContext, AfterSwapContext, SwapContext,
@@ -22,6 +22,10 @@ export interface SimConfig {
   durationDays: number;
   stepsPerDay: number;
   seed: number;
+  /** Price model: 'gbm' (default) or 'garch' for volatility clustering. */
+  priceModel?: 'gbm' | 'garch';
+  /** GARCH(1,1) parameters. Only used when priceModel='garch'. */
+  garchParams?: GarchParams;
 }
 
 export const DEFAULT_SIM_CONFIG: SimConfig = {
@@ -47,6 +51,10 @@ export interface EngineConfig {
   refVenue: { depthUSDC: number; fee: number };
   /** Static fee for strategies without getFee hook */
   defaultFee: number;
+  /** Minimum arb profit in USDC to execute (gas cost proxy). Default 0. */
+  minArbProfitUSD?: number;
+  /** Annual borrow rate for vault debt accrual. Default 0 (no interest). */
+  borrowRateAnnual?: number;
 }
 
 // ─── Results ─────────────────────────────────────────────────────────
@@ -70,6 +78,10 @@ export interface StrategyResult {
   maxExposurePct: number;
   avgExposurePct: number;
   minHealth: number;
+  /** Whether this strategy was liquidated (health < 1). */
+  liquidated: boolean;
+  /** Step number at which liquidation occurred, or null. */
+  liquidationStep: number | null;
 }
 
 export interface SimResult {
@@ -95,6 +107,8 @@ interface StrategyRuntime {
   maxExposurePct: number;
   sumExposurePct: number;
   minHealth: number;
+  liquidated: boolean;
+  liquidationStep: number | null;
 }
 
 // ─── Engine ──────────────────────────────────────────────────────────
@@ -105,7 +119,17 @@ export function runSimulation(config: EngineConfig): SimResult {
 
   // Generate price path (Y per X, e.g. 1/1986 for USDC/WETH)
   const simConfig = { ...sim, feeBps: 0 };  // feeBps not used by generatePricePath
-  const pricePath = generatePricePath(config.startPrice, { ...simConfig, feeBps: 0 });
+  const pricePath = (sim.priceModel === 'garch' && sim.garchParams)
+    ? generateGarchPricePath(config.startPrice, simConfig, sim.garchParams)
+    : generatePricePath(config.startPrice, simConfig);
+
+  // Pre-compute dt and borrow rate for interest accrual (Fix 5)
+  const dt = 1 / (365 * sim.stepsPerDay);
+  const borrowRate = config.borrowRateAnnual ?? 0;
+  const interestFactor = borrowRate > 0 ? 1 + borrowRate * dt : 1;
+
+  // Gas cost threshold for arbs (Fix 1)
+  const minArbProfit = config.minArbProfitUSD ?? 0;
 
   // HODL NAV baseline (initial USDC value, no trading)
   const hodlInitialUSDC = config.initialValueUSDC;
@@ -138,6 +162,8 @@ export function runSimulation(config: EngineConfig): SimResult {
       maxExposurePct: 0,
       sumExposurePct: 0,
       minHealth: 10,
+      liquidated: false,
+      liquidationStep: null,
     };
   });
 
@@ -153,6 +179,7 @@ export function runSimulation(config: EngineConfig): SimResult {
     // ── Phase 1: Arb each strategy independently ──────────────────
 
     for (const rt of runtimes) {
+      if (rt.liquidated) continue;  // Fix 4: skip liquidated strategies
       const { strategy, state } = rt;
       const hook = strategy.hook;
 
@@ -212,6 +239,13 @@ export function runSimulation(config: EngineConfig): SimResult {
       const target = strategy.curve.solveForPrice(state, targetPrice);
       if (!target) continue;
 
+      // Fix 1: Gas cost threshold — skip if expected profit < minArbProfitUSD
+      // Arb profit = negative of LP edge (what LP loses, arb gains)
+      if (minArbProfit > 0) {
+        const arbProfit = -computeEdge(preX, preY, target.x, target.y, ethPrice);
+        if (arbProfit < minArbProfit) continue;
+      }
+
       state.curX = target.x;
       state.curY = target.y;
 
@@ -252,7 +286,7 @@ export function runSimulation(config: EngineConfig): SimResult {
       // afterSwap callback
       if (hook?.afterSwap) {
         const afterCtx = makeAfterSwapCtx(
-          state, preX, preY, arbFee, extPrice, ethPrice, true, rt.accum,
+          state, preX, preY, arbFee, extPrice, ethPrice, true, rt.accum, sim.vol, sim.stepsPerDay,
         );
         hook.afterSwap(afterCtx);
         if (afterCtx.reconfiguredState) {
@@ -269,7 +303,22 @@ export function runSimulation(config: EngineConfig): SimResult {
 
       for (let j = 0; j < nOrders; j++) {
         const orderSize = lognormalSample(retailRng, retail.meanSize, retail.sizeSigma);
-        const isBuyX = retailRng() < retail.buyProb;
+
+        // Fix 2: Toxic (informed) retail flow — direction correlated with next price move
+        let isBuyX: boolean;
+        const toxicFrac = retail.toxicFraction ?? 0;
+        if (toxicFrac > 0 && retailRng() < toxicFrac && i < n) {
+          const toxicCorr = retail.toxicCorrelation ?? 1.0;
+          if (retailRng() < toxicCorr) {
+            // Informed: buy X before price goes up (extPrice = Y/X, lower = X more expensive)
+            const nextExtPrice = pricePath[i + 1];
+            isBuyX = nextExtPrice < extPrice;  // X getting more expensive → buy now
+          } else {
+            isBuyX = retailRng() < retail.buyProb;
+          }
+        } else {
+          isBuyX = retailRng() < retail.buyProb;
+        }
 
         // Track total retail generated across all strategies
         for (const rt of runtimes) {
@@ -283,6 +332,12 @@ export function runSimulation(config: EngineConfig): SimResult {
         const venueFees: number[] = [];
 
         for (const rt of runtimes) {
+          // Fix 4: skip liquidated strategies
+          if (rt.liquidated) {
+            quoteVenues.push({ effectivePrice: 0, available: false });
+            venueFees.push(0);
+            continue;
+          }
           const { strategy, state } = rt;
           const hook = strategy.hook;
           const pEquil = state.pEquil;
@@ -339,19 +394,33 @@ export function runSimulation(config: EngineConfig): SimResult {
           }
         }
 
-        // Reference venue: xy=k at fair price with refVenue.fee.
-        // For a deep ref venue, execution price ≈ fair price × (1-fee).
+        // Reference venue: xy=k with refVenue depth and fee.
+        // When depthUSDC is Infinity, reduces to flat fair price × (1-fee).
         const refGamma = 1 - refVenue.fee;
+        const D = refVenue.depthUSDC;
+        const hasFiniteDepth = D > 0 && isFinite(D);
         if (isBuyX) {
-          // Trader gets USDC per WETH: (1/extPrice) × (1-fee) = USDC/WETH after fee
+          // Trader sends WETH, receives USDC
+          const dyGross = orderSize / ethPrice;
+          const dyNet = dyGross * refGamma;
+          // xy=k ref pool: D USDC on X side, D/(ethPrice) WETH on Y side
+          const xOut = hasFiniteDepth
+            ? D * dyNet * ethPrice / (D + dyNet * ethPrice)
+            : dyNet * ethPrice;  // infinite depth: no price impact
           quoteVenues.push({
-            effectivePrice: refGamma / extPrice,
+            effectivePrice: dyGross > 0 ? xOut / dyGross : 0,
             available: true,
           });
         } else {
-          // Trader gets WETH per USDC: extPrice × (1-fee) = WETH/USDC after fee
+          // Trader sends USDC, receives WETH
+          const dxGross = orderSize;
+          const dxNet = dxGross * refGamma;
+          // xy=k ref pool: D USDC on X side, D/(ethPrice) WETH on Y side
+          const yOut = hasFiniteDepth
+            ? (D / ethPrice) * dxNet / (D + dxNet)
+            : dxNet / ethPrice;  // infinite depth
           quoteVenues.push({
-            effectivePrice: extPrice * refGamma,
+            effectivePrice: dxGross > 0 ? yOut / dxGross : 0,
             available: true,
           });
         }
@@ -405,7 +474,7 @@ export function runSimulation(config: EngineConfig): SimResult {
           // afterSwap callback
           if (strategy.hook?.afterSwap) {
             const afterCtx = makeAfterSwapCtx(
-              state, preX, preY, fee, extPrice, ethPrice, false, rt.accum,
+              state, preX, preY, fee, extPrice, ethPrice, false, rt.accum, sim.vol, sim.stepsPerDay,
             );
             strategy.hook.afterSwap(afterCtx);
             if (afterCtx.reconfiguredState) {
@@ -416,9 +485,34 @@ export function runSimulation(config: EngineConfig): SimResult {
       }
     }
 
-    // ── Phase 3: Per-step metrics (once per step, all strategies) ──
+    // ── Phase 3: Interest accrual, metrics, liquidation check ────────
     for (const rt of runtimes) {
+      if (rt.liquidated) continue;
+
+      // Fix 5: Accrue interest on vault debt.
+      // state.vault stores initial vault state; actual debt is computed by
+      // vaultStateAt from cursor displacement. We accrue interest on the
+      // effective current debt and increase the stored vault's debt accordingly.
+      if (interestFactor > 1 && rt.state.vault) {
+        const curVault = vaultStateAt(
+          rt.state.curX, rt.state.curY,
+          rt.state.x0, rt.state.y0,
+          rt.state.vault,
+        );
+        const xInterest = curVault.xd * (interestFactor - 1);
+        const yInterest = curVault.yd * (interestFactor - 1);
+        // Adding interest to stored debt increases effective debt
+        rt.state.vault.xd += xInterest;
+        rt.state.vault.yd += yInterest;
+      }
+
       trackMetrics(rt, ethPrice);
+
+      // Fix 4: Liquidation — terminate strategy when health < 1
+      if (rt.minHealth < 1 && !rt.liquidated) {
+        rt.liquidated = true;
+        rt.liquidationStep = i;
+      }
     }
   }
 
@@ -460,6 +554,8 @@ export function runSimulation(config: EngineConfig): SimResult {
       maxExposurePct: rt.maxExposurePct,
       avgExposurePct: n > 0 ? rt.sumExposurePct / n : 0,
       minHealth: rt.minHealth,
+      liquidated: rt.liquidated,
+      liquidationStep: rt.liquidationStep,
     };
   });
 
@@ -510,6 +606,8 @@ function makeAfterSwapCtx(
   extPrice: number, ethPrice: number,
   isArb: boolean,
   accum: ResultAccumulators,
+  vol?: number,
+  stepsPerDay?: number,
 ): AfterSwapContext {
   const dx = state.curX - preX;
   const dy = state.curY - preY;
@@ -526,5 +624,7 @@ function makeAfterSwapCtx(
     isArb,
     reconfiguredState: null,
     accum,
+    vol,
+    stepsPerDay,
   };
 }

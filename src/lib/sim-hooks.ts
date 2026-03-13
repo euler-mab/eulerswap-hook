@@ -18,6 +18,7 @@ import {
   computeXb, computeYb,
   fX, gY,
 } from "./math";
+import { mulberry32, boxMuller } from "./simulate";
 
 // ─── Static Fee Hook ─────────────────────────────────────────────────
 
@@ -66,6 +67,10 @@ export function oracleFeeHook(config: OracleFeeConfig): SimHook {
 
 export interface ContinuousRecenterConfig {
   rx: number;              // range width for recentered pool
+  /** Surcharge added to fee after each recenter (fraction, e.g. 0.005 = 50 bps). Default 0. */
+  surchargeInitial?: number;
+  /** Fraction of surcharge that decays each step (e.g. 0.02 = 2% per step). Default 0.02. */
+  surchargeDecayPerStep?: number;
 }
 
 /**
@@ -74,6 +79,9 @@ export interface ContinuousRecenterConfig {
  */
 export function continuousRecenterHook(config: ContinuousRecenterConfig): SimHook {
   let lastReserveExposure = 0;
+  let surchargeRemaining = 0;
+  const surchargeInitial = config.surchargeInitial ?? 0;
+  const surchargeDecay = config.surchargeDecayPerStep ?? 0.02;
 
   function computeReserveExposure(state: StrategyState): number {
     const { curX, curY, x0, y0, xb, yb } = state;
@@ -83,7 +91,14 @@ export function continuousRecenterHook(config: ContinuousRecenterConfig): SimHoo
   }
 
   return {
+    getFee(_ctx: FeeContext): number | null {
+      if (surchargeRemaining < 1e-6) return null;
+      return surchargeRemaining;  // additive when composed
+    },
+
     afterSwap(ctx: AfterSwapContext): void {
+      // Decay surcharge each step (even without recenter)
+      surchargeRemaining *= (1 - surchargeDecay);
       const exposure = computeReserveExposure(ctx.state);
 
       if (exposure < lastReserveExposure && ctx.state.vault) {
@@ -117,6 +132,7 @@ export function continuousRecenterHook(config: ContinuousRecenterConfig): SimHoo
         };
         ctx.accum.totalRecenters++;
         lastReserveExposure = 0;
+        if (surchargeInitial > 0) surchargeRemaining = surchargeInitial;
       } else {
         lastReserveExposure = exposure;
       }
@@ -136,6 +152,8 @@ export interface AuctionBackstopConfig {
   baseFee: number;                // floor fee during auction
   refFee: number;                 // reference venue fee (for clearing calc)
   rx: number;                     // range width for recentered pool
+  /** If true, simulate price movement during auction minutes. Default false. */
+  dynamicAuctionPrice?: boolean;
 }
 
 /**
@@ -192,10 +210,22 @@ export function auctionBackstopHook(config: AuctionBackstopConfig): SimHook {
       let cleared = false;
       const startFee = Math.min(shift * 1.5, 0.05);
 
+      // Dynamic auction price: evolve ethPrice during auction minutes
+      let auctionEthPrice = ctx.ethPrice;
+      const useDynamicPrice = config.dynamicAuctionPrice && ctx.vol;
+      const dtMin = 1 / (365 * 24 * 60);  // one minute in years
+      const auctionRng = useDynamicPrice
+        ? mulberry32(Math.floor(ctx.ethPrice * 1e6))
+        : null;
+
       if (asset0Deficit) {
         let yCur = y0Off;
         const ybOff = computeYb(y0Off, offParams.ry, offParams.cy);
         for (let min = 0; min <= maxMin; min++) {
+          if (useDynamicPrice && auctionRng && min > 0) {
+            const vol = ctx.vol!;
+            auctionEthPrice *= Math.exp(-0.5 * vol * vol * dtMin + vol * Math.sqrt(dtMin) * boxMuller(auctionRng));
+          }
           const feeFrac = Math.max(startFee - (config.decayBpsPerMinute * min) / 10000, config.baseFee);
           const offset = (1 + shift) * (yCur / y0Off) ** 2 - 1;
           if (offset < 1e-8) break;
@@ -210,7 +240,7 @@ export function auctionBackstopHook(config: AuctionBackstopConfig): SimHook {
           const dxIn = xEnd - xCurVal;
           if (dxIn < 0.01) continue;
           const feeUSDC = dxIn * feeFrac / (1 - feeFrac);
-          aCost += dyOut * ctx.ethPrice - dxIn;
+          aCost += dyOut * auctionEthPrice - dxIn;
           aFees += feeUSDC;
           const usdcRepaid = Math.min(dxIn + feeUSDC, curVault.xd);
           const yrUsed = Math.min(dyOut, curVault.yr);
@@ -229,6 +259,10 @@ export function auctionBackstopHook(config: AuctionBackstopConfig): SimHook {
         let xCur = x0Off;
         const xbOff = computeXb(x0Off, offParams.rx, offParams.cx);
         for (let min = 0; min <= maxMin; min++) {
+          if (useDynamicPrice && auctionRng && min > 0) {
+            const vol = ctx.vol!;
+            auctionEthPrice *= Math.exp(-0.5 * vol * vol * dtMin + vol * Math.sqrt(dtMin) * boxMuller(auctionRng));
+          }
           const feeFrac = Math.max(startFee - (config.decayBpsPerMinute * min) / 10000, config.baseFee);
           const offset = (1 + shift) * (xCur / x0Off) ** 2 - 1;
           if (offset < 1e-8) break;
@@ -243,8 +277,8 @@ export function auctionBackstopHook(config: AuctionBackstopConfig): SimHook {
           const dyIn = yEnd - yCurVal;
           if (dyIn < 1e-12) continue;
           const feeWETH = dyIn * feeFrac / (1 - feeFrac);
-          aCost += dxOut - dyIn * ctx.ethPrice;
-          aFees += feeWETH * ctx.ethPrice;
+          aCost += dxOut - dyIn * auctionEthPrice;
+          aFees += feeWETH * auctionEthPrice;
           const wethRepaid = Math.min(dyIn + feeWETH, curVault.yd);
           const xrUsed = Math.min(dxOut, curVault.xr);
           curVault = {
@@ -294,8 +328,9 @@ export function auctionBackstopHook(config: AuctionBackstopConfig): SimHook {
 // ─── Composite Hook ──────────────────────────────────────────────────
 
 /**
- * Chain multiple hooks. For getFee, returns the first non-null result.
- * For afterSwap, calls each in order (skipping if already recentered).
+ * Chain multiple hooks. For getFee, first non-null is base fee,
+ * subsequent non-null values are added (surcharges). For afterSwap,
+ * calls each in order (skipping if already recentered).
  */
 export function compositeHook(...hooks: SimHook[]): SimHook {
   return {
@@ -307,13 +342,17 @@ export function compositeHook(...hooks: SimHook[]): SimHook {
     },
 
     getFee(ctx) {
+      let baseFee: number | null = null;
       for (const h of hooks) {
         if (h.getFee) {
           const fee = h.getFee(ctx);
-          if (fee !== null) return fee;
+          if (fee !== null) {
+            if (baseFee === null) baseFee = fee;
+            else baseFee += fee;  // additive surcharge
+          }
         }
       }
-      return null;
+      return baseFee;
     },
 
     afterSwap(ctx) {
