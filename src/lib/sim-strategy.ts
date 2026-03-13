@@ -189,8 +189,8 @@ const xyKCurve: AMMCurve = {
       if (dxOut < 0.01) return { newCurX: state.curX, newCurY: state.curY, executed: false, feeRevenue: 0, newVault: null };
       const dyFee = dyGross - dyNet;  // fee in Y terms
       const feeRevenue = dyFee * ethPrice;
-      // Add fee to reserves (grows k, like Uni V2)
-      return { newCurX: newX, newCurY: newY + dyFee, executed: true, feeRevenue, newVault: null };
+      // Return curve position (net input only). Fee deposited by engine.
+      return { newCurX: newX, newCurY: newY, executed: true, feeRevenue, newVault: null };
     } else {
       // Trader sends X (USDC), receives Y (WETH)
       const dxGross = grossAmountUSDC;
@@ -201,8 +201,8 @@ const xyKCurve: AMMCurve = {
       if (dyOut < 1e-10) return { newCurX: state.curX, newCurY: state.curY, executed: false, feeRevenue: 0, newVault: null };
       const dxFee = dxGross - dxNet;  // fee in X terms
       const feeRevenue = dxFee;
-      // Add fee to reserves (grows k, like Uni V2)
-      return { newCurX: newX + dxFee, newCurY: newY, executed: true, feeRevenue, newVault: null };
+      // Return curve position (net input only). Fee deposited by engine.
+      return { newCurX: newX, newCurY: newY, executed: true, feeRevenue, newVault: null };
     }
   },
 };
@@ -223,7 +223,7 @@ export function xyKStrategy(fee: number, name?: string): AMMStrategy {
       return {
         curX: x0, curY: y0, x0, y0,
         xb: 0, yb: 0,  // no boundaries for xy=k
-        pEquil: price,
+        pEquil: y0 / x0,  // Y per X (marginal price at equilibrium)
         vault: null,
         params: null,
       };
@@ -330,14 +330,9 @@ class EulerSwapCurve implements AMMCurve {
       const dyFee = dy / gamma - dy;  // fee in Y terms
       const feeRevenue = dyFee * ethPrice;
 
-      const xrUsed = Math.min(dxOut, newVault.xr);
-      const wethRepaid = Math.min(dy, newVault.yd);
-      newVault = {
-        xr: newVault.xr - xrUsed,
-        yr: newVault.yr + (dy - wethRepaid) + dyFee,  // deposit fee into vault supply
-        xd: newVault.xd + (dxOut - xrUsed),
-        yd: newVault.yd - wethRepaid,
-      };
+      // Only deposit fee into vault supply. Position-related vault changes
+      // are derived by vaultStateAt(curX, curY, x0, y0, vault).
+      newVault = { ...newVault, yr: newVault.yr + dyFee };
 
       return { newCurX: xAfter, newCurY: newY, executed: true, feeRevenue, newVault };
     } else {
@@ -374,14 +369,9 @@ class EulerSwapCurve implements AMMCurve {
       const dxFee = dx / gamma - dx;  // fee in X terms
       const feeRevenue = dxFee;
 
-      const yrUsed = Math.min(dyOut, newVault.yr);
-      const usdcRepaid = Math.min(dx, newVault.xd);
-      newVault = {
-        xr: newVault.xr + (dx - usdcRepaid) + dxFee,  // deposit fee into vault supply
-        yr: newVault.yr - yrUsed,
-        xd: newVault.xd - usdcRepaid,
-        yd: newVault.yd + (dyOut - yrUsed),
-      };
+      // Only deposit fee into vault supply. Position-related vault changes
+      // are derived by vaultStateAt(curX, curY, x0, y0, vault).
+      newVault = { ...newVault, xr: newVault.xr + dxFee };
 
       return { newCurX: newX, newCurY: yAfter, executed: true, feeRevenue, newVault };
     }

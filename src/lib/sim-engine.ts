@@ -218,6 +218,10 @@ export function runSimulation(config: EngineConfig): SimResult {
       const arbDx = Math.abs(state.curX - preX);
       rt.arbVolume += arbDx;
 
+      // Edge: pure trade impact (LVR). Computed BEFORE fee deposit so it's
+      // consistent between EulerSwap (fee→vault) and xy=k (fee→reserves).
+      rt.edge += computeEdge(preX, preY, state.curX, state.curY, ethPrice);
+
       // Arb fee revenue: fee = netInput × (1−γ)/γ
       // Fee is deposited into vault supply (EulerSwap) or reserves (xy=k)
       if (arbDx > 0.01 && arbGamma > 0 && arbGamma < 1) {
@@ -245,11 +249,6 @@ export function runSimulation(config: EngineConfig): SimResult {
         }
       }
 
-      // Edge: net USDC-equivalent value the LP gained from this trade.
-      // Positive = LP profited (collected fee). Negative = LP gave up value.
-      // edge = (USDC received + WETH received × ethPrice) − (USDC given + WETH given × ethPrice)
-      rt.edge += computeEdge(preX, preY, state.curX, state.curY, ethPrice);
-
       // afterSwap callback
       if (hook?.afterSwap) {
         const afterCtx = makeAfterSwapCtx(
@@ -261,8 +260,6 @@ export function runSimulation(config: EngineConfig): SimResult {
         }
       }
 
-      // Track exposure and health
-      trackMetrics(rt, ethPrice);
     }
 
     // ── Phase 2: Retail orders ────────────────────────────────────
@@ -338,7 +335,6 @@ export function runSimulation(config: EngineConfig): SimResult {
           const preX = state.curX;
           const preY = state.curY;
 
-          const vault = getVault(state);
           const result = strategy.curve.executeSwap(state, isBuyX, ourAmount, ethPrice, fee);
 
           if (result.executed) {
@@ -347,12 +343,34 @@ export function runSimulation(config: EngineConfig): SimResult {
             if (result.newVault && state.vault) {
               Object.assign(state.vault, result.newVault);
             }
+
+            // Edge: pure trade impact. Computed before fee deposit.
+            rt.edge += computeEdge(preX, preY, state.curX, state.curY, ethPrice);
+
+            // Deposit fee into vault supply (EulerSwap) or reserves (xy=k)
+            if (result.feeRevenue > 0) {
+              if (isBuyX) {
+                // Fee in Y terms (WETH)
+                const feeY = result.feeRevenue / ethPrice;
+                if (state.vault) {
+                  state.vault.yr += feeY;
+                } else {
+                  state.curY += feeY;
+                }
+              } else {
+                // Fee in X terms (USDC)
+                const feeX = result.feeRevenue;
+                if (state.vault) {
+                  state.vault.xr += feeX;
+                } else {
+                  state.curX += feeX;
+                }
+              }
+            }
+
             rt.retailFeeRevenue += result.feeRevenue;
             rt.retailVolume += ourAmount;
             rt.retailOrders++;
-
-            // Edge: net USDC-equivalent value LP gained from this retail trade
-            rt.edge += computeEdge(preX, preY, state.curX, state.curY, ethPrice);
 
             // afterSwap callback
             if (strategy.hook?.afterSwap) {
@@ -365,10 +383,14 @@ export function runSimulation(config: EngineConfig): SimResult {
               }
             }
 
-            trackMetrics(rt, ethPrice);
           }
         }
       }
+    }
+
+    // ── Phase 3: Per-step metrics (once per step, all strategies) ──
+    for (const rt of runtimes) {
+      trackMetrics(rt, ethPrice);
     }
   }
 
@@ -413,8 +435,11 @@ export function runSimulation(config: EngineConfig): SimResult {
     };
   });
 
-  // HODL: just hold initial USDC, no trading
-  const hodlNAV = hodlInitialUSDC;
+  // HODL: hold initial 50/50 portfolio (half USDC, half WETH at starting price)
+  const ethPrice0 = 1 / config.startPrice;
+  const hodlUSDC = config.initialValueUSDC / 2;
+  const hodlWETH = hodlUSDC / ethPrice0;
+  const hodlNAV = hodlUSDC + hodlWETH * finalEthPrice;
 
   return { strategies: results, hodlNAV, pricePath };
 }

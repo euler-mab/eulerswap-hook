@@ -77,7 +77,7 @@ export function routeOrder(
 
   // Compute effective gammas
   const gammas = venues.map(v => {
-    const g = 1 - Math.max(v.fee, -0.10);  // cap rebate at 10%
+    const g = 1 - v.fee;  // fees are always >= 0
     return g > 0 ? g : 0;
   });
 
