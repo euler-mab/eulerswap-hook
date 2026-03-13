@@ -314,38 +314,42 @@ export function runSimulation(config: EngineConfig): SimResult {
 
           venueFees.push(fee);
 
-          // Marginal price = Y per X at current cursor position
-          const mp = strategy.curve.marginalPrice(state);
-          const gamma = 1 - fee;
-
+          // Get actual quote from the venue (executeSwap doesn't mutate state).
+          // Compare output per unit input — this is fee-inclusive and accounts
+          // for price impact on finite orders.
+          const quote = strategy.curve.executeSwap(state, isBuyX, orderSize, ethPrice, fee);
           if (isBuyX) {
             // Trader sends Y (WETH), receives X (USDC).
-            // Effective price = X output per Y input = (1/mp) × γ
-            // Higher = better for trader (more USDC per WETH).
+            // Output in USDC = preX - newCurX (X decreased = trader received X)
+            const xOut = quote.executed ? state.curX - quote.newCurX : 0;
+            const yIn = orderSize / ethPrice;
             quoteVenues.push({
-              effectivePrice: mp > 0 ? gamma / mp : 0,
-              available: gamma > 0 && mp > 0,
+              effectivePrice: yIn > 0 && xOut > 0 ? xOut / yIn : 0,
+              available: quote.executed && xOut > 0,
             });
           } else {
             // Trader sends X (USDC), receives Y (WETH).
-            // Effective price = Y output per X input = mp × γ
-            // Higher = better for trader (more WETH per USDC).
+            // Output in WETH = preY - newCurY (Y decreased = trader received Y)
+            const yOut = quote.executed ? state.curY - quote.newCurY : 0;
+            const xIn = orderSize;
             quoteVenues.push({
-              effectivePrice: mp > 0 ? mp * gamma : 0,
-              available: gamma > 0 && mp > 0,
+              effectivePrice: xIn > 0 && yOut > 0 ? yOut / xIn : 0,
+              available: quote.executed && yOut > 0,
             });
           }
         }
 
-        // Reference venue: xy=k at fair price with refVenue.fee
+        // Reference venue: xy=k at fair price with refVenue.fee.
+        // For a deep ref venue, execution price ≈ fair price × (1-fee).
         const refGamma = 1 - refVenue.fee;
         if (isBuyX) {
-          // ref marginal price = extPrice (Y per X), effective = γ / mp
+          // Trader gets USDC per WETH: (1/extPrice) × (1-fee) = USDC/WETH after fee
           quoteVenues.push({
             effectivePrice: refGamma / extPrice,
             available: true,
           });
         } else {
+          // Trader gets WETH per USDC: extPrice × (1-fee) = WETH/USDC after fee
           quoteVenues.push({
             effectivePrice: extPrice * refGamma,
             available: true,
