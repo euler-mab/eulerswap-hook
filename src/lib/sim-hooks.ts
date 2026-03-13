@@ -264,8 +264,9 @@ export function auctionBackstopHook(config: AuctionBackstopConfig): SimHook {
       ctx.accum.totalAuctions++;
       ctx.accum.totalRecenters++;
 
-      // Recenter after auction
-      const finalVault = cleared ? curVault : vault;
+      // Recenter after auction. Always use post-clearing vault — the arber
+      // trades happened regardless of whether the offset fully cleared.
+      const finalVault = curVault;
       const params: Params = {
         ...p,
         px: 1,
