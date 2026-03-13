@@ -1154,7 +1154,7 @@ bonus/Δ ≈ (px/py) × (1-cx) × [(x₀/(x₀-δ))² − 1]
 
 In WAD fee terms (dividing by px/py): `curvature_rate ≈ 2(1-cx) × exposure_fraction`.
 
-The factor of 2 is critical — it means a naive surcharge of `(1-c) × exposure` only covers half the curvature bonus. The `surchargeMultiplier` must be ≥ 2e18.
+The factor of 2 appears in the small-displacement approximation. V7 uses the **exact** formula `(1-c) × [(eq/reserve)² - 1]` directly, avoiding this approximation entirely.
 
 #### Source 2: Price change (oracle-dependent)
 
@@ -1168,11 +1168,15 @@ This is `recenterMagnitude` returned by `_recenterAtMarket()`.
 #### Combined formula
 
 ```solidity
-function _initSurcharge(recenterMagnitude, exposure, d) {
-    cx = d.concentrationX;
-    cy = d.concentrationY;
-    minC = min(cx, cy);
-    curvatureComponent = (WAD - minC) × exposure / WAD;
+function _initSurcharge(recenterMagnitude, reserve0, reserve1, preEq0, preEq1, d) {
+    // Exact curvature bonus: (1-c) × [(eq/reserve)² - 1]
+    if (reserve0 < preEq0) {
+        ratioSq = preEq0² × WAD / reserve0²;
+        curvatureComponent = (WAD - d.concentrationX) × (ratioSq - WAD) / WAD;
+    } else if (reserve1 < preEq1) {
+        ratioSq = preEq1² × WAD / reserve1²;
+        curvatureComponent = (WAD - d.concentrationY) × (ratioSq - WAD) / WAD;
+    }
     priceComponent = recenterMagnitude;
     amount = (curvatureComponent + priceComponent) × surchargeMultiplier / WAD;
     floor = baseFee / 2;    // prevents micro-recenters from being free
@@ -1181,11 +1185,12 @@ function _initSurcharge(recenterMagnitude, exposure, d) {
 }
 ```
 
-- `surchargeMultiplier` (param, e.g. 2.5e18): must be ≥ 2e18 to cover the 2x curvature factor. 2.5e18 gives 25% safety margin.
-- `min(cx, cy)` is used because the attacker chooses which branch to attack — they pick the less-concentrated one.
+- Uses the **exact** curvature bonus formula `(1-c) × [(eq₀/r₀)² - 1]`, not a linear approximation. Works correctly for all parameter combinations including high concentration and wide ranges.
+- `preEq0/preEq1` are the equilibrium reserves **before** `_recenterAtMarket` mutates the params struct. Must be cached at the call site.
+- `surchargeMultiplier` (param, e.g. 1.25e18): pure safety margin on the exact formula. Any value ≥ 1e18 provides coverage.
 - The surcharge decays linearly via `surchargeDecayPerBlock` (same mechanism as V4).
 
-**Key difference from V4:** In V4, `surchargeInitialAmount` was a fixed param. In V7, it's mutable state computed from actual exposure and price change at each recenter. Small recenters get small surcharges; large recenters get large ones.
+**Key difference from V4:** In V4, `surchargeInitialAmount` was a fixed param. In V7, it's mutable state computed from actual displacement and price change at each recenter. Small recenters get small surcharges; large recenters get large ones.
 
 ### Appendix: Curvature bonus derivation
 
@@ -1213,12 +1218,12 @@ bonus/Δ ≈ (px/py) × 2(1-cx) × ε
 
 **Surcharge coverage.** The surcharge must exceed `bonus/Δ` in WAD fee terms:
 ```
-surcharge ≥ (1-cx) × 2ε ≈ (1-cx) × 2 × exposure
+surcharge ≥ (1-cx) × [(x₀/(x₀-δ))² - 1]
 ```
 
-Our formula: `curvatureComponent = (1 - min(cx,cy)) × exposure`, then multiplied by `surchargeMultiplier ≥ 2e18`. This covers `2 × (1-c) × exposure` — matching the theoretical bound.
+V7 uses this **exact** formula directly: `curvatureComponent = (1-c) × [(eq₀/r₀)² - 1]`, where `eq₀` and `r₀` are the pre-recenter equilibrium and current reserve. The `surchargeMultiplier` provides pure safety margin — any value ≥ 1e18 covers the theoretical bound. Unlike a linear approximation, this works correctly for all parameter combinations including high concentration and wide ranges.
 
-**Why `min(cx, cy)`:** The attacker sells on the X branch (using cx) and buys on the Y branch (using cy). The Y-branch purchase also has curvature that works AGAINST the attacker. But the attacker chooses direction, so we use `min(cx, cy)` to cover the worst case.
+**Important implementation detail:** `_recenterAtMarket()` mutates the `DynamicParams` struct in memory (setting `equilibriumReserve0 = reserve0`). The caller must cache `preEq0/preEq1` before calling `_recenterAtMarket`, then pass them to `_initSurcharge`.
 
 **Fuzz verification:** `test_fuzz_surchargeCoversRoundTrip` (256 runs) creates pools with random concentration (0.1–0.9), performs swaps creating displacement, and verifies the computed surcharge exceeds the theoretical curvature bonus for all tested `(δ, c)` combinations.
 
@@ -1299,16 +1304,16 @@ Same as V4, plus:
 
 ### Risks (V7-specific)
 
-- **surchargeMultiplier too low.** If < 2e18, the surcharge doesn't cover the full curvature bonus. Attackers can profit from round-trip trades through recenters. The 2x factor comes from the `(x₀/(x₀-δ))² − 1 ≈ 2δ/x₀` approximation. For large displacements (ε > 0.3), the exact term grows faster than 2ε and the bound is tighter. The fuzz test verifies coverage across the valid range.
+- **surchargeMultiplier too low.** If < 1e18, the surcharge doesn't cover the curvature bonus. V7 uses the exact formula `(1-c) × [(eq/r)² - 1]` so the multiplier is a pure safety margin (no 2x approximation factor needed). Recommended ≥ 1.25e18.
 - **cachedNav staleness.** NAV is cached at each recenter. Between recenters, interest accrual changes real deposits/debts but cachedNav is stale. If interest accrual is significant between recenters (unlikely over minutes, possible over hours), the relative exposure trigger may fire early or late. `refreshVaultState()` is the escape valve.
 - **Continuous recenter frequency.** Every exposure-reducing swap triggers a reconfigure (~50k extra gas). In normal mode with balanced flow, this could fire on every other swap. Gas cost is borne by the swapper. For pools with high swap frequency, this may be a concern.
-- **Curvature bonus bound validity.** The derivation assumes small trades (Δ ≪ δ). For large trades that significantly change the displacement, the actual bonus diverges from the marginal approximation. The `surchargeMultiplier ≥ 2.5e18` provides a 25% safety margin, and the fuzz test verifies across realistic trade sizes.
+- **Curvature bonus bound validity.** The derivation assumes small trades (Δ ≪ δ). For large trades that significantly change the displacement, the actual bonus diverges from the marginal approximation. Since V7 uses the exact formula rather than a linear bound, the multiplier can be tighter (1.25e18 recommended).
 
 ### Resolved open questions from V4
 
 Several questions from section 23 are resolved by V7:
 
-- **Q5 (Surcharge calibration):** Resolved. Surcharge is no longer a fixed param — it's computed from exposure and price change. The curvature bonus derivation provides the theoretical foundation. `surchargeMultiplier ≥ 2e18` is the minimum; 2.5e18 is recommended.
+- **Q5 (Surcharge calibration):** Resolved. Surcharge uses the exact curvature formula `(1-c) × [(eq/r)² - 1]` plus oracle price change. The multiplier is a pure safety margin (≥ 1e18 covers; 1.25e18 recommended).
 - **Q6 (Reconfigure mechanics):** Resolved. Implementation in `_recenterAtMarket()` and `_startAuction()` handles priceX/priceY encoding, eq reserve setting, and min reserve computation.
 - **Q7 (Iterative vs single-cycle):** Resolved. V7's exposure-sized shifts mean larger exposure → larger shift → more clearing per cycle. Still iterative (capped at maxShiftMagnitude), but each cycle clears proportional to actual exposure rather than a fixed amount.
 

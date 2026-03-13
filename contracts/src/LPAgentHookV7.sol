@@ -72,7 +72,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
 
     // --- Surcharge parameters (owner-updatable) ---
     uint64 public surchargeDecayPerBlock;
-    uint64 public surchargeMultiplier; // e.g. 2.5e18 — must be >= 2e18 to cover curvature factor
+    uint64 public surchargeMultiplier; // e.g. 1.25e18 — safety margin on exact curvature formula
 
     // --- Auction parameters (owner-updatable) ---
     uint64 public decayPerBlock;
@@ -337,8 +337,11 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
 
         if (exposure < last) {
             // Exposure decreased → recenter and apply smart surcharge
+            // Cache pre-recenter eq before _recenterAtMarket mutates d
+            uint112 preEq0 = d.equilibriumReserve0;
+            uint112 preEq1 = d.equilibriumReserve1;
             uint256 recenterMag = _recenterAtMarket(reserve0, reserve1, d);
-            _initSurcharge(recenterMag, last, d);
+            _initSurcharge(recenterMag, reserve0, reserve1, preEq0, preEq1, d);
             _cacheVaultState();
 
             // Measure actual post-recenter exposure
@@ -396,14 +399,37 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     // =========================================================================
 
     /// @notice Compute surcharge from two components:
-    /// 1. Curvature bonus: (1 - min(cx,cy)) × exposure — value extractable from curve flattening
+    /// 1. Curvature bonus: (1-c) × [(eq/reserve)² − 1] — exact value extractable from curve flattening
     /// 2. Price change: recenterMagnitude — value from oracle price realignment
-    /// Total scaled by surchargeMultiplier (>= 2e18 to cover the 2x curvature factor).
-    function _initSurcharge(uint256 recenterMagnitude, uint256 exposure, IEulerSwap.DynamicParams memory d) internal {
-        uint256 cx = uint256(d.concentrationX);
-        uint256 cy = uint256(d.concentrationY);
-        uint256 minC = cx < cy ? cx : cy;
-        uint256 curvatureComponent = (WAD - minC) * exposure / WAD;
+    /// Total scaled by surchargeMultiplier for safety margin.
+    function _initSurcharge(
+        uint256 recenterMagnitude,
+        uint112 reserve0,
+        uint112 reserve1,
+        uint112 preEq0,
+        uint112 preEq1,
+        IEulerSwap.DynamicParams memory d
+    ) internal {
+        uint256 curvatureComponent;
+        {
+            uint256 eq0 = uint256(preEq0);
+            uint256 eq1 = uint256(preEq1);
+            uint256 r0 = uint256(reserve0);
+            uint256 r1 = uint256(reserve1);
+
+            if (r0 < eq0 && r0 > 0) {
+                // X branch: displaced toward asset0 boundary
+                uint256 ratioSqWad = eq0.mulDiv(eq0, r0).mulDiv(WAD, r0);
+                uint256 cx = uint256(d.concentrationX);
+                curvatureComponent = (WAD - cx) * (ratioSqWad - WAD) / WAD;
+            } else if (r1 < eq1 && r1 > 0) {
+                // Y branch: displaced toward asset1 boundary
+                uint256 ratioSqWad = eq1.mulDiv(eq1, r1).mulDiv(WAD, r1);
+                uint256 cy = uint256(d.concentrationY);
+                curvatureComponent = (WAD - cy) * (ratioSqWad - WAD) / WAD;
+            }
+            // At equilibrium (r0 == eq0 && r1 == eq1): curvatureComponent = 0
+        }
 
         uint256 priceComponent = recenterMagnitude;
 

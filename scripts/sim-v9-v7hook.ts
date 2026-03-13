@@ -15,7 +15,7 @@ import {
   computeX0Additive, computeY0Additive,
   computeXb, computeYb,
   computeHX, computeHY,
-  fX, gY,
+  fX, fY, gX, gY,
 } from '../src/lib/math';
 import { mulberry32, boxMuller, solveXForPrice, solveYForPrice } from '../src/lib/simulate';
 
@@ -232,14 +232,25 @@ interface SurchargeState {
 
 function computeSurcharge(
   recenterMagnitude: number,
-  exposure: number,
+  preEq0: number,
+  preEq1: number,
+  reserve0: number,
+  reserve1: number,
   cx: number,
   cy: number,
   multiplier: number,
   baseFee: number,
 ): number {
-  const minC = Math.min(cx, cy);
-  const curvatureComponent = (1 - minC) * exposure;
+  let curvatureComponent = 0;
+  if (reserve0 < preEq0 && reserve0 > 0) {
+    // X branch: displaced toward asset0 boundary
+    const ratioSq = (preEq0 / reserve0) * (preEq0 / reserve0);
+    curvatureComponent = (1 - cx) * (ratioSq - 1);
+  } else if (reserve1 < preEq1 && reserve1 > 0) {
+    // Y branch: displaced toward asset1 boundary
+    const ratioSq = (preEq1 / reserve1) * (preEq1 / reserve1);
+    curvatureComponent = (1 - cy) * (ratioSq - 1);
+  }
   const priceComponent = recenterMagnitude;
   let amount = (curvatureComponent + priceComponent) * multiplier;
   const floor = baseFee / 2;
@@ -352,25 +363,17 @@ function executeRetailOnPool(
 
     let xAfter: number;
     if (newY >= y0) {
-      const pxpy = params.px / params.py;
-      if (params.cx === 0) {
-        xAfter = pxpy * x0 * x0 / (newY - y0 + pxpy * x0);
-      } else {
-        xAfter = gY(newY, params.cy, y0, x0, params.px, params.py);
-      }
+      // X branch: y ≥ y0 means x ≤ x0. Use gX (X-branch inverse).
+      xAfter = gX(newY, params.cx, y0, x0, params.px, params.py);
     } else {
+      // Y branch: y < y0. Use gY (Y-branch inverse).
       xAfter = gY(newY, params.cy, y0, x0, params.px, params.py);
     }
 
     let xBefore: number;
     if (curY >= y0 - 1e-8) {
       if (curY >= y0) {
-        const pxpy = params.px / params.py;
-        if (params.cx === 0) {
-          xBefore = pxpy * x0 * x0 / (curY - y0 + pxpy * x0);
-        } else {
-          xBefore = gY(curY, params.cy, y0, x0, params.px, params.py);
-        }
+        xBefore = gX(curY, params.cx, y0, x0, params.px, params.py);
       } else {
         xBefore = x0;
       }
@@ -404,25 +407,17 @@ function executeRetailOnPool(
 
     let yAfter: number;
     if (newX >= x0) {
-      const pypx = params.py / params.px;
-      if (params.cy === 0) {
-        yAfter = pypx * y0 * y0 / (newX - x0 + pypx * y0);
-      } else {
-        yAfter = fX(newX, params.cx, x0, y0, params.px, params.py);
-      }
+      // Y branch: x ≥ x0 means y ≤ y0. Use fY (Y-branch curve).
+      yAfter = fY(newX, params.cy, x0, y0, params.px, params.py);
     } else {
+      // X branch: x < x0. Use fX (X-branch curve).
       yAfter = fX(newX, params.cx, x0, y0, params.px, params.py);
     }
 
     let yBefore: number;
     if (curX >= x0 - 0.01) {
       if (curX >= x0) {
-        const pypx = params.py / params.px;
-        if (params.cy === 0) {
-          yBefore = pypx * y0 * y0 / (curX - x0 + pypx * y0);
-        } else {
-          yBefore = fX(curX, params.cx, x0, y0, params.px, params.py);
-        }
+        yBefore = fY(curX, params.cy, x0, y0, params.px, params.py);
       } else {
         yBefore = y0;
       }
@@ -535,27 +530,32 @@ function runV9(pricePath: number[], overrides?: {
       if (lastReserveExposure > 0.001) {
         const delta = pool.x0 - pool.curX;
         const deltaY = pool.y0 - pool.curY;
-        const actualDelta = Math.max(delta, deltaY);  // whichever side has displacement
+        const actualDelta = Math.max(delta, deltaY);
         const actualCx = delta > deltaY ? pool.params.cx : pool.params.cy;
         const x0ForBonus = delta > deltaY ? pool.x0 : pool.y0;
         if (actualDelta > 0 && x0ForBonus > actualDelta) {
           const bonus = theoreticalCurvatureBonus(x0ForBonus, actualDelta, actualCx);
-          const minC = Math.min(pool.params.cx, pool.params.cy);
-          const curvatureComp = (1 - minC) * lastReserveExposure;
-          const priceComp = recenterMagnitude;
-          const surchargeAmount = (curvatureComp + priceComp) * FEE_CONFIG.surchargeMultiplier;
+          // Exact formula: (1-c) × [(eq/reserve)² - 1]
+          const surchargeAmount = computeSurcharge(
+            recenterMagnitude,
+            pool.x0, pool.y0, pool.curX, pool.curY,
+            pool.params.cx, pool.params.cy,
+            FEE_CONFIG.surchargeMultiplier, FEE_CONFIG.baseFee
+          );
           totalSurchargeChecks++;
-          if (surchargeAmount < bonus * 0.99) {  // 1% tolerance for floating point
+          if (surchargeAmount < bonus * 0.99) {
             surchargeViolations++;
-            log.push(`Day ${t.toFixed(1)} INVARIANT VIOLATION: surcharge=${(surchargeAmount*10000).toFixed(1)}bps < bonus=${(bonus*10000).toFixed(1)}bps (rangeExp=${(lastReserveExposure*100).toFixed(1)}%, δ/x0=${(actualDelta/x0ForBonus*100).toFixed(2)}%, cx=${actualCx})`);
+            log.push(`Day ${t.toFixed(1)} INVARIANT VIOLATION: surcharge=${(surchargeAmount*10000).toFixed(1)}bps < bonus=${(bonus*10000).toFixed(1)}bps (δ/x0=${(actualDelta/x0ForBonus*100).toFixed(2)}%, cx=${actualCx})`);
           }
         }
       }
 
-      // Smart surcharge
+      // Smart surcharge — uses pre-recenter eq (pool.x0, pool.y0) and current reserves
       surcharge = {
         initialAmount: computeSurcharge(
-          recenterMagnitude, lastReserveExposure,
+          recenterMagnitude,
+          pool.x0, pool.y0,        // pre-recenter equilibrium
+          pool.curX, pool.curY,    // current reserves (displacement from eq)
           pool.params.cx, pool.params.cy,
           FEE_CONFIG.surchargeMultiplier, FEE_CONFIG.baseFee
         ),
@@ -887,15 +887,13 @@ function printResult(r: V9Result, label?: string) {
  * NOT raw δ/x₀. Range-fraction ε_range = (x₀-x)/(x₀-xb), while δ/x₀ = ε_range × α
  * where α = 1 - 1/√(1 + rx/(1-cx)).
  *
- * The surcharge = (1-c) × ε_range × multiplier.
- * The bonus = (1-c) × [(x₀/(x₀-δ))² - 1] = (1-c) × [(1/(1-ε_range×α))² - 1].
- *
- * For any realistic rx (up to ~2.0), α is small enough that the invariant holds
- * with multiplier=2.5.
+ * The exact surcharge = (1-c) × [(eq/reserve)² - 1] × multiplier.
+ * The bonus = (1-c) × [(x₀/(x₀-δ))² - 1].
+ * With multiplier ≥ 1, the surcharge covers the bonus exactly (plus safety margin).
  */
 function runCurvatureBonusInvariantTest(): boolean {
   console.log('=== Curvature Bonus Invariant Test ===');
-  console.log('Parameterized by (rx, cx, ε_range). Verifies surcharge ≥ curvature bonus.');
+  console.log('Exact formula: surcharge = (1-c) × [(eq/r)² - 1] × multiplier.');
   console.log('');
   console.log('  rx   | cx  | ε_range | δ/x₀    | bonus(bps) | surcharge(bps) | margin  | PASS');
   console.log('  -----|-----|---------|---------|------------|----------------|---------|-----');
@@ -912,12 +910,14 @@ function runCurvatureBonusInvariantTest(): boolean {
         const x0 = 100000;
         const deltaOverX0 = eRange * alpha;
         const delta = x0 * deltaOverX0;
+        const reserve = x0 - delta;
 
-        // Theoretical curvature bonus (exact, not approximation)
+        // Theoretical curvature bonus (exact)
         const bonus = theoreticalCurvatureBonus(x0, delta, cxVal);
 
-        // V7 surcharge: uses range-fraction exposure
-        const curvatureComp = (1 - cxVal) * eRange;
+        // V7 exact surcharge: (1-c) × [(eq/reserve)² - 1] × multiplier
+        const ratioSq = (x0 / reserve) * (x0 / reserve);
+        const curvatureComp = (1 - cxVal) * (ratioSq - 1);
         const surchargeAmount = curvatureComp * multiplier;
 
         const pass = surchargeAmount >= bonus * 0.99;
@@ -1069,9 +1069,6 @@ function run() {
   console.log('');
   console.log('Known limitations:');
   console.log('  - Auctions stall at extreme exposure (>300% relExp) when vault is depleted');
-  console.log('  - One-sided deposits (yr=0) with concentration (cx>0) produce degenerate pools');
-  console.log('  - Surcharge formula assumes range-fraction exposure ≈ small displacement; fails');
-  console.log('    for extreme configurations (rx≥0.50 with cx≥0.9)');
 }
 
 run();
