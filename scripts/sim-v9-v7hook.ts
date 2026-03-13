@@ -577,13 +577,16 @@ function runV9(pricePath: number[], overrides?: {
       const relExposure = computeRelativeExposure(pool, baseNetAsset1, ethPrice, cachedNav);
       if (relExposure > auctionTrigger) {
         const absExposure = computeAbsoluteExposureWeth(pool, baseNetAsset1);
-        return runAuction(vault, ethPrice, asset0Deficit, t, step, absExposure);
+        // Vault-based direction: curNet1 = baseNetAsset1 + (curY - y0)
+        const curNet1 = baseNetAsset1 + (pool.curY - pool.y0);
+        const netLongWeth = curNet1 >= 0;
+        return runAuction(vault, ethPrice, netLongWeth, t, step, absExposure);
       }
     }
     return false;
   }
 
-  function runAuction(vault: VaultState, ethPrice: number, asset0Deficit: boolean, t: number, step: number, absExposureWeth: number): boolean {
+  function runAuction(vault: VaultState, ethPrice: number, netLongWeth: boolean, t: number, step: number, absExposureWeth: number): boolean {
     // V7: Exposure-sized shift
     const eq1 = pool.y0;
     let shift: number;
@@ -596,7 +599,7 @@ function runV9(pricePath: number[], overrides?: {
       if (shift < floor) shift = floor;
     }
 
-    const pyOff = asset0Deficit ? ethPrice / (1 + shift) : ethPrice * (1 + shift);
+    const pyOff = netLongWeth ? ethPrice / (1 + shift) : ethPrice * (1 + shift);
     const offParams: Params = { ...pool.params, py: pyOff, xr: vault.xr, yr: vault.yr, xd: vault.xd, yd: vault.yd };
     if (rx !== undefined) { offParams.rx = rx; offParams.ry = rx; }
     if (cx !== undefined) { offParams.cx = cx; offParams.cy = cx; }
@@ -610,7 +613,7 @@ function runV9(pricePath: number[], overrides?: {
     const startFee = Math.min(shift * 1.5, FEE_CONFIG.maxCaptureFee);
 
     // Run auction with concentration-aware convergence check
-    if (asset0Deficit) {
+    if (netLongWeth) {
       let yCur = y0Off;
       const ybOff = computeYb(y0Off, offParams.ry, offParams.cy);
       for (let min = 0; min <= FEE_CONFIG.maxAuctionMinutes; min++) {
@@ -696,7 +699,7 @@ function runV9(pricePath: number[], overrides?: {
     if (totalAuctions <= 5) {
       const preNav = computeNAV(vault, ethPrice);
       const postNav = computeNAV(finalVault, ethPrice);
-      log.push(`  AUCTION #${totalAuctions} ${asset0Deficit ? 'a0def' : 'a1def'}: shift=${(shift*10000).toFixed(0)}bps startFee=${(startFee*10000).toFixed(0)}bps cleared=${cleared} navDelta=$${(postNav-preNav).toFixed(1)}`);
+      log.push(`  AUCTION #${totalAuctions} ${netLongWeth ? 'longWeth' : 'shortWeth'}: shift=${(shift*10000).toFixed(0)}bps startFee=${(startFee*10000).toFixed(0)}bps cleared=${cleared} navDelta=$${(postNav-preNav).toFixed(1)}`);
       log.push(`    pool: x0=${x0Off.toFixed(0)} y0=${y0Off.toFixed(4)} pyOff=${pyOff.toFixed(2)} absExpWeth=${absExposureWeth.toFixed(4)}`);
       log.push(`    vault: xr=${vault.xr.toFixed(0)} yr=${vault.yr.toFixed(4)} xd=${vault.xd.toFixed(0)} yd=${vault.yd.toFixed(4)}`);
     }

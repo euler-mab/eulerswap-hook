@@ -86,7 +86,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     uint64 public maxRecenterDrift;
 
     // --- Mutable state: exposure tracking ---
-    uint64 public lastExposure; // WAD: range-fraction after previous swap
+    uint64 public lastExposure; // WAD: vault-based relative exposure after previous swap
     int128 public baseNetAsset1; // net WETH at last recenter (deposits1 - debts1)
     uint128 public cachedNav; // NAV in asset0 terms at last recenter
 
@@ -165,6 +165,8 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         maxFee = _feeConfig.maxFee;
         gasCoeff = _feeConfig.gasCoeff;
         externalFee = _feeConfig.externalFee;
+        require(_feeConfig.captureRate <= WAD, "captureRate > 100%");
+        require(_feeConfig.attractRate <= WAD, "attractRate > 100%");
         captureRate = _feeConfig.captureRate;
         attractRate = _feeConfig.attractRate;
 
@@ -176,6 +178,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         recenterRange = _auctionConfig.recenterRange;
         maxRecenterDrift = _auctionConfig.maxRecenterDrift;
         surchargeDecayPerBlock = _auctionConfig.surchargeDecayPerBlock;
+        require(_auctionConfig.surchargeMultiplier <= 10e18, "surchargeMultiplier too large");
         surchargeMultiplier = _auctionConfig.surchargeMultiplier;
 
         IEulerSwap.StaticParams memory sParams = IEulerSwap(_pool).getStaticParams();
@@ -254,8 +257,9 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
             _handleNormalMode(reserve0, reserve1);
         } else {
             if (block.number >= uint256(auctionStartBlock) + uint256(minAuctionBlocks)) {
-                if (_checkPriceConvergence(reserve0, reserve1)) {
-                    _endAuctionAndRecenter(reserve0, reserve1);
+                (bool converged, uint256 uniPrice) = _checkPriceConvergence(reserve0, reserve1);
+                if (converged) {
+                    _endAuctionAndRecenter(reserve0, reserve1, uniPrice);
                 }
             }
         }
@@ -275,6 +279,8 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     ) external onlyOwner {
         require(_baseFee <= _maxFee, "invalid fee ordering");
         require(_maxFee < uint64(WAD), "max fee >= 100%");
+        require(_captureRate <= WAD, "captureRate > 100%");
+        require(_attractRate <= WAD, "attractRate > 100%");
         baseFee = _baseFee;
         maxFee = _maxFee;
         gasCoeff = _gasCoeff;
@@ -309,14 +315,38 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     }
 
     function setSurchargeParams(uint64 _surchargeDecayPerBlock, uint64 _surchargeMultiplier) external onlyOwner {
+        require(_surchargeMultiplier <= 10e18, "surchargeMultiplier too large");
         surchargeDecayPerBlock = _surchargeDecayPerBlock;
         surchargeMultiplier = _surchargeMultiplier;
         emit SurchargeParamsUpdated(_surchargeDecayPerBlock, _surchargeMultiplier);
     }
 
-    /// @notice Owner can force-end a stuck auction (emergency)
+    /// @notice Owner can force-end a stuck auction (emergency).
+    /// Recenters at market, restores min reserves, refreshes vault state, sets surcharge.
     function endAuction() external onlyOwner {
         auctionActive = false;
+
+        // Try to recenter at market price
+        (uint112 r0, uint112 r1,) = IEulerSwap(pool).getReserves();
+        uint256 uniPrice = _getUniswapPrice();
+        if (uniPrice > 0) {
+            IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
+            uint256 newPriceY = uint256(d.priceX).mulDiv(WAD, uniPrice);
+            if (newPriceY > 0 && newPriceY <= type(uint80).max) {
+                d.priceY = uint80(newPriceY);
+            }
+            d.equilibriumReserve0 = r0;
+            d.equilibriumReserve1 = r1;
+            _setMinReservesFromRange(d, r0, r1);
+            try IEulerSwap(pool).reconfigure(d, IEulerSwap.InitialState(r0, r1)) {
+                emit Recentered(uint64(block.number));
+            } catch {}
+        }
+
+        _cacheVaultState();
+        surchargeStartBlock = uint64(block.number);
+        surchargeInitialAmount = baseFee;
+        lastExposure = 0;
         emit AuctionEnded(uint64(block.number));
     }
 
@@ -331,12 +361,13 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
 
     function _handleNormalMode(uint112 reserve0, uint112 reserve1) internal {
         IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
-        (uint256 exposure, bool asset0Deficit) = _computeExposure(reserve0, reserve1, d);
+        (uint256 relExposure, uint256 absExposure, bool netLongWeth) =
+            _computeVaultExposure(reserve1, d);
 
         uint256 last = uint256(lastExposure);
 
-        if (exposure < last) {
-            // Exposure decreased → recenter and apply smart surcharge
+        if (relExposure < last) {
+            // Vault exposure decreased → recenter and apply smart surcharge
             // Cache pre-recenter eq before _recenterAtMarket mutates d
             uint112 preEq0 = d.equilibriumReserve0;
             uint112 preEq1 = d.equilibriumReserve1;
@@ -344,18 +375,16 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
             _initSurcharge(recenterMag, reserve0, reserve1, preEq0, preEq1, d);
             _cacheVaultState();
 
-            // Measure actual post-recenter exposure
+            // Measure actual post-recenter vault exposure
             IEulerSwap.DynamicParams memory dNew = IEulerSwap(pool).getDynamicParams();
-            (uint256 postExposure,) = _computeExposure(reserve0, reserve1, dNew);
+            (uint256 postExposure,,) = _computeVaultExposure(reserve1, dNew);
             lastExposure = uint64(postExposure > type(uint64).max ? type(uint64).max : postExposure);
         } else {
-            lastExposure = uint64(exposure > type(uint64).max ? type(uint64).max : exposure);
+            lastExposure = uint64(relExposure > type(uint64).max ? type(uint64).max : relExposure);
 
-            // Check relative exposure for auction trigger
-            uint256 relExposure = _computeRelativeExposure(reserve1, d);
             if (relExposure > uint256(auctionTriggerThreshold)) {
-                uint256 absExposure = _computeAbsoluteExposureWeth(reserve1, d);
-                _startAuction(reserve0, reserve1, asset0Deficit, d, absExposure);
+                // net long WETH → make WETH cheap → arbs buy it from us
+                _startAuction(reserve0, reserve1, netLongWeth, d, absExposure);
             }
         }
     }
@@ -451,7 +480,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     function _startAuction(
         uint112 reserve0,
         uint112 reserve1,
-        bool asset0Deficit,
+        bool netLongWeth,
         IEulerSwap.DynamicParams memory d,
         uint256 absExposureWeth
     ) internal {
@@ -470,7 +499,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         preShiftPriceY = d.priceY;
 
         // Shift priceY past market to create deliberate mispricing
-        if (asset0Deficit) {
+        if (netLongWeth) {
             d.priceY = uint80(uint256(d.priceY) * WAD / (WAD + shift));
         } else {
             d.priceY = uint80(uint256(d.priceY) * (WAD + shift) / WAD);
@@ -489,16 +518,16 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
             auctionActive = true;
             auctionStartBlock = uint64(block.number);
             auctionStartingFee = uint64(startFee);
-            auctionClearAsset0 = asset0Deficit;
+            auctionClearAsset0 = netLongWeth;
             lastExposure = 0;
-            emit AuctionStarted(auctionStartingFee, uint64(block.number), asset0Deficit);
+            emit AuctionStarted(auctionStartingFee, uint64(block.number), netLongWeth);
         } catch {}
     }
 
     /// @notice Compute auction shift sized to actual exposure, capped at maxShiftMagnitude.
     function _computeAuctionShift(uint256 absExposureWeth, uint112 eq1) internal view returns (uint256) {
         if (eq1 == 0) return uint256(maxShiftMagnitude);
-        uint256 shift = absExposureWeth * WAD / uint256(eq1);
+        uint256 shift = absExposureWeth.mulDiv(WAD, uint256(eq1));
         if (shift > uint256(maxShiftMagnitude)) shift = uint256(maxShiftMagnitude);
         uint256 floor = uint256(clearThreshold) * 2;
         if (shift < floor) shift = floor;
@@ -506,37 +535,55 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     }
 
     /// @notice Check if marginal price converged to oracle within clearThreshold.
-    function _checkPriceConvergence(uint112 reserve0, uint112 reserve1) internal view returns (bool) {
-        uint256 uniPrice = _getUniswapPrice();
-        if (uniPrice == 0) return false;
+    /// @return converged True if price difference < clearThreshold.
+    /// @return uniPrice The oracle price (passed through to avoid redundant SLOAD in caller).
+    function _checkPriceConvergence(uint112 reserve0, uint112 reserve1)
+        internal
+        view
+        returns (bool converged, uint256 uniPrice)
+    {
+        uniPrice = _getUniswapPrice();
+        if (uniPrice == 0) return (false, 0);
 
-        uint256 marginalPrice = _getMarginalPrice(reserve0, reserve1);
+        IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
+        uint256 marginalPrice = _getMarginalPrice(reserve0, reserve1, d);
         uint256 priceDiff;
         if (uniPrice > marginalPrice) {
             priceDiff = (uniPrice - marginalPrice) * WAD / uniPrice;
         } else {
             priceDiff = (marginalPrice - uniPrice) * WAD / uniPrice;
         }
-        return priceDiff < uint256(clearThreshold);
+        converged = priceDiff < uint256(clearThreshold);
     }
 
     /// @notice End auction and recenter at market with drift clamp.
-    function _endAuctionAndRecenter(uint112 reserve0, uint112 reserve1) internal {
+    /// @param uniPrice Oracle price from _checkPriceConvergence (avoids redundant SLOAD).
+    function _endAuctionAndRecenter(uint112 reserve0, uint112 reserve1, uint256 uniPrice) internal {
         auctionActive = false;
 
-        uint256 uniPrice = _getUniswapPrice();
+        // Compute recenter magnitude from preShiftPriceY for surcharge
+        uint256 _preShiftPY = uint256(preShiftPriceY);
+        uint256 recenterMag;
+
         if (uniPrice > 0) {
             IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
             uint256 newPriceY = uint256(d.priceX).mulDiv(WAD, uniPrice);
 
             // Clamp to within maxRecenterDrift of pre-shift priceY
-            uint256 _preShiftPY = uint256(preShiftPriceY);
             uint256 _maxDrift = uint256(maxRecenterDrift);
             if (_preShiftPY > 0 && _maxDrift > 0) {
                 uint256 maxPY = _preShiftPY * (WAD + _maxDrift) / WAD;
                 uint256 minPY = _preShiftPY * WAD / (WAD + _maxDrift);
                 if (newPriceY > maxPY) newPriceY = maxPY;
                 if (newPriceY < minPY) newPriceY = minPY;
+            }
+
+            // Compute recenter magnitude: |oraclePrice - preShiftPrice| / max(...)
+            if (_preShiftPY > 0) {
+                uint256 preShiftPrice = uint256(d.priceX) * WAD / _preShiftPY;
+                recenterMag = uniPrice > preShiftPrice
+                    ? (uniPrice - preShiftPrice) * WAD / uniPrice
+                    : (preShiftPrice - uniPrice) * WAD / preShiftPrice;
             }
 
             if (newPriceY > 0 && newPriceY <= type(uint80).max) {
@@ -553,15 +600,19 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
             } catch {}
         }
 
-        // Measure actual post-recenter exposure
+        // Measure actual post-recenter vault exposure
         {
             IEulerSwap.DynamicParams memory dPost = IEulerSwap(pool).getDynamicParams();
-            (uint256 postExposure,) = _computeExposure(reserve0, reserve1, dPost);
+            (uint256 postExposure,,) = _computeVaultExposure(reserve1, dPost);
             lastExposure = uint64(postExposure > type(uint64).max ? type(uint64).max : postExposure);
         }
+
+        // Post-auction surcharge: derived from actual price displacement
+        uint256 surchargeAmount = recenterMag * uint256(surchargeMultiplier) / WAD;
+        uint256 floor = uint256(baseFee);
+        if (surchargeAmount < floor) surchargeAmount = floor;
+        surchargeInitialAmount = uint64(surchargeAmount > type(uint64).max ? type(uint64).max : surchargeAmount);
         surchargeStartBlock = uint64(block.number);
-        // Post-auction surcharge: use baseFee as initial (conservative default)
-        surchargeInitialAmount = baseFee;
         emit AuctionEnded(uint64(block.number));
     }
 
@@ -582,7 +633,8 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         if (_captureRate > 0 || _attractRate > 0) {
             uint256 uniPrice = _getUniswapPrice();
             if (uniPrice > 0) {
-                uint256 marginalPrice = _getMarginalPrice(reserve0, reserve1);
+                IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
+                uint256 marginalPrice = _getMarginalPrice(reserve0, reserve1, d);
 
                 uint256 mismatch;
                 bool isArbDirection;
@@ -627,57 +679,29 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     // Internal: exposure computation
     // =========================================================================
 
-    /// @notice Range-based exposure: how far reserves are from equilibrium relative to boundary.
-    function _computeExposure(uint112 reserve0, uint112 reserve1, IEulerSwap.DynamicParams memory d)
-        internal
-        pure
-        returns (uint256 exposure, bool asset0Deficit)
-    {
-        uint256 eq0 = uint256(d.equilibriumReserve0);
-        uint256 eq1 = uint256(d.equilibriumReserve1);
-        uint256 min0 = uint256(d.minReserve0);
-        uint256 min1 = uint256(d.minReserve1);
-
-        if (uint256(reserve0) < eq0 && eq0 > min0) {
-            asset0Deficit = true;
-            exposure = (eq0 - uint256(reserve0)) * WAD / (eq0 - min0);
-        } else if (uint256(reserve1) < eq1 && eq1 > min1) {
-            asset0Deficit = false;
-            exposure = (eq1 - uint256(reserve1)) * WAD / (eq1 - min1);
-        }
-    }
-
-    /// @notice Relative exposure: |netWeth| * ethPrice / cachedNav. Can exceed 100%.
-    function _computeRelativeExposure(uint112 reserve1, IEulerSwap.DynamicParams memory d)
+    /// @notice Vault-based exposure: relative (for trigger), absolute (for auction sizing), and direction.
+    /// @return relExposure |netWeth| * ethPrice / cachedNav (WAD). Can exceed 100%.
+    /// @return absExposureWeth |baseNetAsset1 + displacement| in WETH units.
+    /// @return netLongWeth true if pool is net long WETH (needs to sell WETH to clear).
+    function _computeVaultExposure(uint112 reserve1, IEulerSwap.DynamicParams memory d)
         internal
         view
-        returns (uint256)
+        returns (uint256 relExposure, uint256 absExposureWeth, bool netLongWeth)
     {
         uint256 eq1 = uint256(d.equilibriumReserve1);
         int256 curNet1 = int256(baseNetAsset1) + int256(uint256(reserve1)) - int256(eq1);
-        uint256 absNet1 = curNet1 >= 0 ? uint256(curNet1) : uint256(-curNet1);
+        netLongWeth = curNet1 >= 0;
+        absExposureWeth = netLongWeth ? uint256(curNet1) : uint256(-curNet1);
 
         uint256 uniPrice = _getUniswapPrice();
-        if (uniPrice == 0) return 0;
+        if (uniPrice == 0) return (0, absExposureWeth, netLongWeth);
 
-        // Convert WETH to asset0 terms
-        uint256 exposureAsset0 = absNet1.mulDiv(WAD, uniPrice);
+        uint256 exposureAsset0 = absExposureWeth.mulDiv(WAD, uniPrice);
 
         uint256 nav = uint256(cachedNav);
-        if (nav == 0) return type(uint256).max;
+        if (nav == 0) return (type(uint256).max, absExposureWeth, netLongWeth);
 
-        return exposureAsset0.mulDiv(WAD, nav);
-    }
-
-    /// @notice Absolute WETH exposure for auction sizing: |baseNetAsset1 + displacement|
-    function _computeAbsoluteExposureWeth(uint112 reserve1, IEulerSwap.DynamicParams memory d)
-        internal
-        view
-        returns (uint256)
-    {
-        uint256 eq1 = uint256(d.equilibriumReserve1);
-        int256 curNet1 = int256(baseNetAsset1) + int256(uint256(reserve1)) - int256(eq1);
-        return curNet1 >= 0 ? uint256(curNet1) : uint256(-curNet1);
+        relExposure = exposureAsset0.mulDiv(WAD, nav);
     }
 
     // =========================================================================
@@ -694,6 +718,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         address _bv1 = borrowVault1;
         if (_bv1 != address(0)) debt1 = IEVault(_bv1).debtOf(_eulerAccount);
         int256 net = int256(deposit1) - int256(debt1);
+        require(net >= type(int128).min && net <= type(int128).max, "baseNetAsset1 overflow");
         baseNetAsset1 = int128(net);
 
         // Cache NAV (deposits - debts in asset0 terms)
@@ -785,8 +810,11 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     /// @notice Concentration-aware marginal price.
     /// X branch (reserve0 <= eq0): price = (px/py) × [cx + (1-cx) × (x0/x)²]
     /// Y branch (reserve0 > eq0):  price = (px/py) / [cy + (1-cy) × (y0/y)²]
-    function _getMarginalPrice(uint112 reserve0, uint112 reserve1) internal view returns (uint256) {
-        IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
+    function _getMarginalPrice(uint112 reserve0, uint112 reserve1, IEulerSwap.DynamicParams memory d)
+        internal
+        pure
+        returns (uint256)
+    {
         uint256 px = uint256(d.priceX);
         uint256 py = uint256(d.priceY);
         uint256 x0 = uint256(d.equilibriumReserve0);
@@ -877,21 +905,15 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         return (lastExposure, baseNetAsset1, cachedNav);
     }
 
-    /// @notice Current relative exposure for monitoring.
-    function computeCurrentRelativeExposure() external view returns (uint256) {
-        (uint112 r0, uint112 r1,) = IEulerSwap(pool).getReserves();
+    /// @notice Current vault exposure for monitoring.
+    /// @return relExposure Relative exposure (WAD), absExposureWeth Absolute (WETH), netLongWeth direction.
+    function computeCurrentVaultExposure()
+        external
+        view
+        returns (uint256 relExposure, uint256 absExposureWeth, bool netLongWeth)
+    {
+        (, uint112 r1,) = IEulerSwap(pool).getReserves();
         IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
-        // Suppress unused variable warning
-        r0;
-        return _computeRelativeExposure(r1, d);
-    }
-
-    /// @notice Current absolute exposure (WETH) for monitoring.
-    function computeCurrentAbsoluteExposure() external view returns (uint256) {
-        (uint112 r0, uint112 r1,) = IEulerSwap(pool).getReserves();
-        IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
-        // Suppress unused variable warning
-        r0;
-        return _computeAbsoluteExposureWeth(r1, d);
+        return _computeVaultExposure(r1, d);
     }
 }

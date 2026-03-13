@@ -226,6 +226,21 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         assertEq(hook.surchargeMultiplier(), 3e18);
     }
 
+    function test_setSurchargeParams_rejects_large_multiplier() public {
+        vm.expectRevert("surchargeMultiplier too large");
+        hook.setSurchargeParams(10e14, uint64(11e18));
+    }
+
+    function test_setFeeParams_rejects_captureRate_above_WAD() public {
+        vm.expectRevert("captureRate > 100%");
+        hook.setFeeParams(25e14, 3500e14, 0, 5e14, 1.1e18, 0.3e18);
+    }
+
+    function test_setFeeParams_rejects_attractRate_above_WAD() public {
+        vm.expectRevert("attractRate > 100%");
+        hook.setFeeParams(25e14, 3500e14, 0, 5e14, 0.8e18, 1.1e18);
+    }
+
     function test_beforeSwap_reverts() public {
         vm.expectRevert("not implemented");
         hook.beforeSwap(0, 0, address(0), address(0));
@@ -265,11 +280,13 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
 
         address swapper = makeAddr("swapper");
 
-        _fundAndSwap(swapper, true, 1e18);
+        // asset1-in increases WETH exposure (pool accumulates more WETH)
+        _fundAndSwap(swapper, false, 1e18);
         uint64 last1 = hook.lastExposure();
         assertTrue(last1 > 0, "lastExposure should track first swap");
 
-        _fundAndSwap(swapper, true, 0.5e18);
+        // Another asset1-in pushes exposure higher
+        _fundAndSwap(swapper, false, 0.5e18);
         uint64 last2 = hook.lastExposure();
         assertTrue(last2 >= last1, "lastExposure should increase with more exposure");
     }
@@ -279,27 +296,32 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
 
         address swapper = makeAddr("swapper");
 
-        _fundAndSwap(swapper, true, 2e18);
-        assertTrue(hook.lastExposure() > 0, "should have exposure");
+        // asset1-in increases WETH exposure
+        _fundAndSwap(swapper, false, 2e18);
+        uint64 exposureBefore = hook.lastExposure();
+        assertTrue(exposureBefore > 0, "should have exposure");
 
         IEulerSwap.DynamicParams memory dpBefore = pool.getDynamicParams();
 
-        _fundAndSwap(swapper, false, 1e18);
+        // asset0-in decreases WETH exposure → triggers recenter
+        _fundAndSwap(swapper, true, 1e18);
 
         IEulerSwap.DynamicParams memory dpAfter = pool.getDynamicParams();
         bool eqChanged = dpAfter.equilibriumReserve0 != dpBefore.equilibriumReserve0
             || dpAfter.equilibriumReserve1 != dpBefore.equilibriumReserve1;
         assertTrue(eqChanged, "equilibrium should change after recenter");
 
-        assertEq(hook.lastExposure(), 0, "lastExposure should reset after recenter");
+        // Post-recenter exposure is non-zero (pool still has WETH deposits) but less than before
+        assertTrue(hook.lastExposure() < exposureBefore, "lastExposure should decrease after recenter");
     }
 
     function test_recenter_sets_eq_to_current_reserves() public {
         _advanceBlocks(10);
 
         address swapper = makeAddr("swapper");
-        _fundAndSwap(swapper, true, 2e18);
-        _fundAndSwap(swapper, false, 1e18);
+        // asset1-in to increase exposure, then asset0-in to decrease → recenter
+        _fundAndSwap(swapper, false, 2e18);
+        _fundAndSwap(swapper, true, 1e18);
 
         IEulerSwap.DynamicParams memory dp = pool.getDynamicParams();
         (uint112 r0, uint112 r1,) = pool.getReserves();
@@ -313,8 +335,9 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.05e18));
 
         address swapper = makeAddr("swapper");
-        _fundAndSwap(swapper, true, 2e18);
-        _fundAndSwap(swapper, false, 1e18);
+        // asset1-in to increase exposure, then asset0-in to decrease → recenter
+        _fundAndSwap(swapper, false, 2e18);
+        _fundAndSwap(swapper, true, 1e18);
 
         IEulerSwap.DynamicParams memory dp = pool.getDynamicParams();
         uint256 impliedPrice = uint256(dp.priceX) * 1e18 / uint256(dp.priceY);
@@ -325,8 +348,9 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         _advanceBlocks(10);
 
         address swapper = makeAddr("swapper");
-        _fundAndSwap(swapper, true, 2e18);
-        _fundAndSwap(swapper, false, 1e18);
+        // asset1-in to increase exposure, then asset0-in to decrease → recenter
+        _fundAndSwap(swapper, false, 2e18);
+        _fundAndSwap(swapper, true, 1e18);
 
         IEulerSwap.DynamicParams memory dp = pool.getDynamicParams();
         assertTrue(dp.minReserve0 > 0, "minReserve0 should be set");
@@ -342,12 +366,12 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
 
         address swapper = makeAddr("swapper");
 
-        // Create significant exposure then reduce it → triggers recenter with smart surcharge
-        _fundAndSwap(swapper, true, 2e18);
+        // asset1-in to increase WETH exposure, then asset0-in to reduce → triggers recenter
+        _fundAndSwap(swapper, false, 2e18);
         uint64 exposureBefore = hook.lastExposure();
         assertTrue(exposureBefore > 0, "should have exposure");
 
-        _fundAndSwap(swapper, false, 1e18);
+        _fundAndSwap(swapper, true, 1e18);
 
         (, uint256 surcharge) = hook.getSurchargeState();
         // Surcharge should be > 0 even when oracle hasn't moved (curvature component)
@@ -383,8 +407,9 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         // Change oracle price → recenter picks up price change
         mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.05e18));
 
-        _fundAndSwap(swapper, true, 2e18);
-        _fundAndSwap(swapper, false, 1e18);
+        // asset1-in to increase exposure, then asset0-in to decrease → recenter
+        _fundAndSwap(swapper, false, 2e18);
+        _fundAndSwap(swapper, true, 1e18);
 
         (, uint256 surcharge) = hook.getSurchargeState();
         // Surcharge should be elevated due to both curvature + price components
@@ -396,9 +421,9 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
 
         address swapper = makeAddr("swapper");
 
-        // Tiny exposure → tiny curvature component
-        _fundAndSwap(swapper, true, 0.01e18);
-        _fundAndSwap(swapper, false, 0.005e18);
+        // asset1-in to increase exposure, then asset0-in to decrease → tiny recenter
+        _fundAndSwap(swapper, false, 0.01e18);
+        _fundAndSwap(swapper, true, 0.005e18);
 
         (, uint256 surcharge) = hook.getSurchargeState();
         // Floor is baseFee / 2
@@ -543,11 +568,12 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
 
         address swapper = makeAddr("swapper");
 
-        // Phase 1: Moderate exposure → reduce → continuous recenter
-        _fundAndSwap(swapper, true, 2e18);
-        _fundAndSwap(swapper, false, 1e18);
+        // Phase 1: asset1-in increases WETH exposure, then asset0-in decreases → recenter
+        _fundAndSwap(swapper, false, 2e18);
+        uint64 exposureAfterIncrease = hook.lastExposure();
+        _fundAndSwap(swapper, true, 1e18);
         assertFalse(hook.auctionActive(), "continuous recenter handled it");
-        assertEq(hook.lastExposure(), 0, "lastExposure reset after recenter");
+        assertTrue(hook.lastExposure() < exposureAfterIncrease, "lastExposure should decrease after recenter");
 
         // Phase 2: Large directional move → auction
         _advanceBlocks(10);
@@ -585,18 +611,14 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         assertFalse(active);
     }
 
-    function test_computeCurrentRelativeExposure() public view {
-        uint256 relExposure = hook.computeCurrentRelativeExposure();
+    function test_computeCurrentVaultExposure() public view {
+        (uint256 relExposure, uint256 absExposure, bool netLongWeth) = hook.computeCurrentVaultExposure();
         // Symmetric pool: 10 WETH deposits, 0 debt → 50% WETH exposure (target is 0%)
         // NAV = 20e18 (10 asset0 + 10 asset1 at 1:1). Exposure = 10e18 / 20e18 = 0.5
         assertApproxEqRel(relExposure, 0.5e18, 0.01e18, "symmetric pool should have ~50% relative exposure");
-    }
-
-    function test_computeCurrentAbsoluteExposure() public view {
-        uint256 absExposure = hook.computeCurrentAbsoluteExposure();
         // At eq with symmetric deposits, baseNetAsset1 = 10e18, displacement = 0
-        // So abs exposure = |10e18 + 0| = 10e18
         assertEq(absExposure, 10e18, "absolute exposure should be baseNetAsset1 at equilibrium");
+        assertTrue(netLongWeth, "symmetric pool with WETH deposits is net long");
     }
 
     // ===================================================================
@@ -663,7 +685,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         }
     }
 
-    /// @notice Invariant: after a successful recenter, lastExposure must match manual computation.
+    /// @notice Invariant: after a successful recenter, lastExposure must match the external view.
     function test_fuzz_postRecenter_exposure_consistent(uint256 swapAmount1, uint256 swapAmount2) public {
         _advanceBlocks(10);
 
@@ -671,34 +693,27 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         uint256 amt1 = bound(swapAmount1, 0.5e18, 2e18);
         uint256 amt2 = bound(swapAmount2, 0.1e18, 1e18);
 
-        _fundAndSwap(swapper, true, amt1);
+        // asset1-in to increase WETH exposure
+        _fundAndSwap(swapper, false, amt1);
         if (hook.auctionActive()) return;
 
         uint64 exposureAfterFirst = hook.lastExposure();
         if (exposureAfterFirst == 0) return;
 
-        _fundAndSwap(swapper, false, amt2);
+        // asset0-in to decrease WETH exposure → triggers recenter
+        _fundAndSwap(swapper, true, amt2);
 
         if (!hook.auctionActive()) {
             uint64 lastAfterRecenter = hook.lastExposure();
 
-            (uint112 r0, uint112 r1,) = pool.getReserves();
-            IEulerSwap.DynamicParams memory dp = pool.getDynamicParams();
+            // Verify lastExposure matches the external vault exposure view
+            (uint256 computedExposure,,) = hook.computeCurrentVaultExposure();
 
-            uint256 eq0 = uint256(dp.equilibriumReserve0);
-            uint256 eq1 = uint256(dp.equilibriumReserve1);
-            uint256 min0 = uint256(dp.minReserve0);
-            uint256 min1 = uint256(dp.minReserve1);
-
-            uint256 manualExposure = 0;
-            if (uint256(r0) < eq0 && eq0 > min0) {
-                manualExposure = (eq0 - uint256(r0)) * 1e18 / (eq0 - min0);
-            } else if (uint256(r1) < eq1 && eq1 > min1) {
-                manualExposure = (eq1 - uint256(r1)) * 1e18 / (eq1 - min1);
-            }
-
-            assertEq(
-                uint256(lastAfterRecenter), manualExposure, "post-recenter lastExposure must match manual computation"
+            assertApproxEqRel(
+                uint256(lastAfterRecenter),
+                computedExposure,
+                0.01e18, // 1% tolerance for rounding
+                "post-recenter lastExposure must match computeCurrentVaultExposure"
             );
         }
     }
