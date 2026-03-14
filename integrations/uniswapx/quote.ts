@@ -37,9 +37,64 @@ export interface QuoteResult {
  * Reads computeQuote and getLimits from the pool.
  */
 /** Default gas estimate for callback fill path.
- * TODO: Measure empirically from actual fills — 250k is conservative. */
+ * Starts at 250k (conservative). Updated at runtime via GasEstimator
+ * which tracks actual simulation results with an EMA. */
 const DEFAULT_GAS_ESTIMATE = 250_000n;
 const DEFAULT_PRIORITY_FEE = 1_500_000_000n; // 1.5 gwei
+
+/**
+ * Adaptive gas estimator using exponential moving average (EMA).
+ * Feeds simulation gas results back into profitability evaluation.
+ *
+ * - Starts with a conservative default (250k)
+ * - Updates after each successful simulation with the actual gas
+ * - EMA smoothing factor α=0.3 — responsive but not noisy
+ * - Adds a safety margin (20%) to avoid false positives from gas variance
+ */
+export class GasEstimator {
+  private ema: number;
+  private sampleCount = 0;
+  private readonly alpha: number;
+  private readonly safetyMargin: number;
+
+  constructor(
+    initialEstimate: bigint = DEFAULT_GAS_ESTIMATE,
+    alpha = 0.3,
+    safetyMargin = 0.2,
+  ) {
+    this.ema = Number(initialEstimate);
+    this.alpha = alpha;
+    this.safetyMargin = safetyMargin;
+  }
+
+  /** Update the estimate with a new simulation gas measurement */
+  update(gasUsed: bigint): void {
+    const val = Number(gasUsed);
+    if (val <= 0) return;
+    if (this.sampleCount === 0) {
+      // First sample: jump directly to observed value
+      this.ema = val;
+    } else {
+      this.ema = this.alpha * val + (1 - this.alpha) * this.ema;
+    }
+    this.sampleCount++;
+  }
+
+  /** Get the current estimate with safety margin applied */
+  get estimate(): bigint {
+    return BigInt(Math.ceil(this.ema * (1 + this.safetyMargin)));
+  }
+
+  /** Raw EMA without safety margin (for logging) */
+  get raw(): bigint {
+    return BigInt(Math.ceil(this.ema));
+  }
+
+  /** Number of simulation samples incorporated */
+  get samples(): number {
+    return this.sampleCount;
+  }
+}
 
 export async function evaluateOrder(
   client: PublicClient,

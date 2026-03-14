@@ -49,7 +49,7 @@ import {
 import { mainnet } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { fetchOpenOrders, filterForPool } from "./api";
-import { evaluateOrder, formatQuote, type QuoteResult } from "./quote";
+import { evaluateOrder, formatQuote, type QuoteResult, GasEstimator } from "./quote";
 import {
   callbackFill,
   batchCallbackFill,
@@ -133,6 +133,7 @@ const rateLimiter = new RateLimiter(6, 1000); // UniswapX API: 6 req/s
 /** Tracks seen orders with their deadline for eviction */
 const seenOrders = new Map<string, number>(); // hash -> deadline (unix seconds)
 const pendingFills = new Set<string>();
+const gasEstimator = new GasEstimator(); // adaptive gas estimate from simulation feedback
 let totalOrdersSeen = 0;
 let totalMatchingOrders = 0;
 let totalProfitable = 0;
@@ -177,6 +178,7 @@ async function evaluateAndFill(apiOrders: UniswapXApiOrder[]) {
         apiOrder,
         MIN_PROFIT_BPS,
         ADDRESSES.pool,
+        gasEstimator.estimate,
       );
 
       const tag = quote.profitable ? ">>>" : "   ";
@@ -245,9 +247,16 @@ async function executeFills(
       return;
     }
 
-    console.log(
-      `  SIM OK (gas: ${sim.gasEstimate ?? "unknown"}) — submitting fill...`,
-    );
+    // Feed actual gas back into adaptive estimator
+    if (sim.gasEstimate) {
+      const prevEstimate = gasEstimator.estimate;
+      gasEstimator.update(sim.gasEstimate);
+      console.log(
+        `  SIM OK (gas: ${sim.gasEstimate}, est: ${prevEstimate}→${gasEstimator.estimate}, n=${gasEstimator.samples}) — submitting fill...`,
+      );
+    } else {
+      console.log(`  SIM OK (gas: unknown) — submitting fill...`);
+    }
 
     if (FLASHBOTS_AUTH_KEY) {
       // Bundle mode: build raw signed tx, submit to Flashbots relay.
@@ -372,6 +381,7 @@ async function main() {
   console.log(`Executor:       ${EXECUTOR_ADDRESS ?? "(not set)"}`);
   console.log(`Min profit:     ${MIN_PROFIT_BPS} bps`);
   console.log(`Max gas:        ${MAX_GAS_GWEI} gwei`);
+  console.log(`Gas estimate:   ${gasEstimator.estimate} (adaptive, 20% margin)`);
   console.log(`Poll interval:  ${POLL_INTERVAL_MS}ms`);
   console.log(
     `Flashbots:      ${FLASHBOTS_AUTH_KEY ? "bundle mode (zero gas on failure)" : process.env.FLASHBOTS_RPC_URL ? "protect RPC (reverts still cost gas)" : "disabled"}`,
