@@ -151,6 +151,8 @@ async function evaluateAndFill(apiOrders: UniswapXApiOrder[]) {
     } catch {}
   }
 
+  // TODO: Check pool status (expiration, lock) before evaluating orders.
+  // CoW driver does this — skip if expired, locked, or fee >= 100%.
   const profitable: { order: UniswapXApiOrder; quote: QuoteResult }[] = [];
 
   for (const apiOrder of apiOrders) {
@@ -233,12 +235,10 @@ async function executeFills(
       `  SIM OK (gas: ${sim.gasEstimate ?? "unknown"}) — submitting fill...`,
     );
 
-    // Submit fill
-    // When FLASHBOTS_AUTH_KEY is set, the wallet client is configured with
-    // FLASHBOTS_RPC_URL (Flashbots Protect) which provides MEV protection.
-    // For full bundle submission (zero gas on failure), use flashbots.ts directly
-    // with a raw signed transaction — requires building tx manually via
-    // encodeFunctionData + signTransaction + submitBundleWithRedundancy.
+    // Submit fill via Flashbots Protect RPC (if FLASHBOTS_RPC_URL configured
+    // in wallet client transport) or standard RPC.
+    // TODO: Wire up full Flashbots bundle submission for zero-gas-on-failure.
+    // Requires: encodeFunctionData + signTransaction + submitBundleWithRedundancy.
     const txHash =
       orders.length === 1
         ? await callbackFill(

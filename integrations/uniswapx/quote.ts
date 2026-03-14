@@ -36,7 +36,8 @@ export interface QuoteResult {
  * Evaluate whether an order can be profitably filled via EulerSwap.
  * Reads computeQuote and getLimits from the pool.
  */
-/** Default gas estimate for callback fill path */
+/** Default gas estimate for callback fill path.
+ * TODO: Measure empirically from actual fills — 250k is conservative. */
 const DEFAULT_GAS_ESTIMATE = 250_000n;
 const DEFAULT_PRIORITY_FEE = 1_500_000_000n; // 1.5 gwei
 
