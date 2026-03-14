@@ -49,6 +49,11 @@ contract EulerSwapAdapter is ISwapAdapter {
     /// @dev Fallback delta for numerical price derivative if decimals() call fails.
     uint256 constant PRICE_DELTA_DEFAULT = 1e6;
 
+    /// @dev Margin applied to pool limits to ensure computeQuote doesn't revert
+    /// at boundary values. Pool's getLimits() returns theoretical maximums where
+    /// rounding can cause reverts at the exact boundary.
+    uint256 constant LIMIT_MARGIN_BPS = 9900; // 99% of raw limit
+
     constructor(address registry_) {
         registry = IEulerSwapRegistry(registry_);
     }
@@ -65,13 +70,15 @@ contract EulerSwapAdapter is ISwapAdapter {
     }
 
     /// @dev Picks a small delta for the numerical price derivative based on token decimals.
-    /// The delta must be large enough to avoid rounding to zero in the curve math,
-    /// but small enough to approximate the true derivative. We use ~1e-6 in token terms
-    /// (e.g. 1e12 wei for 18-decimal tokens, 1 for 6-decimal tokens like USDC).
+    /// The delta must be large enough to avoid rounding noise in the curve math,
+    /// but small enough to approximate the true derivative. We use ~0.001 in token terms
+    /// (e.g. 1e15 wei for 18-decimal tokens, 1e3 for 6-decimal tokens like USDC).
+    /// A delta that's too small (e.g. 1 wei for USDC) causes integer rounding to dominate,
+    /// overestimating the derivative and violating executedPrice >= marginalPrice.
     function _priceDelta(address token) internal view returns (uint256) {
         try IERC20Decimals(token).decimals() returns (uint8 d) {
-            if (d <= 6) return 1;
-            return 10 ** (d - 6);
+            if (d <= 3) return 1;
+            return 10 ** (d - 3);
         } catch {
             return PRICE_DELTA_DEFAULT;
         }
@@ -125,6 +132,11 @@ contract EulerSwapAdapter is ISwapAdapter {
     }
 
     /// @inheritdoc ISwapAdapter
+    /// @dev EulerSwap's pool.getLimits() returns theoretical maximums from the curve math.
+    /// At or very near the exact limit, computeQuote may revert due to integer rounding
+    /// in the invariant check. We reduce by 1% to ensure all amounts within our reported
+    /// limits are actually tradeable. The Tycho spec prefers overestimating limits, but
+    /// correctness (no revert within stated limits) takes priority.
     function getLimits(bytes32 poolId, address sellToken, address buyToken)
         external
         override
@@ -133,8 +145,8 @@ contract EulerSwapAdapter is ISwapAdapter {
         IEulerSwapPool pool = _pool(poolId);
         (uint256 limitIn, uint256 limitOut) = pool.getLimits(sellToken, buyToken);
         limits = new uint256[](2);
-        limits[0] = limitIn;
-        limits[1] = limitOut;
+        limits[0] = limitIn * LIMIT_MARGIN_BPS / 10000;
+        limits[1] = limitOut * LIMIT_MARGIN_BPS / 10000;
     }
 
     /// @inheritdoc ISwapAdapter
@@ -150,6 +162,19 @@ contract EulerSwapAdapter is ISwapAdapter {
         IEulerSwapPool pool = _pool(poolId);
         address poolAddr = address(bytes20(poolId));
         bool isAsset0 = _sellIsAsset0(pool, sellToken);
+
+        // Enforce HardLimits: revert with LimitExceeded if amount exceeds adapter limits
+        {
+            (uint256 rawLimitIn, uint256 rawLimitOut) = pool.getLimits(sellToken, buyToken);
+            uint256 adapterLimitIn = rawLimitIn * LIMIT_MARGIN_BPS / 10000;
+            uint256 adapterLimitOut = rawLimitOut * LIMIT_MARGIN_BPS / 10000;
+            if (side == OrderSide.Sell && specifiedAmount > adapterLimitIn) {
+                revert LimitExceeded(adapterLimitIn);
+            }
+            if (side == OrderSide.Buy && specifiedAmount > adapterLimitOut) {
+                revert LimitExceeded(adapterLimitOut);
+            }
+        }
 
         if (side == OrderSide.Sell) {
             // Exact input: specifiedAmount of sellToken -> ? buyToken
@@ -190,7 +215,12 @@ contract EulerSwapAdapter is ISwapAdapter {
             trade.calculatedAmount = amountIn;
         }
 
-        trade.price = _marginalPrice(pool, sellToken, buyToken);
+        // EulerSwap has dynamic fees (hook reads Uniswap oracle), so the post-swap
+        // marginal price can be higher than the executed average when a swap reduces
+        // oracle divergence and lowers the fee. Return Fraction(0,1) per the spec:
+        // "it is valid to return a Fraction(0, 0) value for this price" and
+        // "For zero use Fraction(0, 1)."
+        trade.price = Fraction(0, 1);
     }
 
     /// @inheritdoc ISwapAdapter
@@ -204,7 +234,11 @@ contract EulerSwapAdapter is ISwapAdapter {
         prices = new Fraction[](specifiedAmounts.length);
         uint256 delta = _priceDelta(sellToken);
 
+        // Enforce HardLimits: revert if any amount exceeds adapter sell limit
+        (uint256 rawLimitIn,) = pool.getLimits(sellToken, buyToken);
+        uint256 adapterLimitIn = rawLimitIn * LIMIT_MARGIN_BPS / 10000;
         for (uint256 i = 0; i < specifiedAmounts.length; i++) {
+            if (specifiedAmounts[i] > adapterLimitIn) revert LimitExceeded(adapterLimitIn);
             prices[i] = _priceAt(pool, sellToken, buyToken, specifiedAmounts[i], delta);
         }
     }
@@ -240,20 +274,6 @@ contract EulerSwapAdapter is ISwapAdapter {
         }
     }
 
-    /// @dev Computes the marginal price at the current pool state using a numerical
-    /// derivative: price ≈ computeQuote(delta) / delta for a small delta.
-    function _marginalPrice(IEulerSwapPool pool, address sellToken, address buyToken)
-        internal
-        view
-        returns (Fraction memory)
-    {
-        uint256 delta = _priceDelta(sellToken);
-        try pool.computeQuote(sellToken, buyToken, delta, true) returns (uint256 out) {
-            return Fraction(out, delta);
-        } catch {
-            return Fraction(0, 1);
-        }
-    }
 }
 
 interface IERC20Decimals {

@@ -1,52 +1,84 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.13;
 
-/// @title ISwapAdapterTypes
-/// @dev Types used by the ISwapAdapter interface.
 interface ISwapAdapterTypes {
-    /// @dev The side of the order.
+    /// @dev The OrderSide enum represents possible sides of a trade: Sell or
+    /// Buy. E.g. if OrderSide is Sell, the sell amount is interpreted to be
+    /// fixed.
     enum OrderSide {
         Sell,
         Buy
     }
 
-    /// @dev Capabilities of a pool.
+    /// @dev The Capability enum represents possible features of a trading
+    /// pool.
     enum Capability {
+        Unset,
+        // Support OrderSide.Sell values (required)
         SellOrder,
+        // Support OrderSide.Buy values (optional)
         BuyOrder,
+        // Support evaluating the price function (optional)
         PriceFunction,
+        // Support tokens that charge a fee on transfer (optional)
         FeeOnTransfer,
+        // The pool does not suffer from price impact and maintains a constant
+        // price for increasingly larger specified amounts. (optional)
         ConstantPrice,
-        MarginalPrice,
+        // Indicates that the pool does not read its own token balances
+        // from token contracts while swapping. (optional)
+        TokenBalanceIndependent,
+        // Indicates that prices are returned scaled, else it is assumed prices
+        // still require scaling by token decimals. (required)
+        ScaledPrices,
+        // Indicates that if we try to go over the sell limits, the pool will
+        // revert (optional)
         HardLimits,
-        ScaledPrices
+        // Indicates whether the pool's price function can be called with
+        // amountIn=0 to return the current price (optional)
+        MarginalPrice
     }
 
-    /// @dev A fraction with a numerator and denominator.
+    /// @dev Representation used for rational numbers such as prices.
     struct Fraction {
         uint256 numerator;
         uint256 denominator;
     }
 
-    /// @dev A trade result.
+    /// @dev The Trade struct holds data about an executed trade.
     struct Trade {
+        // If the side is sell, it is the amount of tokens sold. If the side is
+        // buy, it is the amount of tokens bought.
         uint256 calculatedAmount;
+        // The amount of gas used in the trade.
         uint256 gasUsed;
+        // The price of the pool after the trade. For zero use Fraction(0, 1).
         Fraction price;
     }
 
-    /// @dev Thrown when a pool or swap is not available.
+    /// @dev The Unavailable error is thrown when a pool or swap is not
+    /// available for unexpected reason. E.g. it was paused due to a bug.
     error Unavailable(string reason);
 
-    /// @dev Thrown when an order is invalid.
+    /// @dev The InvalidOrder error is thrown when the input to a swap is
+    /// not valid: e.g. if the limit price is negative, or below the
+    /// current price; the request amount is 0; the requested swap tokens
+    /// are not part of the pool; etc.
     error InvalidOrder(string reason);
 
-    /// @dev Thrown when an amount is too small to process.
-    error TooSmall(string reason);
+    /// @dev The TooSmall error is thrown when the requested trade amount
+    /// is too small, causing either zero output or a numerical imprecision
+    /// problem. If lowerLimit is not zero, then it specifies the minimum
+    /// trade size required. If lowerLimit is zero, then the lower bound
+    /// cannot be easily computed, in which case solvers can binary search
+    /// for a precise lower bound.
+    error TooSmall(uint256 lowerLimit);
 
-    /// @dev Thrown when a limit is exceeded.
-    error LimitExceeded(string reason);
+    /// @dev The LimitExceeded error is thrown when a limit has been exceeded.
+    /// E.g. the specified amount can't be traded safely.
+    error LimitExceeded(uint256 limit);
 
-    /// @dev Thrown when a function is not implemented.
+    /// @dev The NotImplemented error is thrown when a function is not
+    /// implemented.
     error NotImplemented(string reason);
 }

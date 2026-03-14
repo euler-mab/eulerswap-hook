@@ -4,23 +4,24 @@ pragma solidity ^0.8.13;
 import {Test, console} from "forge-std/Test.sol";
 import {EulerSwapAdapter} from "src/EulerSwapAdapter.sol";
 import {ISwapAdapterTypes} from "src/interfaces/ISwapAdapterTypes.sol";
+import {ISwapAdapter} from "src/interfaces/ISwapAdapter.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
+import {AdapterTest} from "./AdapterTest.sol";
+
+// ─── Constants shared across test contracts ─────────────────────────────────
+
+address constant REGISTRY = 0x5FcCB84363F020c0cADE052C9c654aABF932814A;
+address constant POOL = 0x4311031739918Aba578C3C667DA3028A12Ce28A8;
+bytes32 constant POOL_ID = bytes32(bytes20(POOL));
+address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
 /// @title Fork tests for EulerSwap Tycho Adapter
 /// @dev Run: cd integrations/tycho && forge test --fork-url $ETH_RPC_URL -vvv
 contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
     EulerSwapAdapter adapter;
 
-    // Mainnet addresses
-    address constant REGISTRY = 0x5FcCB84363F020c0cADE052C9c654aABF932814A;
-    address constant POOL = 0x4311031739918Aba578C3C667DA3028A12Ce28A8;
-    bytes32 constant POOL_ID = bytes32(bytes20(POOL));
-
-    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
-    address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-
     function setUp() public {
-        // Fork mainnet at a recent block
         adapter = new EulerSwapAdapter(REGISTRY);
     }
 
@@ -29,7 +30,6 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
     function test_getTokens() public {
         address[] memory tokens = adapter.getTokens(POOL_ID);
         assertEq(tokens.length, 2, "should return 2 tokens");
-        // EulerSwap pool has USDC as asset0, WETH as asset1
         assertEq(tokens[0], USDC, "asset0 should be USDC");
         assertEq(tokens[1], WETH, "asset1 should be WETH");
     }
@@ -40,7 +40,6 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
         bytes32[] memory ids = adapter.getPoolIds(0, 10);
         assertTrue(ids.length > 0, "should return at least 1 pool");
 
-        // Verify our known pool is in the list
         bool found = false;
         for (uint256 i = 0; i < ids.length; i++) {
             if (ids[i] == POOL_ID) {
@@ -97,8 +96,6 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
         assertTrue(prices[0].numerator > 0, "price numerator > 0");
         assertTrue(prices[0].denominator > 0, "price denominator > 0");
 
-        // USDC->WETH price: should be roughly 1 USDC -> ~0.0004 WETH (at ~$2500/ETH)
-        // numerator is WETH (18 dec), denominator is USDC (6 dec)
         console.log("Price USDC->WETH at 0: %d / %d", prices[0].numerator, prices[0].denominator);
     }
 
@@ -106,36 +103,45 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
         uint256[] memory amounts = new uint256[](3);
         amounts[0] = 0;
         amounts[1] = 1000e6; // 1,000 USDC
-        amounts[2] = 5000e6; // 5,000 USDC (pool limit ~15k USDC)
+        amounts[2] = 5000e6; // 5,000 USDC
 
         Fraction[] memory prices = adapter.price(POOL_ID, USDC, WETH, amounts);
         assertEq(prices.length, 3);
 
         // Price should decrease with size (more slippage)
-        // price0 >= price1 >= price2
         uint256 p0 = prices[0].numerator * prices[1].denominator;
         uint256 p1 = prices[1].numerator * prices[0].denominator;
         assertTrue(p0 >= p1, "price should decrease with amount (0 vs 1k)");
 
         uint256 p1b = prices[1].numerator * prices[2].denominator;
         uint256 p2 = prices[2].numerator * prices[1].denominator;
-        assertTrue(p1b >= p2, "price should decrease with amount (1k vs 100k)");
+        assertTrue(p1b >= p2, "price should decrease with amount (1k vs 5k)");
     }
 
-    function test_price_near_limit_graceful() public {
-        // Get actual pool limits
+    function test_price_at_limit_graceful() public {
         uint256[] memory limits = adapter.getLimits(POOL_ID, USDC, WETH);
         uint256 sellLimit = limits[0];
 
-        // Request price at the sell limit — computeQuote(limit + delta) will revert
-        // but the adapter should return Fraction(0, 1) instead of reverting
+        // Price at the exact sell limit should still work (not above)
         uint256[] memory amounts = new uint256[](1);
         amounts[0] = sellLimit;
 
         Fraction[] memory prices = adapter.price(POOL_ID, USDC, WETH, amounts);
         assertEq(prices.length, 1, "should return 1 price");
-        // Either a valid price or graceful zero
         assertTrue(prices[0].denominator > 0, "denominator should never be 0");
+    }
+
+    function test_price_above_limit_reverts() public {
+        uint256[] memory limits = adapter.getLimits(POOL_ID, USDC, WETH);
+        uint256 sellLimit = limits[0];
+        uint256 aboveLimit = sellLimit * 105 / 100;
+
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = aboveLimit;
+
+        // Adapter reports 99% of pool's raw limit; LimitExceeded carries our reported limit
+        vm.expectRevert(abi.encodeWithSelector(LimitExceeded.selector, sellLimit));
+        adapter.price(POOL_ID, USDC, WETH, amounts);
     }
 
     // ─── swap (sell) ─────────────────────────────────────────────────────
@@ -143,7 +149,6 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
     function test_swap_sell_USDC_for_WETH() public {
         uint256 sellAmount = 1000e6; // 1,000 USDC
 
-        // Deal USDC to this contract and approve adapter
         deal(USDC, address(this), sellAmount);
         IERC20(USDC).approve(address(adapter), sellAmount);
 
@@ -156,7 +161,6 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
         assertTrue(trade.calculatedAmount > 0, "should receive WETH");
         assertEq(wethAfter - wethBefore, trade.calculatedAmount, "balance change should match");
         assertTrue(trade.gasUsed > 0, "gas should be tracked");
-        assertTrue(trade.price.numerator > 0, "marginal price numerator > 0");
 
         console.log("Sold 1000 USDC, got %d WETH (wei)", trade.calculatedAmount);
         console.log("Gas used: %d", trade.gasUsed);
@@ -211,13 +215,32 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
         assertEq(trade.calculatedAmount, 0, "zero input should yield zero output");
     }
 
-    function test_swap_beyond_limit_reverts_unavailable() public {
-        // Attempt to sell far beyond pool limits — should revert with Unavailable
-        uint256 hugeAmount = 1_000_000_000e6; // 1 billion USDC
+    function test_swap_beyond_limit_reverts() public {
+        uint256[] memory limits = adapter.getLimits(POOL_ID, USDC, WETH);
+        uint256 sellLimit = limits[0];
+        uint256 hugeAmount = sellLimit * 2;
+
         deal(USDC, address(this), hugeAmount);
         IERC20(USDC).approve(address(adapter), hugeAmount);
 
-        vm.expectRevert(abi.encodeWithSelector(Unavailable.selector, "EulerSwap: quote failed for sell"));
+        vm.expectRevert(abi.encodeWithSelector(LimitExceeded.selector, sellLimit));
         adapter.swap(POOL_ID, USDC, WETH, OrderSide.Sell, hugeAmount);
+    }
+}
+
+/// @title Standard Tycho AdapterTest harness for EulerSwap
+/// @dev Runs runPoolBehaviourTest() — the standard test suite that all Tycho adapters must pass.
+contract EulerSwapAdapterStandardTest is AdapterTest {
+    function setUp() public {
+        // Approvals are handled inside runPoolBehaviourTest via forceApprove
+    }
+
+    function test_runPoolBehaviourTest() public {
+        EulerSwapAdapter adapter = new EulerSwapAdapter(REGISTRY);
+
+        bytes32[] memory poolIds = new bytes32[](1);
+        poolIds[0] = POOL_ID;
+
+        runPoolBehaviourTest(ISwapAdapter(address(adapter)), poolIds);
     }
 }
