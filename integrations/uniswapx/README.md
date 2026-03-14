@@ -71,7 +71,9 @@ Solidity contracts (under `contracts/` for Foundry compatibility):
 | File | Description |
 |------|-------------|
 | `contracts/src/UniswapXFiller.sol` | On-chain executor — dynamic pool via callbackData, min profit check |
-| `contracts/test/UniswapXFiller.t.sol` | Fork tests against mainnet pool and reactor (14 tests) |
+| `contracts/test/UniswapXFiller.t.sol` | Unit tests — access control, callback logic, multi-output, withdraw (19 tests) |
+| `contracts/test/UniswapXFiller.fork.t.sol` | Fork tests — realistic fills, batches, profit cycle, pool limits (11 tests) |
+| `contracts/script/DeployUniswapXFiller.s.sol` | Deploy script — deploys executor, approves tokens, verifies state |
 
 ## Contracts
 
@@ -100,11 +102,29 @@ filler.approveToken(WETH);
 
 Owner can call `withdraw()` / `withdrawAll()` to extract accumulated profit.
 
-### Running fork tests
+### Deploying the executor
 
 ```bash
 cd contracts
-forge test --match-contract UniswapXFillerTest --fork-url $NEXT_PUBLIC_RPC_URL -vv
+PRIVATE_KEY=0x... forge script script/DeployUniswapXFiller.s.sol:DeployUniswapXFiller \
+  --rpc-url $NEXT_PUBLIC_RPC_URL --broadcast --slow -vvvv
+```
+
+The script outputs `EXECUTOR_ADDRESS=0x...` — add this to `.env.local` for live mode.
+
+### Running tests
+
+```bash
+cd contracts
+
+# Unit tests (no fork needed)
+forge test --match-contract "UniswapXFillerTest$" -vv
+
+# Fork tests (mainnet state)
+forge test --match-contract UniswapXFillerForkTest --fork-url $NEXT_PUBLIC_RPC_URL -vv
+
+# All UniswapX tests
+forge test --match-path "test/UniswapXFiller*" --fork-url $NEXT_PUBLIC_RPC_URL -vv
 ```
 
 ## Addresses (Ethereum mainnet)
@@ -116,6 +136,7 @@ forge test --match-contract UniswapXFillerTest --fork-url $NEXT_PUBLIC_RPC_URL -
 | Permit2 | `0x000000000022d473030f116ddee9f6b43ac78ba3` |
 | USDC | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` |
 | WETH | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` |
+| UniswapXFiller (executor) | `0x2126177546c135a0Ef310005090A833a75586C67` |
 
 ## Design notes
 
@@ -139,4 +160,5 @@ forge test --match-contract UniswapXFillerTest --fork-url $NEXT_PUBLIC_RPC_URL -
 - **Fill serialization.** Fill submissions from poll and webhook are serialized through a promise chain to prevent nonce collisions. Without this, concurrent `prepareTransactionRequest` calls would fetch the same pending nonce.
 - **Transaction confirmation.** Non-bundle fills wait for on-chain confirmation (2 minute timeout) and log success/revert status with gas details. Bundle fills are fire-and-forget (zero gas on failure).
 - **Exponential backoff.** Consecutive poll errors trigger exponential backoff (2s, 4s, 8s, ... capped at 30s) to avoid hammering a rate-limited or failing RPC.
+- **Deadline pre-check.** Orders expiring within 30 seconds are skipped before any RPC calls. Avoids wasting gas estimation on orders that will likely expire before the fill transaction lands.
 - **Webhook IP validation.** Exact IP match (not substring) with IPv6-mapped address support (`::ffff:x.x.x.x`).

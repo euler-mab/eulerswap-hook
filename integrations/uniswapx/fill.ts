@@ -265,7 +265,7 @@ export async function simulateBatchFill(
  */
 export async function buildSignedFillTx(
   walletClient: WalletClient,
-  publicClient: PublicClient,
+  _publicClient: PublicClient,
   apiOrder: UniswapXApiOrder,
   executorAddress: Address,
   poolAddress: Address = ADDRESSES.pool,
@@ -301,7 +301,7 @@ export async function buildSignedFillTx(
  */
 export async function buildSignedBatchFillTx(
   walletClient: WalletClient,
-  publicClient: PublicClient,
+  _publicClient: PublicClient,
   apiOrders: UniswapXApiOrder[],
   executorAddress: Address,
   poolAddress: Address = ADDRESSES.pool,

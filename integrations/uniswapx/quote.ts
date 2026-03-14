@@ -45,6 +45,9 @@ const DEFAULT_PRIORITY_FEE = 1_500_000_000n; // 1.5 gwei
  * Accounts for the delay between evaluation and on-chain execution.
  * 2 blocks (24s) is conservative for Flashbots bundles targeting block+1/+2. */
 const DECAY_BUFFER_SECONDS = 24n;
+/** Minimum remaining lifetime for an order to be worth evaluating.
+ * Orders expiring within this window will likely expire before our tx lands. */
+const MIN_REMAINING_SECONDS = 30n;
 
 /**
  * Adaptive gas estimator using exponential moving average (EMA).
@@ -109,6 +112,27 @@ export async function evaluateOrder(
 ): Promise<QuoteResult> {
   const now = BigInt(Math.floor(Date.now() / 1000));
   const decoded = decodeV2DutchOrder(apiOrder.encodedOrder);
+
+  // Skip orders that will expire before our tx can land.
+  // Checked before RPC calls to avoid wasting gas estimation on doomed orders.
+  if (decoded.info.deadline <= now + MIN_REMAINING_SECONDS) {
+    return {
+      orderHash: apiOrder.orderHash,
+      inputToken: decoded.input.token,
+      outputToken: decoded.outputs[0]?.token ?? ("0x0000000000000000000000000000000000000000" as Address),
+      inputAmount: 0n,
+      requiredOutput: 0n,
+      eulerSwapOutput: 0n,
+      grossProfit: 0n,
+      gasCost: 0n,
+      netProfit: 0n,
+      profitBps: 0,
+      withinLimits: false,
+      exclusive: false,
+      profitable: false,
+    };
+  }
+
   // Decay is evaluated at `now`. Dutch decay favors the filler over time (outputs
   // decrease, inputs increase), so `now` is conservative — the on-chain fill at
   // block.timestamp will be at least as favorable. The buffer is applied only to

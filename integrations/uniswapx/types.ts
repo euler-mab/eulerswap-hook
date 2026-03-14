@@ -105,6 +105,7 @@ export const ADDRESSES = {
   permit2: "0x000000000022d473030f116ddee9f6b43ac78ba3" as Address,
   usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Address,
   weth: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as Address,
+  executor: "0x2126177546c135a0Ef310005090A833a75586C67" as Address,
 } as const;
 
 // V2DutchOrder ABI tuple for decoding encodedOrder bytes

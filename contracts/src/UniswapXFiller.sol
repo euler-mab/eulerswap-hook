@@ -85,6 +85,11 @@ contract UniswapXFiller {
         IERC20(token).forceApprove(reactor, type(uint256).max);
     }
 
+    /// @notice Revoke token approval to the reactor (emergency use).
+    function revokeToken(address token) external onlyOwner {
+        IERC20(token).forceApprove(reactor, 0);
+    }
+
     /// @notice Fill a single order. EOA calls this → executor calls reactor → reactor callbacks executor.
     /// @param order The signed order (encodedOrder + signature)
     /// @param callbackData ABI-encoded (address pool, uint256 minProfit)
@@ -160,6 +165,12 @@ contract UniswapXFiller {
     function withdrawAll(address token, address to) external onlyOwner {
         uint256 bal = IERC20(token).balanceOf(address(this));
         if (bal > 0) IERC20(token).safeTransfer(to, bal);
+    }
+
+    /// @notice Withdraw ETH (e.g. from accidental sends or WETH unwraps)
+    function withdrawETH(uint256 amount, address payable to) external onlyOwner {
+        (bool sent,) = to.call{value: amount}("");
+        require(sent, "ETH transfer failed");
     }
 
     /// @notice Allow receiving ETH (for WETH unwrapping if needed)

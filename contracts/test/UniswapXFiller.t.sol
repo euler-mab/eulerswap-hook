@@ -222,6 +222,39 @@ contract UniswapXFillerTest is Test {
         filler.reactorCallback(orders, _callbackData());
     }
 
+    function test_revokeToken() public {
+        // Allowance should be max from setUp
+        assertEq(IERC20(USDC).allowance(address(filler), REACTOR), type(uint256).max);
+
+        filler.revokeToken(USDC);
+        assertEq(IERC20(USDC).allowance(address(filler), REACTOR), 0);
+    }
+
+    function test_revokeToken_onlyOwner() public {
+        address notOwner = makeAddr("notOwner");
+        vm.prank(notOwner);
+        vm.expectRevert(UniswapXFiller.Unauthorized.selector);
+        filler.revokeToken(USDC);
+    }
+
+    function test_withdrawETH() public {
+        // Send ETH to filler
+        deal(address(filler), 1 ether);
+        address payable recipient = payable(makeAddr("ethRecipient"));
+
+        filler.withdrawETH(0.5 ether, recipient);
+        assertEq(recipient.balance, 0.5 ether);
+        assertEq(address(filler).balance, 0.5 ether);
+    }
+
+    function test_withdrawETH_onlyOwner() public {
+        deal(address(filler), 1 ether);
+        address notOwner = makeAddr("notOwner");
+        vm.prank(notOwner);
+        vm.expectRevert(UniswapXFiller.Unauthorized.selector);
+        filler.withdrawETH(1 ether, payable(notOwner));
+    }
+
     // ---- Helpers ----
 
     function _buildOrder(

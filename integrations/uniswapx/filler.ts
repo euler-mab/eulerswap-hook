@@ -543,9 +543,18 @@ async function main() {
   if (WEBHOOK_PORT) {
     startWebhookServer(WEBHOOK_PORT, async (orders) => {
       const matching = filterForPool(orders);
-      if (matching.length > 0) {
-        console.log(`[${ts()}] webhook: ${matching.length} matching order(s)`);
-        await evaluateAndFill(matching);
+      if (matching.length === 0) return;
+
+      // Deduplicate webhook orders against poll-sourced seenOrders
+      const now = Math.floor(Date.now() / 1000);
+      const fresh = matching.filter((o) => {
+        if (seenOrders.has(o.orderHash)) return false;
+        seenOrders.set(o.orderHash, now + 300);
+        return true;
+      });
+      if (fresh.length > 0) {
+        console.log(`[${ts()}] webhook: ${fresh.length} new matching order(s)`);
+        await evaluateAndFill(fresh);
       }
     });
   }
