@@ -1,0 +1,20 @@
+author:
+  name: EulerSwap
+  email: security@euler.xyz
+
+constants:
+  protocol_gas: 120000
+  capabilities:
+    - SellSide
+    - BuySide
+    - PriceFunction
+    - MarginalPrice
+
+contract: EulerSwapAdapter.sol
+
+instances:
+  - chain:
+      name: mainnet
+      id: 1
+    arguments:
+      - "0x5FcCB84363F020c0cADE052C9c654aABF932814A"
