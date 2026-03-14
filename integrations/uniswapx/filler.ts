@@ -38,9 +38,9 @@ try {
 
 import { createPublicClient, http, formatEther, formatUnits } from "viem";
 import { mainnet } from "viem/chains";
-import { fetchOpenOrders, filterForPool, formatOrder } from "../src/lib/uniswapx/api";
-import { evaluateOrder, formatQuote } from "../src/lib/uniswapx/quote";
-import { ADDRESSES } from "../src/lib/uniswapx/types";
+import { fetchOpenOrders, filterForPool, formatOrder } from "./api";
+import { evaluateOrder, formatQuote } from "./quote";
+import { ADDRESSES } from "./types";
 
 // ---- Config ----
 

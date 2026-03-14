@@ -1,7 +1,7 @@
 // EulerSwap quote comparison for UniswapX order profitability
 
 import type { PublicClient, Address } from "viem";
-import { eulerSwapAbi } from "../pools/abi";
+import { eulerSwapAbi } from "../../src/lib/pools/abi";
 import type { UniswapXApiOrder, V2DutchOrder, ResolvedAmounts } from "./types";
 import { ADDRESSES } from "./types";
 import { decodeV2DutchOrder, resolveAmounts } from "./api";
