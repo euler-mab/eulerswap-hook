@@ -46,55 +46,56 @@ struct OutputToken {
 /// @notice Executor contract for filling UniswapX orders via EulerSwap.
 /// @dev Implements IReactorCallback. When the reactor calls reactorCallback,
 ///      this contract swaps input tokens through EulerSwap to source output tokens.
-///      Profit (excess output beyond what the reactor pulls) accumulates in this contract.
+///      Pool address and min profit are passed via callbackData, making the contract
+///      reusable across pools without redeployment.
 contract UniswapXFiller {
     using SafeERC20 for IERC20;
 
     address public immutable owner;
     address public immutable reactor;
-    address public immutable pool;
-    address public immutable asset0; // USDC (lower address)
-    address public immutable asset1; // WETH (higher address)
 
     error Unauthorized();
     error OnlyReactor();
     error MultipleOutputsNotSupported();
+    error InsufficientProfit();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
         _;
     }
 
-    constructor(address _reactor, address _pool, address _asset0, address _asset1) {
+    constructor(address _reactor) {
         owner = msg.sender;
         reactor = _reactor;
-        pool = _pool;
-        asset0 = _asset0;
-        asset1 = _asset1;
+    }
 
-        // Pre-approve reactor to pull output tokens after swap
-        IERC20(_asset0).forceApprove(_reactor, type(uint256).max);
-        IERC20(_asset1).forceApprove(_reactor, type(uint256).max);
+    /// @notice Approve a token to the reactor. Call once per token before filling.
+    function approveToken(address token) external onlyOwner {
+        IERC20(token).forceApprove(reactor, type(uint256).max);
     }
 
     /// @notice Called by the reactor during executeWithCallback.
     ///         Input tokens have been transferred to this contract by the reactor.
     ///         We swap them through EulerSwap, then the reactor pulls outputs via transferFrom.
-    function reactorCallback(ResolvedOrder[] calldata resolvedOrders, bytes calldata) external {
+    /// @param callbackData ABI-encoded (address pool, uint256 minProfit)
+    function reactorCallback(ResolvedOrder[] calldata resolvedOrders, bytes calldata callbackData) external {
         if (msg.sender != reactor) revert OnlyReactor();
 
+        (address pool, uint256 minProfit) = abi.decode(callbackData, (address, uint256));
+
         for (uint256 i = 0; i < resolvedOrders.length; i++) {
-            _fillOrder(resolvedOrders[i]);
+            _fillOrder(resolvedOrders[i], pool, minProfit);
         }
     }
 
-    function _fillOrder(ResolvedOrder calldata order) internal {
+    function _fillOrder(ResolvedOrder calldata order, address pool, uint256 minProfit) internal {
         // Only single-output orders supported (covers standard UniswapX swaps)
         if (order.outputs.length != 1) revert MultipleOutputsNotSupported();
 
         address tokenIn = order.input.token;
         uint256 amountIn = order.input.amount;
         address tokenOut = order.outputs[0].token;
+        uint256 requiredOutput = order.outputs[0].amount;
 
         // Transfer input tokens to EulerSwap pool
         IERC20(tokenIn).safeTransfer(pool, amountIn);
@@ -111,7 +112,11 @@ contract UniswapXFiller {
             IEulerSwapPool(pool).swap(amountOut, 0, address(this), "");
         }
 
-        // Reactor will now pull required output via transferFrom (approvals set in constructor).
+        // Verify minimum profit
+        uint256 outputBal = IERC20(tokenOut).balanceOf(address(this));
+        if (outputBal < requiredOutput + minProfit) revert InsufficientProfit();
+
+        // Reactor will now pull required output via transferFrom.
         // Any excess output stays in this contract as profit.
     }
 

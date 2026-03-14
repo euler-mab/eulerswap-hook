@@ -18,13 +18,17 @@ export interface QuoteResult {
   eulerSwapOutput: bigint;
   /** Gross profit in output token units (eulerSwapOutput - requiredOutput) */
   grossProfit: bigint;
-  /** Gross profit in basis points of required output */
+  /** Estimated gas cost in output token units */
+  gasCost: bigint;
+  /** Net profit after gas (grossProfit - gasCost) */
+  netProfit: bigint;
+  /** Net profit in basis points of required output */
   profitBps: number;
   /** Whether the pool can handle this order size */
   withinLimits: boolean;
   /** Whether the order is in exclusivity window */
   exclusive: boolean;
-  /** Whether filling is profitable after min threshold */
+  /** Whether filling is profitable after gas and min threshold */
   profitable: boolean;
 }
 
@@ -32,11 +36,16 @@ export interface QuoteResult {
  * Evaluate whether an order can be profitably filled via EulerSwap.
  * Reads computeQuote and getLimits from the pool.
  */
+/** Default gas estimate for callback fill path */
+const DEFAULT_GAS_ESTIMATE = 250_000n;
+const DEFAULT_PRIORITY_FEE = 1_500_000_000n; // 1.5 gwei
+
 export async function evaluateOrder(
   client: PublicClient,
   apiOrder: UniswapXApiOrder,
   minProfitBps: number,
   poolAddress: Address = ADDRESSES.pool,
+  gasEstimate: bigint = DEFAULT_GAS_ESTIMATE,
 ): Promise<QuoteResult> {
   const now = BigInt(Math.floor(Date.now() / 1000));
   const decoded = decodeV2DutchOrder(apiOrder.encodedOrder);
@@ -60,6 +69,8 @@ export async function evaluateOrder(
       requiredOutput: 0n,
       eulerSwapOutput: 0n,
       grossProfit: 0n,
+      gasCost: 0n,
+      netProfit: 0n,
       profitBps: 0,
       withinLimits: false,
       exclusive: false,
@@ -74,8 +85,8 @@ export async function evaluateOrder(
     exclusiveFiller !== "0x0000000000000000000000000000000000000000" &&
     now <= decayStartTime;
 
-  // Check pool limits
-  const [limits, eulerSwapOutput] = await Promise.all([
+  // Check pool limits + get quote + get gas price
+  const [limits, eulerSwapOutput, gasPrice] = await Promise.all([
     client.readContract({
       address: poolAddress,
       abi: eulerSwapAbi,
@@ -90,15 +101,36 @@ export async function evaluateOrder(
         args: [inputToken, outputToken, inputAmount, true],
       })
       .catch(() => 0n) as Promise<bigint>,
+    client.getGasPrice().catch(() => 10_000_000_000n), // fallback 10 gwei
   ]);
 
   const [limitIn] = limits;
   const withinLimits = inputAmount <= limitIn;
 
+  // Compute gas cost in output token units
+  const effectiveGasPrice = gasPrice + DEFAULT_PRIORITY_FEE;
+  const gasCostWei = gasEstimate * effectiveGasPrice;
+  let gasCost: bigint;
+  if (outputToken.toLowerCase() === ADDRESSES.weth.toLowerCase()) {
+    gasCost = gasCostWei; // already in WETH wei
+  } else {
+    // Convert ETH gas cost to USDC using pool price
+    const ethPriceUsdc = await client
+      .readContract({
+        address: poolAddress,
+        abi: eulerSwapAbi,
+        functionName: "computeQuote",
+        args: [ADDRESSES.weth, ADDRESSES.usdc, 10n ** 18n, true],
+      })
+      .catch(() => 2000_000_000n) as bigint; // fallback ~$2000
+    gasCost = (gasCostWei * ethPriceUsdc) / 10n ** 18n;
+  }
+
   const grossProfit = eulerSwapOutput - requiredOutput;
+  const netProfit = grossProfit - gasCost;
   const profitBps =
     requiredOutput > 0n
-      ? Number((grossProfit * 10000n) / requiredOutput)
+      ? Number((netProfit * 10000n) / requiredOutput)
       : 0;
 
   return {
@@ -109,10 +141,12 @@ export async function evaluateOrder(
     requiredOutput,
     eulerSwapOutput,
     grossProfit,
+    gasCost,
+    netProfit,
     profitBps,
     withinLimits,
     exclusive,
-    profitable: !exclusive && withinLimits && profitBps >= minProfitBps,
+    profitable: !exclusive && withinLimits && netProfit > 0n && profitBps >= minProfitBps,
   };
 }
 
@@ -123,11 +157,12 @@ export function formatQuote(q: QuoteResult): string {
   const inAmt = formatTokenAmount(q.inputAmount, q.inputToken);
   const outReq = formatTokenAmount(q.requiredOutput, q.outputToken);
   const esOut = formatTokenAmount(q.eulerSwapOutput, q.outputToken);
-  const profit = formatTokenAmount(
-    q.grossProfit > 0n ? q.grossProfit : -q.grossProfit,
+  const gas = formatTokenAmount(q.gasCost, q.outputToken);
+  const net = formatTokenAmount(
+    q.netProfit > 0n ? q.netProfit : -q.netProfit,
     q.outputToken,
   );
-  const sign = q.grossProfit >= 0n ? "+" : "-";
+  const sign = q.netProfit >= 0n ? "+" : "-";
 
   const flags = [
     q.exclusive ? "EXCLUSIVE" : null,
@@ -137,7 +172,7 @@ export function formatQuote(q: QuoteResult): string {
     .filter(Boolean)
     .join(",");
 
-  return `${inSym}->${outSym} in=${inAmt} need=${outReq} es=${esOut} ${sign}${profit} (${q.profitBps}bps) [${flags || "skip"}]`;
+  return `${inSym}->${outSym} in=${inAmt} need=${outReq} es=${esOut} gas=${gas} ${sign}${net} (${q.profitBps}bps) [${flags || "skip"}]`;
 }
 
 function tokenSymbol(addr: Address): string {

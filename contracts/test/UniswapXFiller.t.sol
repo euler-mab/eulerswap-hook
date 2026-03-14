@@ -16,28 +16,42 @@ contract UniswapXFillerTest is Test {
     UniswapXFiller filler;
 
     function setUp() public {
-        filler = new UniswapXFiller(REACTOR, POOL, USDC, WETH);
+        filler = new UniswapXFiller(REACTOR);
+        filler.approveToken(USDC);
+        filler.approveToken(WETH);
+    }
+
+    function _callbackData() internal pure returns (bytes memory) {
+        return _callbackData(0);
+    }
+
+    function _callbackData(uint256 minProfit) internal pure returns (bytes memory) {
+        return abi.encode(POOL, minProfit);
     }
 
     function test_constructor_sets_immutables() public view {
         assertEq(filler.owner(), address(this));
         assertEq(filler.reactor(), REACTOR);
-        assertEq(filler.pool(), POOL);
-        assertEq(filler.asset0(), USDC);
-        assertEq(filler.asset1(), WETH);
     }
 
-    function test_constructor_approves_reactor() public view {
+    function test_approveToken_setsAllowance() public view {
         uint256 usdcAllowance = IERC20(USDC).allowance(address(filler), REACTOR);
         uint256 wethAllowance = IERC20(WETH).allowance(address(filler), REACTOR);
         assertEq(usdcAllowance, type(uint256).max);
         assertEq(wethAllowance, type(uint256).max);
     }
 
+    function test_approveToken_onlyOwner() public {
+        address notOwner = makeAddr("notOwner");
+        vm.prank(notOwner);
+        vm.expectRevert(UniswapXFiller.Unauthorized.selector);
+        filler.approveToken(USDC);
+    }
+
     function test_reactorCallback_onlyReactor() public {
         ResolvedOrder[] memory orders = new ResolvedOrder[](0);
         vm.expectRevert(UniswapXFiller.OnlyReactor.selector);
-        filler.reactorCallback(orders, "");
+        filler.reactorCallback(orders, _callbackData());
     }
 
     function test_reactorCallback_fills_usdc_to_weth() public {
@@ -47,11 +61,11 @@ contract UniswapXFillerTest is Test {
 
         // Build a mock ResolvedOrder
         ResolvedOrder[] memory orders = new ResolvedOrder[](1);
-        orders[0] = _buildOrder(USDC, usdcAmount, WETH, address(this));
+        orders[0] = _buildOrder(USDC, usdcAmount, WETH, 0, address(this));
 
         // Call as reactor
         vm.prank(REACTOR);
-        filler.reactorCallback(orders, "");
+        filler.reactorCallback(orders, _callbackData());
 
         // Filler should have WETH output
         uint256 wethBal = IERC20(WETH).balanceOf(address(filler));
@@ -65,14 +79,42 @@ contract UniswapXFillerTest is Test {
         deal(WETH, address(filler), wethAmount);
 
         ResolvedOrder[] memory orders = new ResolvedOrder[](1);
-        orders[0] = _buildOrder(WETH, wethAmount, USDC, address(this));
+        orders[0] = _buildOrder(WETH, wethAmount, USDC, 0, address(this));
 
         vm.prank(REACTOR);
-        filler.reactorCallback(orders, "");
+        filler.reactorCallback(orders, _callbackData());
 
         uint256 usdcBal = IERC20(USDC).balanceOf(address(filler));
         assertTrue(usdcBal > 0, "should have received USDC");
         console.log("WETH->USDC: input=0.5 WETH, output=%d USDC", usdcBal / 1e6);
+    }
+
+    function test_minProfit_passes() public {
+        uint256 usdcAmount = 1000e6;
+        deal(USDC, address(filler), usdcAmount);
+
+        ResolvedOrder[] memory orders = new ResolvedOrder[](1);
+        // requiredOutput = 0, so any output satisfies minProfit = 0
+        orders[0] = _buildOrder(USDC, usdcAmount, WETH, 0, address(this));
+
+        vm.prank(REACTOR);
+        filler.reactorCallback(orders, _callbackData(0));
+
+        uint256 wethBal = IERC20(WETH).balanceOf(address(filler));
+        assertTrue(wethBal > 0, "should have received WETH");
+    }
+
+    function test_minProfit_reverts() public {
+        uint256 usdcAmount = 1000e6;
+        deal(USDC, address(filler), usdcAmount);
+
+        ResolvedOrder[] memory orders = new ResolvedOrder[](1);
+        // requiredOutput = 0 but minProfit = impossibly high
+        orders[0] = _buildOrder(USDC, usdcAmount, WETH, 0, address(this));
+
+        vm.prank(REACTOR);
+        vm.expectRevert(UniswapXFiller.InsufficientProfit.selector);
+        filler.reactorCallback(orders, _callbackData(type(uint256).max));
     }
 
     function test_withdraw_onlyOwner() public {
@@ -129,18 +171,20 @@ contract UniswapXFillerTest is Test {
 
         vm.prank(REACTOR);
         vm.expectRevert(UniswapXFiller.MultipleOutputsNotSupported.selector);
-        filler.reactorCallback(orders, "");
+        filler.reactorCallback(orders, _callbackData());
     }
 
     // ---- Helpers ----
 
-    function _buildOrder(address tokenIn, uint256 amountIn, address tokenOut, address recipient)
-        internal
-        pure
-        returns (ResolvedOrder memory)
-    {
+    function _buildOrder(
+        address tokenIn,
+        uint256 amountIn,
+        address tokenOut,
+        uint256 requiredOutput,
+        address recipient
+    ) internal pure returns (ResolvedOrder memory) {
         OutputToken[] memory outputs = new OutputToken[](1);
-        outputs[0] = OutputToken({token: tokenOut, amount: 0, recipient: recipient});
+        outputs[0] = OutputToken({token: tokenOut, amount: requiredOutput, recipient: recipient});
 
         return ResolvedOrder({
             info: OrderInfo({

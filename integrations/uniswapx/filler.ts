@@ -12,10 +12,12 @@
  * Env vars:
  *   NEXT_PUBLIC_RPC_URL   - Ethereum RPC endpoint (required)
  *   PRIVATE_KEY           - Filler wallet private key (required for --live)
- *   FLASHBOTS_RPC_URL     - Flashbots Protect RPC (optional, for --live)
+ *   EXECUTOR_ADDRESS      - Deployed UniswapXFiller contract (required for --live)
+ *   FLASHBOTS_AUTH_KEY    - Throwaway key for Flashbots relay auth (optional)
  *   MIN_PROFIT_BPS        - Minimum profit threshold in bps (default: 5)
  *   MAX_GAS_GWEI          - Skip fills above this base fee (default: 50)
- *   POLL_INTERVAL_MS      - Polling interval in ms (default: 2000)
+ *   POLL_INTERVAL_MS      - Polling interval in ms (default: 200)
+ *   WEBHOOK_PORT          - If set, start webhook server for push-based order sourcing
  */
 
 import { readFileSync } from "fs";
@@ -36,11 +38,25 @@ try {
   }
 } catch {}
 
-import { createPublicClient, http, formatEther, formatUnits } from "viem";
+import {
+  createPublicClient,
+  createWalletClient,
+  http,
+  type Address,
+  type Hex,
+} from "viem";
 import { mainnet } from "viem/chains";
-import { fetchOpenOrders, filterForPool, formatOrder } from "./api";
-import { evaluateOrder, formatQuote } from "./quote";
-import { ADDRESSES } from "./types";
+import { privateKeyToAccount } from "viem/accounts";
+import { fetchOpenOrders, filterForPool } from "./api";
+import { evaluateOrder, formatQuote, type QuoteResult } from "./quote";
+import {
+  callbackFill,
+  batchCallbackFill,
+  simulateFill,
+  simulateBatchFill,
+} from "./fill";
+import { startWebhookServer } from "./webhook";
+import { ADDRESSES, type UniswapXApiOrder } from "./types";
 
 // ---- Config ----
 
@@ -53,7 +69,12 @@ if (!RPC_URL) {
 const LIVE = process.argv.includes("--live");
 const MIN_PROFIT_BPS = parseInt(process.env.MIN_PROFIT_BPS ?? "5");
 const MAX_GAS_GWEI = parseInt(process.env.MAX_GAS_GWEI ?? "50");
-const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS ?? "2000");
+const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS ?? "200");
+const EXECUTOR_ADDRESS = process.env.EXECUTOR_ADDRESS as Address | undefined;
+const FLASHBOTS_AUTH_KEY = process.env.FLASHBOTS_AUTH_KEY as Hex | undefined;
+const WEBHOOK_PORT = process.env.WEBHOOK_PORT
+  ? parseInt(process.env.WEBHOOK_PORT)
+  : undefined;
 
 const client = createPublicClient({
   chain: mainnet,
@@ -61,15 +82,166 @@ const client = createPublicClient({
   batch: { multicall: true },
 });
 
+// Wallet client for live fills
+const walletClient =
+  LIVE && process.env.PRIVATE_KEY
+    ? createWalletClient({
+        account: privateKeyToAccount(process.env.PRIVATE_KEY as Hex),
+        chain: mainnet,
+        transport: http(process.env.FLASHBOTS_RPC_URL ?? RPC_URL),
+      })
+    : undefined;
+
+// ---- Rate limiter ----
+
+class RateLimiter {
+  private timestamps: number[] = [];
+  constructor(
+    private maxRequests: number,
+    private windowMs: number,
+  ) {}
+  async waitForSlot(): Promise<void> {
+    const now = Date.now();
+    this.timestamps = this.timestamps.filter((t) => now - t < this.windowMs);
+    if (this.timestamps.length >= this.maxRequests) {
+      const oldest = this.timestamps[0];
+      const waitMs = this.windowMs - (now - oldest) + 1;
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+    this.timestamps.push(Date.now());
+  }
+}
+
+const rateLimiter = new RateLimiter(6, 1000); // UniswapX API: 6 req/s
+
 // ---- State ----
 
 const seenOrders = new Set<string>();
+const pendingFills = new Set<string>();
 let totalOrdersSeen = 0;
 let totalMatchingOrders = 0;
 let totalProfitable = 0;
 let cycleCount = 0;
 
-// ---- Main loop ----
+// ---- Evaluate & Fill ----
+
+/**
+ * Evaluate orders and optionally fill profitable ones.
+ * Shared by both poll loop and webhook handler.
+ */
+async function evaluateAndFill(apiOrders: UniswapXApiOrder[]) {
+  const profitable: { order: UniswapXApiOrder; quote: QuoteResult }[] = [];
+
+  for (const apiOrder of apiOrders) {
+    if (pendingFills.has(apiOrder.orderHash)) continue;
+    try {
+      const quote = await evaluateOrder(
+        client,
+        apiOrder,
+        MIN_PROFIT_BPS,
+        ADDRESSES.pool,
+      );
+
+      const tag = quote.profitable ? ">>>" : "   ";
+      console.log(`  ${tag} ${formatQuote(quote)}`);
+
+      if (quote.profitable) {
+        totalProfitable++;
+        profitable.push({ order: apiOrder, quote });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`  ERR ${apiOrder.orderHash.slice(0, 10)}: ${msg}`);
+    }
+  }
+
+  if (profitable.length > 0 && LIVE) {
+    await executeFills(profitable);
+  }
+}
+
+/**
+ * Simulate then fill profitable orders.
+ * Uses batch fill for 2+ orders, single fill for 1.
+ */
+async function executeFills(
+  fills: { order: UniswapXApiOrder; quote: QuoteResult }[],
+) {
+  if (!walletClient || !EXECUTOR_ADDRESS) {
+    console.log(
+      `  !!! ${fills.length} profitable order(s) — PRIVATE_KEY or EXECUTOR_ADDRESS not set`,
+    );
+    return;
+  }
+
+  const fillerAddress = walletClient.account.address;
+  const orders = fills.map((f) => f.order);
+
+  // Mark as pending to avoid re-evaluation
+  for (const f of fills) pendingFills.add(f.order.orderHash);
+
+  try {
+    // Simulate first
+    const sim =
+      orders.length === 1
+        ? await simulateFill(
+            client,
+            orders[0],
+            EXECUTOR_ADDRESS,
+            ADDRESSES.pool,
+            0n,
+            ADDRESSES.reactorV2,
+            fillerAddress,
+          )
+        : await simulateBatchFill(
+            client,
+            orders,
+            EXECUTOR_ADDRESS,
+            ADDRESSES.pool,
+            0n,
+            ADDRESSES.reactorV2,
+            fillerAddress,
+          );
+
+    if (!sim.success) {
+      console.log(`  SIM FAIL: ${sim.error}`);
+      return;
+    }
+
+    console.log(
+      `  SIM OK (gas: ${sim.gasEstimate ?? "unknown"}) — submitting fill...`,
+    );
+
+    // Submit fill
+    const txHash =
+      orders.length === 1
+        ? await callbackFill(
+            walletClient,
+            client,
+            orders[0],
+            EXECUTOR_ADDRESS,
+            ADDRESSES.pool,
+            0n,
+          )
+        : await batchCallbackFill(
+            walletClient,
+            client,
+            orders,
+            EXECUTOR_ADDRESS,
+            ADDRESSES.pool,
+            0n,
+          );
+
+    console.log(`  FILLED: ${txHash}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`  FILL ERROR: ${msg}`);
+  } finally {
+    for (const f of fills) pendingFills.delete(f.order.orderHash);
+  }
+}
+
+// ---- Poll loop ----
 
 async function poll() {
   cycleCount++;
@@ -101,32 +273,7 @@ async function poll() {
       `[${ts()}] ${allOrders.length} open orders, ${matching.length} USDC/WETH (${newOrders} new)`,
     );
 
-    // Evaluate each matching order
-    for (const apiOrder of matching) {
-      try {
-        const quote = await evaluateOrder(
-          client,
-          apiOrder,
-          MIN_PROFIT_BPS,
-          ADDRESSES.pool,
-        );
-
-        const tag = quote.profitable ? ">>>" : "   ";
-        console.log(`  ${tag} ${formatQuote(quote)}`);
-
-        if (quote.profitable) {
-          totalProfitable++;
-
-          if (LIVE) {
-            console.log(`  !!! WOULD FILL ${apiOrder.orderHash} (not yet implemented)`);
-            // TODO: Phase 2 — call fill.ts to submit transaction
-          }
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.log(`  ERR ${apiOrder.orderHash.slice(0, 10)}: ${msg}`);
-      }
-    }
+    await evaluateAndFill(matching);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[${ts()}] poll error: ${msg}`);
@@ -142,12 +289,27 @@ function ts(): string {
 async function main() {
   console.log("UniswapX Filler Bot for EulerSwap");
   console.log("=================================");
-  console.log(`Mode:           ${LIVE ? "LIVE (fills enabled)" : "MONITOR (read-only)"}`);
+  console.log(
+    `Mode:           ${LIVE ? "LIVE (fills enabled)" : "MONITOR (read-only)"}`,
+  );
   console.log(`Pool:           ${ADDRESSES.pool}`);
   console.log(`Reactor:        ${ADDRESSES.reactorV2}`);
+  console.log(`Executor:       ${EXECUTOR_ADDRESS ?? "(not set)"}`);
   console.log(`Min profit:     ${MIN_PROFIT_BPS} bps`);
   console.log(`Max gas:        ${MAX_GAS_GWEI} gwei`);
   console.log(`Poll interval:  ${POLL_INTERVAL_MS}ms`);
+  console.log(`Flashbots:      ${FLASHBOTS_AUTH_KEY ? "enabled" : "disabled"}`);
+  console.log(`Webhook:        ${WEBHOOK_PORT ? `port ${WEBHOOK_PORT}` : "disabled"}`);
+
+  if (LIVE && !walletClient) {
+    console.error("--live requires PRIVATE_KEY env var");
+    process.exit(1);
+  }
+  if (LIVE && !EXECUTOR_ADDRESS) {
+    console.error("--live requires EXECUTOR_ADDRESS env var");
+    process.exit(1);
+  }
+
   console.log("");
 
   // Verify pool is accessible
@@ -174,13 +336,25 @@ async function main() {
     process.exit(1);
   }
 
+  // Start webhook server if configured
+  if (WEBHOOK_PORT) {
+    startWebhookServer(WEBHOOK_PORT, async (orders) => {
+      const matching = filterForPool(orders);
+      if (matching.length > 0) {
+        console.log(`[${ts()}] webhook: ${matching.length} matching order(s)`);
+        await evaluateAndFill(matching);
+      }
+    });
+  }
+
   console.log(`\nStarting poll loop...\n`);
 
-  // Initial poll
-  await poll();
-
-  // Continuous polling
-  setInterval(poll, POLL_INTERVAL_MS);
+  // Continuous polling with rate limiting
+  while (true) {
+    await rateLimiter.waitForSlot();
+    await poll();
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  }
 }
 
 main().catch((err) => {
