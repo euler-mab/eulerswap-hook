@@ -150,7 +150,7 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
       )}
 
       {/* P&L breakdown */}
-      {pnl && (pnl.feesUsd > 0 || pnl.swapRebalUsd !== 0 || pnl.extRebalUsd !== 0 || pnl.interestUsd !== 0) && (
+      {pnl && (pnl.feesUsd > 0 || pnl.swapRebalUsd !== 0 || pnl.extRebalUsd !== 0 || pnl.interestUsd !== 0 || pnl.markToMarketUsd !== 0) && (
         <Row label="P&L breakdown">
           <span className="text-xs space-x-3">
             {pnl.feesUsd > 0 && (
@@ -171,6 +171,11 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
             {pnl.interestUsd !== 0 && (
               <span className={pnl.interestUsd >= 0 ? "text-emerald-700" : "text-red-700"}>
                 interest {pnl.interestUsd >= 0 ? "+" : ""}{fmtUsd(pnl.interestUsd)}
+              </span>
+            )}
+            {Math.abs(pnl.markToMarketUsd) > 0.01 && (
+              <span className={pnl.markToMarketUsd >= 0 ? "text-emerald-700" : "text-red-700"}>
+                MtM {pnl.markToMarketUsd >= 0 ? "+" : ""}{fmtUsd(pnl.markToMarketUsd)}
               </span>
             )}
           </span>

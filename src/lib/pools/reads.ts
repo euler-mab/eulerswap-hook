@@ -460,7 +460,7 @@ export async function fetchVaultFlows(
   vault0: Address,
   vault1: Address,
   eulerAccount: Address,
-  swapTxHashes: Set<string>,
+  swapTxHashes: Set<string> | undefined,
   fromBlock: bigint,
   toBlock: bigint,
   maxBlockRange = 10_000n,
@@ -504,19 +504,19 @@ export async function fetchVaultFlows(
       ]);
 
       for (const log of deposits) {
-        if (swapTxHashes.has(log.transactionHash)) continue;
+        if (swapTxHashes?.has(log.transactionHash)) continue;
         flows.push({ blockNumber: log.blockNumber, transactionHash: log.transactionHash, logIndex: log.logIndex, vaultIndex: vault.index, operation: "deposit", assets: log.args.assets! });
       }
       for (const log of withdrawals) {
-        if (swapTxHashes.has(log.transactionHash)) continue;
+        if (swapTxHashes?.has(log.transactionHash)) continue;
         flows.push({ blockNumber: log.blockNumber, transactionHash: log.transactionHash, logIndex: log.logIndex, vaultIndex: vault.index, operation: "withdraw", assets: log.args.assets! });
       }
       for (const log of borrows) {
-        if (swapTxHashes.has(log.transactionHash)) continue;
+        if (swapTxHashes?.has(log.transactionHash)) continue;
         flows.push({ blockNumber: log.blockNumber, transactionHash: log.transactionHash, logIndex: log.logIndex, vaultIndex: vault.index, operation: "borrow", assets: log.args.assets! });
       }
       for (const log of repays) {
-        if (swapTxHashes.has(log.transactionHash)) continue;
+        if (swapTxHashes?.has(log.transactionHash)) continue;
         flows.push({ blockNumber: log.blockNumber, transactionHash: log.transactionHash, logIndex: log.logIndex, vaultIndex: vault.index, operation: "repay", assets: log.args.assets! });
       }
 
@@ -526,6 +526,53 @@ export async function fetchVaultFlows(
 
   flows.sort((a, b) => Number(a.blockNumber - b.blockNumber) || a.logIndex - b.logIndex);
   return flows;
+}
+
+/**
+ * Fetch WETH price in USD from Uniswap V3 slot0 at specific block numbers.
+ * Reads the pool's sqrtPriceX96 at each block and converts to human-readable price.
+ * Returns Map<blockNumber, wethPriceUsd>.
+ *
+ * Assumes the Uniswap pool is USDC/WETH (token0=USDC, token1=WETH) and USDC ≈ $1.
+ */
+export async function fetchUniswapPriceAtBlocks(
+  client: PublicClient,
+  uniswapPool: Address,
+  blockNumbers: bigint[],
+  asset0Decimals: number,
+  asset1Decimals: number,
+): Promise<Map<bigint, number>> {
+  const unique = [...new Set(blockNumbers)];
+  const map = new Map<bigint, number>();
+
+  // Batch reads in groups of 20
+  for (let i = 0; i < unique.length; i += 20) {
+    const batch = unique.slice(i, i + 20);
+    const results = await Promise.all(
+      batch.map(bn =>
+        client.readContract({
+          address: uniswapPool,
+          abi: uniswapV3PoolAbi,
+          functionName: "slot0",
+          blockNumber: bn,
+        })
+      ),
+    );
+    for (let j = 0; j < batch.length; j++) {
+      const slot0 = results[j];
+      const sqrtPriceX96 = slot0[0] as bigint;
+      if (sqrtPriceX96 > 0n) {
+        // sqrtPriceX96² / 2^192 = token1_raw / token0_raw
+        // For USDC(6)/WETH(18): uniPrice = rawPrice * 10^(6-18) = WETH per USDC
+        // wethPriceUsd = 1 / uniPrice
+        const num = Number(sqrtPriceX96) / 2 ** 96;
+        const rawPrice = num * num;
+        const uniPrice = rawPrice * Math.pow(10, asset0Decimals - asset1Decimals);
+        map.set(batch[j], 1 / uniPrice); // WETH price in USD (USDC terms)
+      }
+    }
+  }
+  return map;
 }
 
 /** Fetch block timestamps for a set of block numbers (deduplicated) */

@@ -1,7 +1,7 @@
 import { formatUnits } from "viem";
 import type { Address } from "viem";
 import type { PoolState, SwapEvent, VaultFlow } from "./types";
-import { fetchCurrentPrices, interpolatePrice, type PriceChartPoint } from "./prices";
+import { fetchCurrentPrices } from "./prices";
 
 /**
  * Equity effect of a vault event:
@@ -19,6 +19,52 @@ function equitySign(op: VaultFlow["operation"]): number {
   }
 }
 
+/**
+ * Compute exact vault interest per asset from ALL vault events (including swap-induced).
+ *
+ * Interest = current_position - Σ(all_flows):
+ *   supply_interest = current_deposits - Σ(deposits) + Σ(withdrawals)
+ *   borrow_interest = current_debt - Σ(borrows) + Σ(repays)
+ *   net_interest = supply_interest - borrow_interest
+ *
+ * This is exact — no residual, no price dependency at the asset level.
+ */
+export function computeVaultInterest(
+  allVaultEvents: VaultFlow[],
+  currentDeposit0: number,
+  currentDeposit1: number,
+  currentDebt0: number,
+  currentDebt1: number,
+  asset0Decimals: number,
+  asset1Decimals: number,
+): { interest0: number; interest1: number } {
+  let netDeposits0 = 0, netDeposits1 = 0;
+  let netBorrows0 = 0, netBorrows1 = 0;
+
+  for (const ev of allVaultEvents) {
+    const decimals = ev.vaultIndex === 0 ? asset0Decimals : asset1Decimals;
+    const amount = Number(formatUnits(ev.assets, decimals));
+
+    if (ev.vaultIndex === 0) {
+      if (ev.operation === "deposit") netDeposits0 += amount;
+      else if (ev.operation === "withdraw") netDeposits0 -= amount;
+      else if (ev.operation === "borrow") netBorrows0 += amount;
+      else if (ev.operation === "repay") netBorrows0 -= amount;
+    } else {
+      if (ev.operation === "deposit") netDeposits1 += amount;
+      else if (ev.operation === "withdraw") netDeposits1 -= amount;
+      else if (ev.operation === "borrow") netBorrows1 += amount;
+      else if (ev.operation === "repay") netBorrows1 -= amount;
+    }
+  }
+
+  // Interest = current position minus what position would be from just the flows
+  return {
+    interest0: (currentDeposit0 - netDeposits0) - (currentDebt0 - netBorrows0),
+    interest1: (currentDeposit1 - netDeposits1) - (currentDebt1 - netBorrows1),
+  };
+}
+
 /** P&L attribution breakdown, all denominated in USD */
 export interface PnlAttribution {
   /** Current NAV in USD */
@@ -29,14 +75,16 @@ export interface PnlAttribution {
   depositedNavUsd: number;
   /** Total P&L = navUsd - netInvestedUsd */
   totalPnl: number;
-  /** Accumulated swap fees in USD (valued at current prices) */
+  /** Accumulated swap fees in USD (valued at per-block Uniswap prices) */
   feesUsd: number;
-  /** Swap rebalancing P&L (IL from pool swaps, valued at current prices) */
+  /** Swap rebalancing P&L (IL/adverse selection, valued at per-block prices) */
   swapRebalUsd: number;
-  /** External rebalancing P&L (cost of DEX rebalancing txs, valued at current prices) */
+  /** External rebalancing P&L (cost of DEX rebalancing txs, valued at per-block prices) */
   extRebalUsd: number;
-  /** Net vault interest (residual: totalPnl - fees - swapRebal - extRebal) */
+  /** Net vault interest: exact per-asset computation, valued at current prices */
   interestUsd: number;
+  /** Mark-to-market: residual from valuing historical positions at current vs historical prices */
+  markToMarketUsd: number;
   /** Return percentage: totalPnl / netInvestedUsd */
   returnPct: number;
   /** Current token prices in USD */
@@ -127,14 +175,15 @@ export function buildCapitalSnapshot(
 
 /**
  * Compute cost basis: value of each external capital flow at its historical USD price.
+ * Uses per-block Uniswap prices (USDC ≈ $1, WETH from oracle).
  * Only includes pure capital flows (not rebalancing).
  */
 export function computeCostBasis(
   flows: VaultFlow[],
-  chart0: PriceChartPoint[],
-  chart1: PriceChartPoint[],
+  blockPrices: Map<bigint, number>,
   asset0Decimals: number,
   asset1Decimals: number,
+  fallbackEthPrice = 0,
 ): number {
   // Group by tx to identify capital vs rebal (same logic as buildCapitalSnapshot)
   const byTx = new Map<string, VaultFlow[]>();
@@ -155,12 +204,12 @@ export function computeCostBasis(
 
   let total = 0;
   for (const f of flows) {
-    if (!f.timestamp || !capitalTxs.has(f.transactionHash)) continue;
+    if (!capitalTxs.has(f.transactionHash)) continue;
     const decimals = f.vaultIndex === 0 ? asset0Decimals : asset1Decimals;
     const amount = Number(formatUnits(f.assets, decimals));
     const price = f.vaultIndex === 0
-      ? interpolatePrice(chart0, f.timestamp)
-      : interpolatePrice(chart1, f.timestamp);
+      ? 1 // USDC ≈ $1
+      : (blockPrices.get(f.blockNumber) ?? fallbackEthPrice);
     const signed = amount * equitySign(f.operation);
     total += signed * price;
   }
@@ -168,18 +217,22 @@ export function computeCostBasis(
 }
 
 /**
- * Compute P&L attribution using on-chain capital flows and current prices.
+ * Compute P&L attribution using on-chain events and per-block Uniswap prices.
  *
- * 4-way decomposition:
- *   fees       = swap fees earned (from Swap event logs)
- *   swapRebal  = net position change from swaps (IL/adverse selection)
- *   extRebal   = net equity change from non-swap vault operations (DEX rebalancing)
- *   interest   = residual: totalPnl - fees - swapRebal - extRebal (net vault interest)
+ * 5-way decomposition:
+ *   fees         = swap fees earned (valued at per-block Uniswap prices)
+ *   swapRebal    = IL/adverse selection from swaps (valued at per-block prices)
+ *   extRebal     = cost of DEX rebalancing txs (valued at per-block prices)
+ *   interest     = exact vault interest (per-asset computation, valued at current prices)
+ *   markToMarket = residual: price changes on accumulated positions
  */
 export async function computePnl(
   state: PoolState,
   swaps: SwapEvent[],
   capital: CapitalSnapshot,
+  nonSwapFlows: VaultFlow[],
+  blockPrices: Map<bigint, number>,
+  interest: { interest0: number; interest1: number },
   costBasisUsd = 0,
   poolAgeDays = 0,
 ): Promise<PnlAttribution> {
@@ -205,40 +258,72 @@ export async function computePnl(
   const dbt1 = Number(formatUnits(state.vaultDebt1, state.asset1Decimals));
   const navUsd = (dep0 - dbt0) * currentPrice0 + (dep1 - dbt1) * currentPrice1;
 
-  // Net invested = external capital equity effect at current prices
-  const netInvestedUsd = capital.extCap0 * currentPrice0 + capital.extCap1 * currentPrice1;
+  // Cost basis: external capital valued at historical prices
+  // For capital flows, USDC ≈ $1, WETH = block price
+  const netInvestedUsd = costBasisUsd;
 
   // Total P&L
   const totalPnl = navUsd - netInvestedUsd;
 
-  // Accumulated fees and rebalancing from swap events (valued at current prices)
-  let totalFee0 = 0, totalFee1 = 0;
-  let swapRebal0 = 0, swapRebal1 = 0;
+  // Helper: get price pair at a block (USDC ≈ $1, WETH from Uniswap oracle)
+  const priceAt = (block: bigint): [number, number] => {
+    const wethPrice = blockPrices.get(block);
+    return [1, wethPrice ?? ethPrice]; // fallback to current ETH price
+  };
+
+  // Accumulated fees and rebalancing from swap events (valued at per-block prices)
+  let feesUsd = 0;
+  let swapRebalUsd = 0;
   let totalVol0 = 0, totalVol1 = 0;
   let volIn0 = 0, volIn1 = 0;
   for (const s of swaps) {
+    const [p0, p1] = priceAt(s.blockNumber);
     const f0 = Number(formatUnits(s.fee0, state.asset0Decimals));
     const f1 = Number(formatUnits(s.fee1, state.asset1Decimals));
     const in0 = Number(formatUnits(s.amount0In, state.asset0Decimals));
     const out0 = Number(formatUnits(s.amount0Out, state.asset0Decimals));
     const in1 = Number(formatUnits(s.amount1In, state.asset1Decimals));
     const out1 = Number(formatUnits(s.amount1Out, state.asset1Decimals));
-    totalFee0 += f0;
-    totalFee1 += f1;
-    swapRebal0 += (in0 - out0);
-    swapRebal1 += (in1 - out1);
+    feesUsd += f0 * p0 + f1 * p1;
+    swapRebalUsd += (in0 - out0) * p0 + (in1 - out1) * p1;
     totalVol0 += in0 + out0;
     totalVol1 += in1 + out1;
     volIn0 += in0;
     volIn1 += in1;
   }
-  const feesUsd = totalFee0 * currentPrice0 + totalFee1 * currentPrice1;
-  const swapRebalUsd = swapRebal0 * currentPrice0 + swapRebal1 * currentPrice1;
-  const extRebalUsd = capital.extRebal0 * currentPrice0 + capital.extRebal1 * currentPrice1;
+
+  // External rebalancing valued at per-block prices
+  // Classify flows same way as buildCapitalSnapshot
+  const byTx = new Map<string, VaultFlow[]>();
+  for (const f of nonSwapFlows) {
+    const arr = byTx.get(f.transactionHash) ?? [];
+    arr.push(f);
+    byTx.set(f.transactionHash, arr);
+  }
+  let extRebalUsd = 0;
+  for (const [, txEvents] of byTx) {
+    const vaults = new Set(txEvents.map(e => e.vaultIndex));
+    const ops = new Set(txEvents.map(e => e.operation));
+    const isRebal = vaults.size > 1 ||
+      ((ops.has("deposit") || ops.has("withdraw")) && (ops.has("borrow") || ops.has("repay")));
+    if (!isRebal) continue;
+    for (const ev of txEvents) {
+      const [p0, p1] = priceAt(ev.blockNumber);
+      const decimals = ev.vaultIndex === 0 ? state.asset0Decimals : state.asset1Decimals;
+      const amount = Number(formatUnits(ev.assets, decimals));
+      const price = ev.vaultIndex === 0 ? p0 : p1;
+      extRebalUsd += amount * equitySign(ev.operation) * price;
+    }
+  }
+
+  // Volume in current USD (for display)
   const volumeUsd = volIn0 * currentPrice0 + volIn1 * currentPrice1;
 
-  // Interest = residual after all tracked components
-  const interestUsd = totalPnl - feesUsd - swapRebalUsd - extRebalUsd;
+  // Interest: exact per-asset computation, valued at current prices
+  const interestUsd = interest.interest0 * currentPrice0 + interest.interest1 * currentPrice1;
+
+  // Mark-to-market: residual captures price changes on accumulated positions
+  const markToMarketUsd = totalPnl - feesUsd - swapRebalUsd - extRebalUsd - interestUsd;
 
   const returnPct = netInvestedUsd > 0 ? totalPnl / netInvestedUsd : 0;
 
@@ -251,6 +336,7 @@ export async function computePnl(
     swapRebalUsd,
     extRebalUsd,
     interestUsd,
+    markToMarketUsd,
     returnPct,
     currentPrices: { asset0: currentPrice0, asset1: currentPrice1 },
     flowCount: capital.capitalFlowCount,
@@ -280,16 +366,16 @@ export interface PnlTimePoint {
 }
 
 /**
- * Build a P&L time series from swap events and historical price charts.
+ * Build a P&L time series from swap events and per-block Uniswap prices.
  * Each data point corresponds to a swap event, with cumulative metrics
- * valued at the USD prices that prevailed at that time.
+ * valued at the on-chain prices that prevailed at that block.
  */
 export function buildPnlTimeSeries(
   swaps: SwapEvent[],
-  chart0: PriceChartPoint[],
-  chart1: PriceChartPoint[],
+  blockPrices: Map<bigint, number>,
   asset0Decimals: number,
   asset1Decimals: number,
+  fallbackEthPrice = 0,
 ): PnlTimePoint[] {
   const points: PnlTimePoint[] = [];
   let cumFeeUsd = 0;
@@ -299,8 +385,8 @@ export function buildPnlTimeSeries(
     const ts = s.timestamp ?? 0;
     if (ts === 0) continue; // skip swaps without timestamps
 
-    const p0 = interpolatePrice(chart0, ts);
-    const p1 = interpolatePrice(chart1, ts);
+    const p0 = 1; // USDC ≈ $1
+    const p1 = blockPrices.get(s.blockNumber) ?? fallbackEthPrice;
 
     const f0 = Number(formatUnits(s.fee0, asset0Decimals));
     const f1 = Number(formatUnits(s.fee1, asset1Decimals));
@@ -343,21 +429,22 @@ export interface TwrResult {
 /**
  * Compute time-weighted return across external capital flow events.
  * Only uses pure capital flows (not rebalancing) for TWR calculation.
+ * Uses per-block Uniswap prices for exact valuation.
  *
  * Chains sub-period returns between flows:
  *   R_i = nav_before_flow_i / nav_after_flow_{i-1} - 1
  *   TWR = Π(1 + R_i) - 1
  *
- * Position at each flow timestamp is estimated from the most recent
- * swap event's post-swap reserves, valued at interpolated DeFiLlama prices.
+ * Position at each flow is estimated from the most recent swap's
+ * post-swap reserves, valued at per-block Uniswap prices.
  */
 export function computeTwr(
   flows: VaultFlow[],
   swaps: SwapEvent[],
-  chart0: PriceChartPoint[],
-  chart1: PriceChartPoint[],
+  blockPrices: Map<bigint, number>,
   asset0Decimals: number,
   asset1Decimals: number,
+  fallbackEthPrice = 0,
 ): TwrResult | null {
   // Filter to capital-only flows (exclude rebalancing txs)
   const byTx = new Map<string, VaultFlow[]>();
@@ -378,44 +465,39 @@ export function computeTwr(
   const capitalFlows = flows.filter(f => capitalTxs.has(f.transactionHash));
   if (capitalFlows.length === 0) return null;
 
-  // Sort flows by timestamp
-  const timedFlows = capitalFlows
-    .filter(f => f.timestamp !== undefined && f.timestamp > 0)
-    .sort((a, b) => a.timestamp! - b.timestamp!);
+  // Sort flows by block number
+  const sortedFlows = [...capitalFlows].sort((a, b) =>
+    Number(a.blockNumber - b.blockNumber) || a.logIndex - b.logIndex
+  );
 
-  if (timedFlows.length === 0) return null;
+  // Sort swaps by block number for lookup
+  const sortedSwaps = [...swaps].sort((a, b) => Number(a.blockNumber - b.blockNumber));
 
-  // Sort swaps by timestamp for binary search
-  const timedSwaps = swaps
-    .filter(s => s.timestamp !== undefined && s.timestamp > 0)
-    .sort((a, b) => a.timestamp! - b.timestamp!);
+  /** Estimate NAV at a given block using most recent swap's reserves */
+  function estimateNav(block: bigint): number {
+    const p0 = 1; // USDC ≈ $1
+    const p1 = blockPrices.get(block) ?? fallbackEthPrice;
 
-  /** Estimate NAV at a given timestamp using most recent swap's reserves */
-  function estimateNav(ts: number): number {
-    const p0 = interpolatePrice(chart0, ts);
-    const p1 = interpolatePrice(chart1, ts);
-
-    // Find most recent swap before this timestamp
+    // Find most recent swap at or before this block
     let bestIdx = -1;
-    for (let i = timedSwaps.length - 1; i >= 0; i--) {
-      if (timedSwaps[i].timestamp! <= ts) { bestIdx = i; break; }
+    for (let i = sortedSwaps.length - 1; i >= 0; i--) {
+      if (sortedSwaps[i].blockNumber <= block) { bestIdx = i; break; }
     }
 
     if (bestIdx >= 0) {
-      const s = timedSwaps[bestIdx];
+      const s = sortedSwaps[bestIdx];
       const r0 = Number(formatUnits(s.reserve0, asset0Decimals));
       const r1 = Number(formatUnits(s.reserve1, asset1Decimals));
       return r0 * p0 + r1 * p1;
     }
 
-    // No prior swap — use zero (before any activity)
     return 0;
   }
 
-  /** Value a capital flow's equity effect in USD at its timestamp */
+  /** Value a capital flow's equity effect in USD at its block */
   function flowUsd(f: VaultFlow): number {
-    const p0 = interpolatePrice(chart0, f.timestamp!);
-    const p1 = interpolatePrice(chart1, f.timestamp!);
+    const p0 = 1;
+    const p1 = blockPrices.get(f.blockNumber) ?? fallbackEthPrice;
     const decimals = f.vaultIndex === 0 ? asset0Decimals : asset1Decimals;
     const amount = Number(formatUnits(f.assets, decimals));
     const price = f.vaultIndex === 0 ? p0 : p1;
@@ -426,13 +508,12 @@ export function computeTwr(
   let twrProduct = 1;
   let navAfterPrev = 0;
 
-  for (let i = 0; i < timedFlows.length; i++) {
-    const flow = timedFlows[i];
-    const navBefore = estimateNav(flow.timestamp!);
+  for (let i = 0; i < sortedFlows.length; i++) {
+    const flow = sortedFlows[i];
+    const navBefore = estimateNav(flow.blockNumber);
     const flowVal = flowUsd(flow);
 
     if (i > 0 && navAfterPrev > 0) {
-      // Sub-period return: how did NAV grow from after previous flow to before this flow
       const subReturn = navBefore / navAfterPrev;
       twrProduct *= subReturn;
     }
@@ -440,16 +521,16 @@ export function computeTwr(
     navAfterPrev = navBefore + flowVal;
   }
 
-  // Final sub-period: from last flow to now
-  const now = Math.floor(Date.now() / 1000);
-  const navNow = estimateNav(now);
-  if (navAfterPrev > 0) {
-    twrProduct *= navNow / navAfterPrev;
+  // Final sub-period: use current block price
+  const currentNav = estimateNav(sortedSwaps.length > 0 ? sortedSwaps[sortedSwaps.length - 1].blockNumber : 0n);
+  if (navAfterPrev > 0 && currentNav > 0) {
+    twrProduct *= currentNav / navAfterPrev;
   }
 
   const twr = twrProduct - 1;
-  const firstTs = timedFlows[0].timestamp!;
-  const durationDays = (now - firstTs) / 86400;
+  const firstTs = sortedFlows[0].timestamp;
+  const now = Math.floor(Date.now() / 1000);
+  const durationDays = firstTs ? (now - firstTs) / 86400 : 0;
   const annualizedReturn = durationDays > 0 && 1 + twr > 0
     ? Math.pow(1 + twr, 365 / durationDays) - 1
     : twr;

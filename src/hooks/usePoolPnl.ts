@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { formatUnits } from "viem";
 import { getClient } from "@/lib/pools/client";
-import { fetchVaultFlows, fetchBlockTimestamps } from "@/lib/pools/reads";
-import { fetchPriceChart, type PriceChartPoint } from "@/lib/pools/prices";
+import { fetchVaultFlows, fetchBlockTimestamps, fetchUniswapPriceAtBlocks } from "@/lib/pools/reads";
 import {
   buildCapitalSnapshot, computePnl, computeCostBasis, buildPnlTimeSeries, computeTwr,
+  computeVaultInterest,
   type PnlAttribution, type CapitalSnapshot, type PnlTimePoint, type TwrResult,
 } from "@/lib/pools/pnl";
 import type { PoolConfig } from "@/lib/pools/config";
@@ -17,18 +18,18 @@ interface HistoricalCache {
   capital: CapitalSnapshot;
   costBasisUsd: number;
   deployTimestamp: number;
-  flows: VaultFlow[];
-  priceChart0: PriceChartPoint[];
-  priceChart1: PriceChartPoint[];
+  nonSwapFlows: VaultFlow[];
+  allVaultEvents: VaultFlow[];
+  blockPrices: Map<bigint, number>;
   pnlTimeSeries: PnlTimePoint[];
   twrResult: TwrResult | null;
 }
 
 /**
- * Computes P&L attribution using on-chain vault events and DeFiLlama prices.
+ * Computes P&L attribution using on-chain vault events and per-block Uniswap prices.
  *
  * Single effect handles both:
- * 1. Building historical cache (vault flows, price charts, TWR) — once per pool
+ * 1. Building historical cache (vault flows, block prices, TWR) — once per pool
  * 2. Computing current P&L (fetches current prices) — on every state/swaps change
  *
  * Current P&L runs immediately with a zero-capital placeholder if the historical
@@ -70,53 +71,68 @@ export function usePoolPnl(
           const client = getClient();
           const swapTxHashes = new Set(swaps.map(s => s.transactionHash));
 
-          // Fetch independent data in parallel: vault flows, deploy block timestamp, current block
+          // Fetch deploy timestamp and current block
           const [currentBlock, deployTimestamp] = await Promise.all([
             client.getBlockNumber(),
             client.getBlock({ blockNumber: pool.deployBlock }).then(b => Number(b.timestamp)),
           ]);
 
-          // Vault flows need currentBlock; price charts need deployTimestamp — both now available
-          const [flows, priceChart0, priceChart1] = await Promise.all([
-            fetchVaultFlows(
-              client, pool, state!.supplyVault0, state!.supplyVault1,
-              pool.eulerAccount, swapTxHashes, pool.deployBlock, currentBlock,
-            ),
-            fetchPriceChart(state!.asset0 as Address, deployTimestamp),
-            fetchPriceChart(state!.asset1 as Address, deployTimestamp),
-          ]);
+          // Fetch ALL vault events (for interest calc) and non-swap events (for capital/rebal)
+          const allVaultEvents = await fetchVaultFlows(
+            client, pool, state!.supplyVault0, state!.supplyVault1,
+            pool.eulerAccount, undefined, // no swap filter → get ALL events
+            pool.deployBlock, currentBlock,
+          );
+          const nonSwapFlows = allVaultEvents.filter(
+            ev => !swapTxHashes.has(ev.transactionHash),
+          );
 
           const capital = buildCapitalSnapshot(
-            flows, state!.asset0Decimals, state!.asset1Decimals,
+            nonSwapFlows, state!.asset0Decimals, state!.asset1Decimals,
           );
 
-          const timeSeries = buildPnlTimeSeries(
-            swaps, priceChart0, priceChart1,
-            state!.asset0Decimals, state!.asset1Decimals,
-          );
+          // Collect all unique block numbers for Uniswap price lookups
+          const blockNums = new Set<bigint>();
+          for (const s of swaps) blockNums.add(s.blockNumber);
+          for (const f of nonSwapFlows) blockNums.add(f.blockNumber);
 
-          // Fetch flow block timestamps for TWR (only if flows exist)
-          const flowBlockNums = flows.map(f => f.blockNumber);
-          if (flowBlockNums.length > 0) {
-            const timestamps = await fetchBlockTimestamps(client, flowBlockNums);
-            for (const f of flows) {
-              f.timestamp = timestamps.get(f.blockNumber);
-            }
+          // Fetch per-block Uniswap prices + flow timestamps in parallel
+          const flowBlockNums = nonSwapFlows.map(f => f.blockNumber);
+          const [blockPrices, timestamps] = await Promise.all([
+            pool.uniswapPool
+              ? fetchUniswapPriceAtBlocks(
+                  client, pool.uniswapPool as Address, [...blockNums],
+                  state!.asset0Decimals, state!.asset1Decimals,
+                )
+              : Promise.resolve(new Map<bigint, number>()),
+            flowBlockNums.length > 0
+              ? fetchBlockTimestamps(client, flowBlockNums)
+              : Promise.resolve(new Map<bigint, number>()),
+          ]);
+
+          // Attach timestamps to flows (needed for TWR duration calc)
+          for (const f of nonSwapFlows) {
+            f.timestamp = timestamps.get(f.blockNumber);
           }
 
           const costBasisUsd = computeCostBasis(
-            flows, priceChart0, priceChart1,
+            nonSwapFlows, blockPrices,
+            state!.asset0Decimals, state!.asset1Decimals,
+          );
+
+          const timeSeries = buildPnlTimeSeries(
+            swaps, blockPrices,
             state!.asset0Decimals, state!.asset1Decimals,
           );
 
           const twrRes = computeTwr(
-            flows, swaps, priceChart0, priceChart1,
+            nonSwapFlows, swaps, blockPrices,
             state!.asset0Decimals, state!.asset1Decimals,
           );
 
           cacheRef.current = {
-            capital, costBasisUsd, deployTimestamp, flows, priceChart0, priceChart1,
-            pnlTimeSeries: timeSeries, twrResult: twrRes,
+            capital, costBasisUsd, deployTimestamp, nonSwapFlows, allVaultEvents,
+            blockPrices, pnlTimeSeries: timeSeries, twrResult: twrRes,
           };
 
           if (!cancelled) {
@@ -125,13 +141,30 @@ export function usePoolPnl(
           }
         }
 
-        // 2. Compute current P&L (uses cached capital or zero placeholder)
+        // 2. Compute current P&L (uses cached data or zero placeholders)
         if (cancelled) return;
         const capital = cacheRef.current?.capital ?? { extCap0: 0, extCap1: 0, extRebal0: 0, extRebal1: 0, capitalFlowCount: 0, rebalFlowCount: 0 };
         const costBasis = cacheRef.current?.costBasisUsd ?? 0;
         const deployTs = cacheRef.current?.deployTimestamp ?? 0;
         const poolAgeDays = deployTs > 0 ? (Date.now() / 1000 - deployTs) / 86400 : 0;
-        const result = await computePnl(state!, swaps, capital, costBasis, poolAgeDays);
+        const blockPrices = cacheRef.current?.blockPrices ?? new Map<bigint, number>();
+        const nonSwapFlows = cacheRef.current?.nonSwapFlows ?? [];
+        const allVaultEvents = cacheRef.current?.allVaultEvents ?? [];
+
+        // Compute exact vault interest per asset
+        const dep0 = Number(formatUnits(state!.vaultDeposit0, state!.asset0Decimals));
+        const dep1 = Number(formatUnits(state!.vaultDeposit1, state!.asset1Decimals));
+        const dbt0 = Number(formatUnits(state!.vaultDebt0, state!.asset0Decimals));
+        const dbt1 = Number(formatUnits(state!.vaultDebt1, state!.asset1Decimals));
+        const interest = computeVaultInterest(
+          allVaultEvents, dep0, dep1, dbt0, dbt1,
+          state!.asset0Decimals, state!.asset1Decimals,
+        );
+
+        const result = await computePnl(
+          state!, swaps, capital, nonSwapFlows, blockPrices,
+          interest, costBasis, poolAgeDays,
+        );
         if (!cancelled) {
           setPnl(result);
           setError(null);
