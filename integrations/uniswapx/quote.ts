@@ -118,6 +118,25 @@ export async function evaluateOrder(
   const inputToken = decoded.input.token;
   const inputAmount = resolved.inputAmount;
 
+  // Guard: malformed orders with no outputs
+  if (!decoded.outputs.length) {
+    return {
+      orderHash: apiOrder.orderHash,
+      inputToken,
+      outputToken: "0x0000000000000000000000000000000000000000" as Address,
+      inputAmount,
+      requiredOutput: 0n,
+      eulerSwapOutput: 0n,
+      grossProfit: 0n,
+      gasCost: 0n,
+      netProfit: 0n,
+      profitBps: 0,
+      withinLimits: false,
+      exclusive: false,
+      profitable: false,
+    };
+  }
+
   // All outputs must be the same token (standard for UniswapX swaps).
   // Sum all output amounts (covers fee-recipient splits).
   const outputToken = decoded.outputs[0].token;

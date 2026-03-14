@@ -2,7 +2,7 @@
 pragma solidity ^0.8.27;
 
 import "forge-std/Test.sol";
-import {UniswapXFiller, ResolvedOrder, OrderInfo, InputToken, OutputToken} from "../src/UniswapXFiller.sol";
+import {UniswapXFiller, ResolvedOrder, OrderInfo, InputToken, OutputToken, SignedOrder} from "../src/UniswapXFiller.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
 /// @dev Fork test: deploys UniswapXFiller against mainnet EulerSwap pool and V2DutchOrderReactor
@@ -52,6 +52,22 @@ contract UniswapXFillerTest is Test {
         ResolvedOrder[] memory orders = new ResolvedOrder[](0);
         vm.expectRevert(UniswapXFiller.OnlyReactor.selector);
         filler.reactorCallback(orders, _callbackData());
+    }
+
+    function test_execute_onlyOwner() public {
+        SignedOrder memory order = SignedOrder({order: "", sig: ""});
+        address notOwner = makeAddr("notOwner");
+        vm.prank(notOwner);
+        vm.expectRevert(UniswapXFiller.Unauthorized.selector);
+        filler.execute(order, _callbackData());
+    }
+
+    function test_executeBatch_onlyOwner() public {
+        SignedOrder[] memory orders = new SignedOrder[](0);
+        address notOwner = makeAddr("notOwner");
+        vm.prank(notOwner);
+        vm.expectRevert(UniswapXFiller.Unauthorized.selector);
+        filler.executeBatch(orders, _callbackData());
     }
 
     function test_reactorCallback_fills_usdc_to_weth() public {

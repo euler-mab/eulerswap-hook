@@ -25,10 +25,12 @@ export function startWebhookServer(
         return;
       }
 
-      // IP allowlist (skip if empty)
+      // IP allowlist — exact match or IPv6-mapped match (::ffff:1.2.3.4)
       if (allowedIps.length > 0) {
         const remoteIp = req.socket.remoteAddress ?? "";
-        const allowed = allowedIps.some((ip) => remoteIp.includes(ip));
+        const allowed = allowedIps.some(
+          (ip) => remoteIp === ip || remoteIp === `::ffff:${ip}`,
+        );
         if (!allowed) {
           res.writeHead(403);
           res.end();

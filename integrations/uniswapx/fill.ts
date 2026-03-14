@@ -6,7 +6,7 @@ import { encodeAbiParameters, encodeFunctionData } from "viem";
 import type { UniswapXApiOrder } from "./types";
 import { ADDRESSES } from "./types";
 
-// Reactor ABI — execute, executeWithCallback, and batch variants
+// Reactor ABI — direct execute (for inventory-based fills)
 const reactorAbi = [
   {
     name: "execute",
@@ -21,23 +21,6 @@ const reactorAbi = [
           { name: "sig", type: "bytes" },
         ],
       },
-    ],
-    outputs: [],
-  },
-  {
-    name: "executeWithCallback",
-    type: "function",
-    stateMutability: "payable",
-    inputs: [
-      {
-        name: "order",
-        type: "tuple",
-        components: [
-          { name: "order", type: "bytes" },
-          { name: "sig", type: "bytes" },
-        ],
-      },
-      { name: "callbackData", type: "bytes" },
     ],
     outputs: [],
   },
@@ -57,10 +40,31 @@ const reactorAbi = [
     ],
     outputs: [],
   },
+] as const;
+
+// Executor ABI — execute/executeBatch route through reactor with callback
+const executorAbi = [
   {
-    name: "executeBatchWithCallback",
+    name: "execute",
     type: "function",
-    stateMutability: "payable",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "order",
+        type: "tuple",
+        components: [
+          { name: "order", type: "bytes" },
+          { name: "sig", type: "bytes" },
+        ],
+      },
+      { name: "callbackData", type: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
+    name: "executeBatch",
+    type: "function",
+    stateMutability: "nonpayable",
     inputs: [
       {
         name: "orders",
@@ -76,7 +80,7 @@ const reactorAbi = [
   },
 ] as const;
 
-// ERC20 approve ABI
+// ERC20 approve/allowance ABI
 const erc20Abi = [
   {
     name: "approve",
@@ -117,7 +121,7 @@ export function encodeCallbackData(
  */
 export async function directFill(
   walletClient: WalletClient,
-  publicClient: PublicClient,
+  _publicClient: PublicClient,
   apiOrder: UniswapXApiOrder,
   reactorAddress: Address = ADDRESSES.reactorV2,
 ): Promise<Hex> {
@@ -135,25 +139,24 @@ export async function directFill(
 }
 
 /**
- * Callback fill: calls reactor.executeWithCallback() which triggers the executor contract.
+ * Callback fill: EOA calls executor.execute() → executor calls reactor → reactor callbacks executor.
  * The executor decodes callbackData to get pool address and min profit threshold.
  */
 export async function callbackFill(
   walletClient: WalletClient,
-  publicClient: PublicClient,
+  _publicClient: PublicClient,
   apiOrder: UniswapXApiOrder,
   executorAddress: Address,
   poolAddress: Address = ADDRESSES.pool,
   minProfit: bigint = 0n,
-  reactorAddress: Address = ADDRESSES.reactorV2,
 ): Promise<Hex> {
   const account = walletClient.account;
   if (!account) throw new Error("WalletClient has no account");
 
   return walletClient.writeContract({
-    address: reactorAddress,
-    abi: reactorAbi,
-    functionName: "executeWithCallback",
+    address: executorAddress,
+    abi: executorAbi,
+    functionName: "execute",
     args: [
       { order: apiOrder.encodedOrder, sig: apiOrder.signature },
       encodeCallbackData(poolAddress, minProfit),
@@ -164,17 +167,16 @@ export async function callbackFill(
 }
 
 /**
- * Batch callback fill: fills multiple orders atomically via executeBatchWithCallback.
+ * Batch callback fill: fills multiple orders atomically via executor.executeBatch().
  * Amortizes gas across orders. The executor's reactorCallback loops over all resolved orders.
  */
 export async function batchCallbackFill(
   walletClient: WalletClient,
-  publicClient: PublicClient,
+  _publicClient: PublicClient,
   apiOrders: UniswapXApiOrder[],
   executorAddress: Address,
   poolAddress: Address = ADDRESSES.pool,
   minProfit: bigint = 0n,
-  reactorAddress: Address = ADDRESSES.reactorV2,
 ): Promise<Hex> {
   const account = walletClient.account;
   if (!account) throw new Error("WalletClient has no account");
@@ -185,9 +187,9 @@ export async function batchCallbackFill(
   }));
 
   return walletClient.writeContract({
-    address: reactorAddress,
-    abi: reactorAbi,
-    functionName: "executeBatchWithCallback",
+    address: executorAddress,
+    abi: executorAbi,
+    functionName: "executeBatch",
     args: [signedOrders, encodeCallbackData(poolAddress, minProfit)],
     chain: walletClient.chain,
     account,
@@ -195,7 +197,8 @@ export async function batchCallbackFill(
 }
 
 /**
- * Simulate a callback fill via eth_call. Returns success/failure and gas estimate.
+ * Simulate a callback fill and estimate gas in a single RPC call.
+ * Uses estimateContractGas which both validates the call and returns gas used.
  */
 export async function simulateFill(
   publicClient: PublicClient,
@@ -203,34 +206,19 @@ export async function simulateFill(
   executorAddress: Address,
   poolAddress: Address = ADDRESSES.pool,
   minProfit: bigint = 0n,
-  reactorAddress: Address = ADDRESSES.reactorV2,
   fromAddress: Address,
 ): Promise<{ success: boolean; error?: string; gasEstimate?: bigint }> {
   try {
-    await publicClient.simulateContract({
-      address: reactorAddress,
-      abi: reactorAbi,
-      functionName: "executeWithCallback",
+    const gasEstimate = await publicClient.estimateContractGas({
+      address: executorAddress,
+      abi: executorAbi,
+      functionName: "execute",
       args: [
         { order: apiOrder.encodedOrder, sig: apiOrder.signature },
         encodeCallbackData(poolAddress, minProfit),
       ],
       account: fromAddress,
     });
-
-    // Get gas estimate
-    const gasEstimate = await publicClient
-      .estimateContractGas({
-        address: reactorAddress,
-        abi: reactorAbi,
-        functionName: "executeWithCallback",
-        args: [
-          { order: apiOrder.encodedOrder, sig: apiOrder.signature },
-          encodeCallbackData(poolAddress, minProfit),
-        ],
-        account: fromAddress,
-      })
-      .catch(() => undefined);
 
     return { success: true, gasEstimate };
   } catch (err) {
@@ -240,7 +228,7 @@ export async function simulateFill(
 }
 
 /**
- * Simulate a batch callback fill via eth_call.
+ * Simulate a batch callback fill and estimate gas.
  */
 export async function simulateBatchFill(
   publicClient: PublicClient,
@@ -248,7 +236,6 @@ export async function simulateBatchFill(
   executorAddress: Address,
   poolAddress: Address = ADDRESSES.pool,
   minProfit: bigint = 0n,
-  reactorAddress: Address = ADDRESSES.reactorV2,
   fromAddress: Address,
 ): Promise<{ success: boolean; error?: string; gasEstimate?: bigint }> {
   const signedOrders = apiOrders.map((o) => ({
@@ -257,23 +244,13 @@ export async function simulateBatchFill(
   }));
 
   try {
-    await publicClient.simulateContract({
-      address: reactorAddress,
-      abi: reactorAbi,
-      functionName: "executeBatchWithCallback",
+    const gasEstimate = await publicClient.estimateContractGas({
+      address: executorAddress,
+      abi: executorAbi,
+      functionName: "executeBatch",
       args: [signedOrders, encodeCallbackData(poolAddress, minProfit)],
       account: fromAddress,
     });
-
-    const gasEstimate = await publicClient
-      .estimateContractGas({
-        address: reactorAddress,
-        abi: reactorAbi,
-        functionName: "executeBatchWithCallback",
-        args: [signedOrders, encodeCallbackData(poolAddress, minProfit)],
-        account: fromAddress,
-      })
-      .catch(() => undefined);
 
     return { success: true, gasEstimate };
   } catch (err) {
@@ -284,8 +261,7 @@ export async function simulateBatchFill(
 
 /**
  * Build and sign a raw fill transaction for Flashbots bundle submission.
- * Uses encodeFunctionData + prepareTransactionRequest + signTransaction
- * to produce a signed EIP-1559 transaction hex without broadcasting.
+ * Targets the executor contract (not the reactor directly).
  */
 export async function buildSignedFillTx(
   walletClient: WalletClient,
@@ -294,29 +270,30 @@ export async function buildSignedFillTx(
   executorAddress: Address,
   poolAddress: Address = ADDRESSES.pool,
   minProfit: bigint = 0n,
-  reactorAddress: Address = ADDRESSES.reactorV2,
 ): Promise<Hex> {
   const account = walletClient.account;
   if (!account) throw new Error("WalletClient has no account");
 
   const data = encodeFunctionData({
-    abi: reactorAbi,
-    functionName: "executeWithCallback",
+    abi: executorAbi,
+    functionName: "execute",
     args: [
       { order: apiOrder.encodedOrder, sig: apiOrder.signature },
       encodeCallbackData(poolAddress, minProfit),
     ],
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- viem's strict generics
+  // viem's strict generic inference requires `as any` here because the chain
+  // type parameter on walletClient doesn't propagate through prepareTransactionRequest.
+  // These casts are safe — the runtime values are correct.
   const prepared = await walletClient.prepareTransactionRequest({
-    to: reactorAddress,
+    to: executorAddress,
     data,
     account,
     chain: walletClient.chain,
-  } as any);
+  } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
 
-  return walletClient.signTransaction({ ...prepared, account } as any);
+  return walletClient.signTransaction({ ...prepared, account } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
 }
 
 /**
@@ -329,7 +306,6 @@ export async function buildSignedBatchFillTx(
   executorAddress: Address,
   poolAddress: Address = ADDRESSES.pool,
   minProfit: bigint = 0n,
-  reactorAddress: Address = ADDRESSES.reactorV2,
 ): Promise<Hex> {
   const account = walletClient.account;
   if (!account) throw new Error("WalletClient has no account");
@@ -340,20 +316,19 @@ export async function buildSignedBatchFillTx(
   }));
 
   const data = encodeFunctionData({
-    abi: reactorAbi,
-    functionName: "executeBatchWithCallback",
+    abi: executorAbi,
+    functionName: "executeBatch",
     args: [signedOrders, encodeCallbackData(poolAddress, minProfit)],
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- viem's strict generics
   const prepared = await walletClient.prepareTransactionRequest({
-    to: reactorAddress,
+    to: executorAddress,
     data,
     account,
     chain: walletClient.chain,
-  } as any);
+  } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
 
-  return walletClient.signTransaction({ ...prepared, account } as any);
+  return walletClient.signTransaction({ ...prepared, account } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
 }
 
 /**

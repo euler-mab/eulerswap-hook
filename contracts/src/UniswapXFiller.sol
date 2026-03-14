@@ -12,6 +12,17 @@ interface IEulerSwapPool {
         returns (uint256);
 }
 
+/// @dev Signed order as submitted to the reactor (encodedOrder + EIP-712 signature)
+struct SignedOrder {
+    bytes order;
+    bytes sig;
+}
+
+interface IReactor {
+    function executeWithCallback(SignedOrder calldata order, bytes calldata callbackData) external payable;
+    function executeBatchWithCallback(SignedOrder[] calldata orders, bytes calldata callbackData) external payable;
+}
+
 /// @dev Minimal struct from UniswapX ReactorStructs.sol
 struct ResolvedOrder {
     OrderInfo info;
@@ -72,6 +83,18 @@ contract UniswapXFiller {
     /// @notice Approve a token to the reactor. Call once per token before filling.
     function approveToken(address token) external onlyOwner {
         IERC20(token).forceApprove(reactor, type(uint256).max);
+    }
+
+    /// @notice Fill a single order. EOA calls this → executor calls reactor → reactor callbacks executor.
+    /// @param order The signed order (encodedOrder + signature)
+    /// @param callbackData ABI-encoded (address pool, uint256 minProfit)
+    function execute(SignedOrder calldata order, bytes calldata callbackData) external onlyOwner {
+        IReactor(reactor).executeWithCallback(order, callbackData);
+    }
+
+    /// @notice Fill multiple orders atomically. Amortizes gas across orders.
+    function executeBatch(SignedOrder[] calldata orders, bytes calldata callbackData) external onlyOwner {
+        IReactor(reactor).executeBatchWithCallback(orders, callbackData);
     }
 
     /// @notice Called by the reactor during executeWithCallback.

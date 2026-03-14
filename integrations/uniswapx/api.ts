@@ -21,6 +21,9 @@ export async function fetchOpenOrders(chainId = 1): Promise<UniswapXApiOrder[]> 
   const res = await fetch(url);
   if (!res.ok) throw new Error(`UniswapX API ${res.status}: ${res.statusText}`);
   const data = (await res.json()) as UniswapXApiResponse;
+  if (!Array.isArray(data?.orders)) {
+    throw new Error(`Invalid API response: expected orders array, got ${typeof data?.orders}`);
+  }
   return data.orders;
 }
 
@@ -46,8 +49,13 @@ export function filterForPool(
   });
 }
 
-/** Decode V2DutchOrder from API encodedOrder bytes */
-export function decodeV2DutchOrder(encodedOrder: Hex): V2DutchOrder {
+/** Decode V2DutchOrder from API encodedOrder bytes.
+ * Verifies the decoded reactor address matches the expected V2DutchOrderReactor
+ * to catch silent ABI mismatches (wrong struct layout → garbage addresses). */
+export function decodeV2DutchOrder(
+  encodedOrder: Hex,
+  expectedReactor: Address = ADDRESSES.reactorV2,
+): V2DutchOrder {
   const [decoded] = decodeAbiParameters(V2_DUTCH_ORDER_ABI, encodedOrder);
   const d = decoded as {
     info: {
@@ -76,6 +84,15 @@ export function decodeV2DutchOrder(encodedOrder: Hex): V2DutchOrder {
     };
     cosignature: Hex;
   };
+
+  // Sanity check: the decoded reactor must match expected.
+  // If this fails, the ABI tuple layout is wrong and all fields are garbage.
+  if (d.info.reactor.toLowerCase() !== expectedReactor.toLowerCase()) {
+    throw new Error(
+      `ABI decode mismatch: expected reactor ${expectedReactor}, got ${d.info.reactor}. ` +
+      `V2_DUTCH_ORDER_ABI may be out of sync with UniswapX.`,
+    );
+  }
 
   return {
     info: d.info,

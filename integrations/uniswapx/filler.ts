@@ -84,6 +84,8 @@ const WEBHOOK_PORT = process.env.WEBHOOK_PORT
   ? parseInt(process.env.WEBHOOK_PORT)
   : undefined;
 
+const TX_CONFIRMATION_TIMEOUT = 120_000; // 2 minutes
+
 const client = createPublicClient({
   chain: mainnet,
   transport: http(RPC_URL),
@@ -129,6 +131,24 @@ class RateLimiter {
 
 const rateLimiter = new RateLimiter(6, 1000); // UniswapX API: 6 req/s
 
+// ---- Fill serialization (Fix 4: nonce mutex) ----
+
+/**
+ * Serializes fill submissions to prevent nonce collisions.
+ * Without this, concurrent fills from poll + webhook could get the same nonce
+ * from prepareTransactionRequest, causing one to fail.
+ */
+let fillChain: Promise<void> = Promise.resolve();
+
+function serializeFill<T>(fn: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    fillChain = fillChain.then(
+      () => fn().then(resolve, reject),
+      () => fn().then(resolve, reject), // continue chain even if prior fill failed
+    );
+  });
+}
+
 // ---- State ----
 
 /** Tracks seen orders with their deadline for eviction */
@@ -139,6 +159,7 @@ let totalOrdersSeen = 0;
 let totalMatchingOrders = 0;
 let totalProfitable = 0;
 let cycleCount = 0;
+let consecutiveErrors = 0; // for exponential backoff
 
 /** Evict expired entries from seenOrders to prevent unbounded growth */
 function evictStaleOrders() {
@@ -256,7 +277,8 @@ async function evaluateAndFill(apiOrders: UniswapXApiOrder[]) {
   }
 
   if (profitable.length > 0 && LIVE) {
-    await executeFills(profitable);
+    // Serialize fills to prevent nonce collisions from concurrent poll + webhook
+    await serializeFill(() => executeFills(profitable));
   }
 }
 
@@ -281,7 +303,7 @@ async function executeFills(
   for (const f of fills) pendingFills.add(f.order.orderHash);
 
   try {
-    // Simulate first
+    // Simulate first (targets executor contract, single RPC call)
     const sim =
       orders.length === 1
         ? await simulateFill(
@@ -290,7 +312,6 @@ async function executeFills(
             EXECUTOR_ADDRESS,
             ADDRESSES.pool,
             0n,
-            ADDRESSES.reactorV2,
             fillerAddress,
           )
         : await simulateBatchFill(
@@ -299,7 +320,6 @@ async function executeFills(
             EXECUTOR_ADDRESS,
             ADDRESSES.pool,
             0n,
-            ADDRESSES.reactorV2,
             fillerAddress,
           );
 
@@ -308,12 +328,17 @@ async function executeFills(
       return;
     }
 
-    // Feed actual gas back into adaptive estimator
+    // Feed actual gas back into adaptive estimator (Fix 5: normalize for batch)
     if (sim.gasEstimate) {
       const prevEstimate = gasEstimator.estimate;
-      gasEstimator.update(sim.gasEstimate);
+      // For batch fills, normalize gas per order so the estimator
+      // tracks single-order gas cost (used for per-order profitability).
+      const perOrderGas = orders.length > 1
+        ? sim.gasEstimate / BigInt(orders.length)
+        : sim.gasEstimate;
+      gasEstimator.update(perOrderGas);
       console.log(
-        `  SIM OK (gas: ${sim.gasEstimate}, est: ${prevEstimate}→${gasEstimator.estimate}, n=${gasEstimator.samples}) — submitting fill...`,
+        `  SIM OK (gas: ${sim.gasEstimate}${orders.length > 1 ? ` (${perOrderGas}/order)` : ""}, est: ${prevEstimate}→${gasEstimator.estimate}, n=${gasEstimator.samples}) — submitting fill...`,
       );
     } else {
       console.log(`  SIM OK (gas: unknown) — submitting fill...`);
@@ -350,6 +375,8 @@ async function executeFills(
       console.log(
         `  BUNDLE SUBMITTED: ${bundle.bundleHash} (target: ${currentBlock + 1n}+)`,
       );
+      // Bundle inclusion is best-effort — no on-chain confirmation available.
+      // The bundle either lands in block+1/+2 or expires silently (zero gas cost).
     } else {
       // Non-bundle mode: submit via wallet client RPC (Protect or standard).
       const txHash =
@@ -371,7 +398,25 @@ async function executeFills(
               0n,
             );
 
-      console.log(`  FILLED: ${txHash}`);
+      console.log(`  TX SENT: ${txHash} — waiting for confirmation...`);
+
+      // Fix 6: Wait for confirmation to track success/failure
+      try {
+        const receipt = await client.waitForTransactionReceipt({
+          hash: txHash,
+          timeout: TX_CONFIRMATION_TIMEOUT,
+        });
+        if (receipt.status === "success") {
+          const gasCost = receipt.gasUsed * receipt.effectiveGasPrice;
+          console.log(
+            `  CONFIRMED: ${txHash} block=${receipt.blockNumber} gas=${receipt.gasUsed} cost=${(Number(gasCost) / 1e18).toFixed(6)} ETH`,
+          );
+        } else {
+          console.log(`  REVERTED: ${txHash} block=${receipt.blockNumber}`);
+        }
+      } catch {
+        console.log(`  TIMEOUT: ${txHash} — confirmation not received within ${TX_CONFIRMATION_TIMEOUT / 1000}s`);
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -387,6 +432,8 @@ async function poll() {
   cycleCount++;
   try {
     const allOrders = await fetchOpenOrders(1);
+    consecutiveErrors = 0; // reset backoff on success
+
     const matching = filterForPool(allOrders);
 
     // Count new orders and track with expiry for eviction
@@ -422,6 +469,14 @@ async function poll() {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[${ts()}] poll error: ${msg}`);
+
+    // Fix 7: Exponential backoff on consecutive errors (caps at ~30s)
+    consecutiveErrors++;
+    if (consecutiveErrors > 1) {
+      const backoffMs = Math.min(1000 * 2 ** (consecutiveErrors - 1), 30_000);
+      console.log(`  backing off ${backoffMs}ms (${consecutiveErrors} consecutive errors)`);
+      await new Promise((r) => setTimeout(r, backoffMs));
+    }
   }
 }
 
