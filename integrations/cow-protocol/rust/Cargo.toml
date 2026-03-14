@@ -1,0 +1,13 @@
+[workspace]
+members = ["crates/euler-swap", "crates/euler-swap-tests"]
+resolver = "2"
+
+[workspace.dependencies]
+alloy = { version = "1.7", features = ["full", "provider-anvil-node"] }
+alloy-primitives = "1.5"
+alloy-sol-types = "1.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+eyre = "0.6"
+tracing = "0.1"

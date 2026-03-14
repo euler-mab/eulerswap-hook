@@ -1,0 +1,14 @@
+[package]
+name = "euler-swap-tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+euler-swap = { path = "../euler-swap" }
+alloy = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-sol-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+eyre = { workspace = true }
