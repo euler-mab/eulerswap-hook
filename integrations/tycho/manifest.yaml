@@ -9,6 +9,7 @@ constants:
     - BuySide
     - PriceFunction
     - MarginalPrice
+    - HardLimits
 
 contract: EulerSwapAdapter.sol
 

@@ -60,11 +60,12 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
 
     function test_getCapabilities() public {
         Capability[] memory caps = adapter.getCapabilities(POOL_ID, USDC, WETH);
-        assertEq(caps.length, 4);
+        assertEq(caps.length, 5);
         assertEq(uint256(caps[0]), uint256(Capability.SellOrder));
         assertEq(uint256(caps[1]), uint256(Capability.BuyOrder));
         assertEq(uint256(caps[2]), uint256(Capability.PriceFunction));
         assertEq(uint256(caps[3]), uint256(Capability.MarginalPrice));
+        assertEq(uint256(caps[4]), uint256(Capability.HardLimits));
     }
 
     // ─── getLimits ───────────────────────────────────────────────────────
@@ -208,5 +209,15 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
     function test_swap_zero_amount() public {
         Trade memory trade = adapter.swap(POOL_ID, USDC, WETH, OrderSide.Sell, 0);
         assertEq(trade.calculatedAmount, 0, "zero input should yield zero output");
+    }
+
+    function test_swap_beyond_limit_reverts_unavailable() public {
+        // Attempt to sell far beyond pool limits — should revert with Unavailable
+        uint256 hugeAmount = 1_000_000_000e6; // 1 billion USDC
+        deal(USDC, address(this), hugeAmount);
+        IERC20(USDC).approve(address(adapter), hugeAmount);
+
+        vm.expectRevert(abi.encodeWithSelector(Unavailable.selector, "EulerSwap: quote failed for sell"));
+        adapter.swap(POOL_ID, USDC, WETH, OrderSide.Sell, hugeAmount);
     }
 }

@@ -116,11 +116,12 @@ contract EulerSwapAdapter is ISwapAdapter {
         override
         returns (Capability[] memory capabilities)
     {
-        capabilities = new Capability[](4);
+        capabilities = new Capability[](5);
         capabilities[0] = Capability.SellOrder;
         capabilities[1] = Capability.BuyOrder;
         capabilities[2] = Capability.PriceFunction;
         capabilities[3] = Capability.MarginalPrice;
+        capabilities[4] = Capability.HardLimits;
     }
 
     /// @inheritdoc ISwapAdapter
@@ -152,7 +153,12 @@ contract EulerSwapAdapter is ISwapAdapter {
 
         if (side == OrderSide.Sell) {
             // Exact input: specifiedAmount of sellToken -> ? buyToken
-            uint256 amountOut = pool.computeQuote(sellToken, buyToken, specifiedAmount, true);
+            uint256 amountOut;
+            try pool.computeQuote(sellToken, buyToken, specifiedAmount, true) returns (uint256 out) {
+                amountOut = out;
+            } catch {
+                revert Unavailable("EulerSwap: quote failed for sell");
+            }
 
             // Gas measurement covers only transfer + swap (excludes quote computation)
             uint256 gasBefore = gasleft();
@@ -166,7 +172,12 @@ contract EulerSwapAdapter is ISwapAdapter {
             trade.calculatedAmount = amountOut;
         } else {
             // Exact output: ? sellToken -> specifiedAmount of buyToken
-            uint256 amountIn = pool.computeQuote(sellToken, buyToken, specifiedAmount, false);
+            uint256 amountIn;
+            try pool.computeQuote(sellToken, buyToken, specifiedAmount, false) returns (uint256 inp) {
+                amountIn = inp;
+            } catch {
+                revert Unavailable("EulerSwap: quote failed for buy");
+            }
 
             uint256 gasBefore = gasleft();
             IERC20(sellToken).safeTransferFrom(msg.sender, poolAddr, amountIn);
