@@ -116,12 +116,21 @@ const rateLimiter = new RateLimiter(6, 1000); // UniswapX API: 6 req/s
 
 // ---- State ----
 
-const seenOrders = new Set<string>();
+/** Tracks seen orders with their deadline for eviction */
+const seenOrders = new Map<string, number>(); // hash -> deadline (unix seconds)
 const pendingFills = new Set<string>();
 let totalOrdersSeen = 0;
 let totalMatchingOrders = 0;
 let totalProfitable = 0;
 let cycleCount = 0;
+
+/** Evict expired entries from seenOrders to prevent unbounded growth */
+function evictStaleOrders() {
+  const now = Math.floor(Date.now() / 1000);
+  for (const [hash, deadline] of seenOrders) {
+    if (deadline < now) seenOrders.delete(hash);
+  }
+}
 
 // ---- Evaluate & Fill ----
 
@@ -130,6 +139,18 @@ let cycleCount = 0;
  * Shared by both poll loop and webhook handler.
  */
 async function evaluateAndFill(apiOrders: UniswapXApiOrder[]) {
+  // Skip evaluation entirely when gas is too expensive
+  if (LIVE) {
+    try {
+      const gasPrice = await client.getGasPrice();
+      const gasPriceGwei = Number(gasPrice / 1_000_000_000n);
+      if (gasPriceGwei > MAX_GAS_GWEI) {
+        console.log(`  gas ${gasPriceGwei} gwei > max ${MAX_GAS_GWEI} — skipping fills`);
+        return;
+      }
+    } catch {}
+  }
+
   const profitable: { order: UniswapXApiOrder; quote: QuoteResult }[] = [];
 
   for (const apiOrder of apiOrders) {
@@ -213,6 +234,11 @@ async function executeFills(
     );
 
     // Submit fill
+    // When FLASHBOTS_AUTH_KEY is set, the wallet client is configured with
+    // FLASHBOTS_RPC_URL (Flashbots Protect) which provides MEV protection.
+    // For full bundle submission (zero gas on failure), use flashbots.ts directly
+    // with a raw signed transaction — requires building tx manually via
+    // encodeFunctionData + signTransaction + submitBundleWithRedundancy.
     const txHash =
       orders.length === 1
         ? await callbackFill(
@@ -249,16 +275,21 @@ async function poll() {
     const allOrders = await fetchOpenOrders(1);
     const matching = filterForPool(allOrders);
 
-    // Count new orders
+    // Count new orders and track with expiry for eviction
+    const now = Math.floor(Date.now() / 1000);
     let newOrders = 0;
     for (const order of matching) {
       if (!seenOrders.has(order.orderHash)) {
-        seenOrders.add(order.orderHash);
+        // Orders typically expire within 2 minutes; evict after 5 minutes
+        seenOrders.set(order.orderHash, now + 300);
         newOrders++;
         totalMatchingOrders++;
       }
     }
     totalOrdersSeen += allOrders.length;
+
+    // Periodically evict expired orders to prevent unbounded memory growth
+    if (cycleCount % 100 === 0) evictStaleOrders();
 
     if (matching.length === 0) {
       if (cycleCount <= 3 || cycleCount % 30 === 0) {

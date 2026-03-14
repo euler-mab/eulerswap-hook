@@ -97,11 +97,14 @@ contract UniswapXFiller {
         address tokenOut = order.outputs[0].token;
         uint256 requiredOutput = order.outputs[0].amount;
 
+        // Get quote before transfer (avoids stale-state if pool changes mid-block)
+        uint256 amountOut = IEulerSwapPool(pool).computeQuote(tokenIn, tokenOut, amountIn, true);
+
+        // Track pre-swap balance for accurate per-order profit check in batch fills
+        uint256 balBefore = IERC20(tokenOut).balanceOf(address(this));
+
         // Transfer input tokens to EulerSwap pool
         IERC20(tokenIn).safeTransfer(pool, amountIn);
-
-        // Get quote for exact input
-        uint256 amountOut = IEulerSwapPool(pool).computeQuote(tokenIn, tokenOut, amountIn, true);
 
         // Execute swap — no callback data (pool reads its balance for input)
         if (tokenIn < tokenOut) {
@@ -112,9 +115,10 @@ contract UniswapXFiller {
             IEulerSwapPool(pool).swap(amountOut, 0, address(this), "");
         }
 
-        // Verify minimum profit
-        uint256 outputBal = IERC20(tokenOut).balanceOf(address(this));
-        if (outputBal < requiredOutput + minProfit) revert InsufficientProfit();
+        // Verify minimum profit using balance delta (not total balance)
+        // Prevents cross-subsidy between orders in batch fills
+        uint256 received = IERC20(tokenOut).balanceOf(address(this)) - balBefore;
+        if (received < requiredOutput + minProfit) revert InsufficientProfit();
 
         // Reactor will now pull required output via transferFrom.
         // Any excess output stays in this contract as profit.

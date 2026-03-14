@@ -36,9 +36,17 @@ export function startWebhookServer(
         }
       }
 
-      // Parse body
+      // Parse body (cap at 1MB to prevent memory abuse)
+      const MAX_BODY = 1024 * 1024;
       let body = "";
-      for await (const chunk of req) body += chunk;
+      for await (const chunk of req) {
+        body += chunk;
+        if (body.length > MAX_BODY) {
+          res.writeHead(413);
+          res.end("payload too large");
+          return;
+        }
+      }
 
       try {
         const payload = JSON.parse(body);
