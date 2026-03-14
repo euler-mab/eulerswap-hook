@@ -1,0 +1,151 @@
+{
+  "_comment": "Test vectors generated from mainnet EulerSwap USDC/WETH pool at block 24655259",
+  "_generated": "2026-03-14",
+
+  "pool": "0x4311031739918Aba578C3C667DA3028A12Ce28A8",
+  "block": 24655259,
+  "asset0": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  "asset0Symbol": "USDC",
+  "asset0Decimals": 6,
+  "asset1": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+  "asset1Symbol": "WETH",
+  "asset1Decimals": 18,
+
+  "state": {
+    "reserve0": "633609943779",
+    "reserve1": "296143607353420043666",
+    "status": 1,
+    "dynamicParams": {
+      "equilibriumReserve0": "633609943779",
+      "equilibriumReserve1": "296143607353420043666",
+      "minReserve0": "618339990714",
+      "minReserve1": "289006568187529812689",
+      "priceX": "999989200000",
+      "priceY": "2064",
+      "concentrationX": "0",
+      "concentrationY": "0",
+      "fee0": "0",
+      "fee1": "0",
+      "expiration": "1775342747",
+      "swapHookedOperations": 6,
+      "swapHook": "0x7bb638b9842eA4275901aafB2e34943d9C2Fe4FB"
+    },
+    "_note": "fee0/fee1 are 0 because fees are determined dynamically by the hook (swapHookedOperations & GET_FEE = true)"
+  },
+
+  "limits": {
+    "WETH_to_USDC": {
+      "limitIn": "7588279168145243908",
+      "limitOut": "15269953064"
+    },
+    "USDC_to_WETH": {
+      "limitIn": "15103506353",
+      "limitOut": "7137039165890230976"
+    }
+  },
+
+  "quotes": {
+    "exactIn": [
+      {
+        "tokenIn": "WETH",
+        "tokenOut": "USDC",
+        "amountIn": "100000000000000000",
+        "expectedOut": "206133102",
+        "description": "0.1 WETH -> ~206 USDC"
+      },
+      {
+        "tokenIn": "WETH",
+        "tokenOut": "USDC",
+        "amountIn": "1000000000000000000",
+        "expectedOut": "2055313102",
+        "description": "1 WETH -> ~2055 USDC"
+      },
+      {
+        "tokenIn": "WETH",
+        "tokenOut": "USDC",
+        "amountIn": "5000000000000000000",
+        "expectedOut": "10144932400",
+        "description": "5 WETH -> ~10145 USDC"
+      },
+      {
+        "tokenIn": "WETH",
+        "tokenOut": "USDC",
+        "amountIn": "10000000000000000000",
+        "expectedOut": "REVERT:SwapLimitExceeded",
+        "description": "10 WETH -> reverts (exceeds limits)"
+      },
+      {
+        "tokenIn": "USDC",
+        "tokenOut": "WETH",
+        "amountIn": "100000000",
+        "expectedOut": "48413217222579490",
+        "description": "100 USDC -> ~0.0484 WETH"
+      },
+      {
+        "tokenIn": "USDC",
+        "tokenOut": "WETH",
+        "amountIn": "1000000000",
+        "expectedOut": "483420909396946239",
+        "description": "1000 USDC -> ~0.483 WETH"
+      },
+      {
+        "tokenIn": "USDC",
+        "tokenOut": "WETH",
+        "amountIn": "5000000000",
+        "expectedOut": "2401424333173785405",
+        "description": "5000 USDC -> ~2.401 WETH"
+      },
+      {
+        "tokenIn": "USDC",
+        "tokenOut": "WETH",
+        "amountIn": "10000000000",
+        "expectedOut": "4764215708395598837",
+        "description": "10000 USDC -> ~4.764 WETH"
+      }
+    ],
+    "exactOut": [
+      {
+        "tokenIn": "WETH",
+        "tokenOut": "USDC",
+        "amountOut": "100000000",
+        "expectedIn": "48504216840618040",
+        "description": "100 USDC out <- ~0.0485 WETH in"
+      },
+      {
+        "tokenIn": "WETH",
+        "tokenOut": "USDC",
+        "amountOut": "1000000000",
+        "expectedIn": "485732227036871268",
+        "description": "1000 USDC out <- ~0.486 WETH in"
+      },
+      {
+        "tokenIn": "WETH",
+        "tokenOut": "USDC",
+        "amountOut": "5000000000",
+        "expectedIn": "2444115304557395719",
+        "description": "5000 USDC out <- ~2.444 WETH in"
+      },
+      {
+        "tokenIn": "USDC",
+        "tokenOut": "WETH",
+        "amountOut": "100000000000000000",
+        "expectedIn": "206591157",
+        "description": "0.1 WETH out <- ~206.6 USDC in"
+      },
+      {
+        "tokenIn": "USDC",
+        "tokenOut": "WETH",
+        "amountOut": "1000000000000000000",
+        "expectedIn": "2072211284",
+        "description": "1 WETH out <- ~2072 USDC in"
+      },
+      {
+        "tokenIn": "USDC",
+        "tokenOut": "WETH",
+        "amountOut": "5000000000000000000",
+        "expectedIn": "10503406194",
+        "description": "5 WETH out <- ~10503 USDC in"
+      }
+    ]
+  }
+}
