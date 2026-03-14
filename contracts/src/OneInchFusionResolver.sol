@@ -50,7 +50,6 @@ contract OneInchFusionResolver {
     error OnlyLOP();
     error NotTaker();
     error InsufficientProfit();
-    error SettleFailed();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -142,6 +141,12 @@ contract OneInchFusionResolver {
     function withdrawAll(address token, address to) external onlyOwner {
         uint256 bal = IERC20(token).balanceOf(address(this));
         if (bal > 0) IERC20(token).safeTransfer(to, bal);
+    }
+
+    /// @notice Withdraw native ETH (e.g. from WETH unwrapping)
+    function withdrawETH(uint256 amount, address payable to) external onlyOwner {
+        (bool success,) = to.call{value: amount}("");
+        require(success);
     }
 
     /// @notice Allow receiving ETH (for WETH unwrapping if needed)

@@ -9,8 +9,9 @@ Fill 1inch Fusion intent orders by routing through EulerSwap's USDC/WETH pool.
         ↓
   Filler bot (TypeScript)
   - Poll for USDC/WETH orders
+  - Piecewise linear auction decay resolution
   - Evaluate profitability vs EulerSwap quote
-  - Build LOP fillOrderArgs calldata
+  - Build LOP fillOrderArgs calldata with correct TakerTraits
         ↓
   OneInchFusionResolver contract (settleOrders)
         ↓
@@ -27,8 +28,18 @@ Fill 1inch Fusion intent orders by routing through EulerSwap's USDC/WETH pool.
 ## Prerequisites
 
 1. **1inch API key**: Get one at [portal.1inch.dev](https://portal.1inch.dev)
-2. **Resolver status**: Must be a registered 1inch Fusion resolver (requires staking + KYC). See [resolver docs](https://docs.1inch.io/docs/fusion-swap/becoming-a-resolver/how-to-become-resolver/).
+2. **Resolver status**: Must be a registered 1inch Fusion resolver. See [resolver docs](https://docs.1inch.io/docs/fusion-swap/becoming-a-resolver/how-to-become-resolver/). Requires either:
+   - Being in the order's whitelist (the `allowFrom` timestamp controls eligibility), OR
+   - Holding the 1inch Access Token (`0xAccE550000863572B867E661647CD7D97b72C507`)
 3. **Deployed resolver contract**: `OneInchFusionResolver.sol` from `contracts/src/`
+
+## Fee Model
+
+The current Settlement extension (V2/V3) does **not** use a Fee Bank. Fees are carved
+automatically from the `takingAmount` as a percentage (integrator fee + protocol fee +
+surplus fee). The resolver does not need to pre-deposit anything.
+
+This is different from the V1 Settlement which required 1INCH deposits to a Fee Bank contract.
 
 ## Usage
 
@@ -55,12 +66,45 @@ ONEINCH_API_KEY=xxx PRIVATE_KEY=0x... RESOLVER_ADDRESS=0x... npx tsx integration
 
 ## Contracts
 
-- **OneInchFusionResolver.sol** (`contracts/src/`): Resolver contract that implements `ITakerInteraction`. Receives maker tokens from LOP, swaps on EulerSwap, LOP pulls taker tokens.
+- **OneInchFusionResolver.sol** (`contracts/src/`): Implements `ITakerInteraction`. Receives maker tokens from LOP, swaps on EulerSwap, LOP pulls taker tokens.
 - **LOP V4**: `0x111111125421cA6dc452d289314280a0f8842A65`
-- **Settlement**: `0xfb2809a5314473e1165f6b58018e20ed8f07b840`
+- **Settlement (current)**: `0x2Ad5004c60e16E54d5007C80CE329Adde5B51Ef5`
+- **Settlement (previous)**: `0xfb2809a5314473e1165f6b58018e20ed8f07b840`
 
-## Limitations
+## Key Implementation Details
 
-- **Resolver registration required**: Must stake 1INCH and complete KYC to fill Fusion orders. A governance proposal may lower the staking threshold.
-- **TakerTraits encoding**: The `fill.ts` uses a simplified TakerTraits construction. Production fills may require the Fusion SDK for proper encoding of extension/interaction offsets.
-- **Single-order fills**: Each order is filled individually (no batching like UniswapX). The LOP's fill function processes one order at a time.
+### TakerTraits Encoding
+
+The `fill.ts` constructs `TakerTraits` matching the LOP V4's exact bit layout
+(from `TakerTraitsLib.sol`):
+
+| Bits | Field |
+|------|-------|
+| 255 | Maker amount flag (1 = fill amount is making amount) |
+| 254 | Unwrap WETH flag |
+| 253 | Skip order permit flag |
+| 252 | Use permit2 flag |
+| 251 | Args has target (first 20 bytes = delivery address) |
+| 224-247 | Extension length (24 bits) |
+| 200-223 | Interaction length (24 bits) |
+| 0-184 | Threshold amount |
+
+The `args` bytes are raw concatenation: `[extension][interaction]`,
+where interaction = `[20-byte resolver address][extraData]`.
+
+### Auction Decay
+
+Uses piecewise linear interpolation matching the 1inch Fusion SDK's
+`AuctionCalculator`. The rate bump decays through configurable points:
+
+```
+resolvedTakingAmount = baseTakingAmount * (rateBump + 10_000_000) / 10_000_000
+```
+
+Where `rateBump` is interpolated between auction points and decays to 0 at
+auction end. Points define `(delay, coefficient)` pairs for the piecewise curve.
+
+### Partial Fills
+
+When `remainingMakerAmount < makingAmount`, the `takingAmount` is scaled
+proportionally: `takingAmount * remaining / total`.

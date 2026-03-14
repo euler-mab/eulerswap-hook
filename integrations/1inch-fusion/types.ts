@@ -121,6 +121,11 @@ export const resolverAbi = [
 ] as const;
 
 // LOP V4 fillOrderArgs ABI fragment (used to construct settleOrders calldata)
+//
+// IMPORTANT: The LOP V4 Order struct uses `type Address is uint256` (Solidity UDVT).
+// UDVTs compile to their underlying type in the ABI, so all Order fields are uint256
+// in the canonical signature — NOT address. Using `address` here would produce the
+// wrong 4-byte function selector and every call would revert.
 export const lopFillOrderArgsAbi = [
   {
     name: "fillOrderArgs",
@@ -132,10 +137,10 @@ export const lopFillOrderArgsAbi = [
         type: "tuple",
         components: [
           { name: "salt", type: "uint256" },
-          { name: "maker", type: "address" },
-          { name: "receiver", type: "address" },
-          { name: "makerAsset", type: "address" },
-          { name: "takerAsset", type: "address" },
+          { name: "maker", type: "uint256" },
+          { name: "receiver", type: "uint256" },
+          { name: "makerAsset", type: "uint256" },
+          { name: "takerAsset", type: "uint256" },
           { name: "makingAmount", type: "uint256" },
           { name: "takingAmount", type: "uint256" },
           { name: "makerTraits", type: "uint256" },

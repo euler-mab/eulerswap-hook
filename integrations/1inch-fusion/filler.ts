@@ -49,6 +49,7 @@ import {
 import { mainnet } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { fetchActiveOrders, filterForPool, formatOrder } from "./api";
+import { eulerSwapAbi } from "../../src/lib/pools/abi";
 import { evaluateOrder, formatQuote, type QuoteResult } from "./quote";
 import { buildFillCalldata, submitFill, simulateFill, buildSignedFillTx } from "./fill";
 import {
@@ -136,6 +137,61 @@ function evictStaleOrders() {
   }
 }
 
+// ---- Pool Status ----
+
+const WAD = 1_000_000_000_000_000_000n; // 1e18
+
+/**
+ * Check if the pool is available for swaps.
+ * Mirrors the CoW driver's pool filtering: skip if expired, locked, fee >= 100%, or not installed.
+ * Returns null if available, or a reason string if not.
+ */
+async function checkPoolAvailable(poolAddress: Address): Promise<string | null> {
+  try {
+    const [reserves, dynamicParams, installed] = await Promise.all([
+      client.readContract({
+        address: poolAddress,
+        abi: eulerSwapAbi,
+        functionName: "getReserves",
+      }) as Promise<readonly [bigint, bigint, number]>,
+      client.readContract({
+        address: poolAddress,
+        abi: eulerSwapAbi,
+        functionName: "getDynamicParams",
+      }) as Promise<{
+        fee0: bigint;
+        fee1: bigint;
+        expiration: number;
+        [key: string]: unknown;
+      }>,
+      client.readContract({
+        address: poolAddress,
+        abi: eulerSwapAbi,
+        functionName: "isInstalled",
+      }) as Promise<boolean>,
+    ]);
+
+    const [, , status] = reserves;
+    if (status !== 1) return `pool status ${status} (expected 1=unlocked)`;
+
+    if (!installed) return "pool not installed in EVC";
+
+    const now = Math.floor(Date.now() / 1000);
+    if (dynamicParams.expiration !== 0 && dynamicParams.expiration <= now) {
+      return `pool expired at ${dynamicParams.expiration}`;
+    }
+
+    if (dynamicParams.fee0 >= WAD || dynamicParams.fee1 >= WAD) {
+      return "fee >= 100% (swap rejected)";
+    }
+
+    return null; // available
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return `pool status check failed: ${msg}`;
+  }
+}
+
 // ---- Evaluate & Fill ----
 
 async function evaluateAndFill(apiOrders: FusionApiOrder[]) {
@@ -148,6 +204,13 @@ async function evaluateAndFill(apiOrders: FusionApiOrder[]) {
         return;
       }
     } catch {}
+  }
+
+  // Check pool status before evaluating (mirrors CoW driver pattern)
+  const unavailable = await checkPoolAvailable(ADDRESSES.pool);
+  if (unavailable) {
+    console.log(`  POOL UNAVAILABLE: ${unavailable}`);
+    return;
   }
 
   const profitable: { order: FusionApiOrder; quote: QuoteResult }[] = [];

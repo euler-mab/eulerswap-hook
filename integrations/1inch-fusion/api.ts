@@ -45,57 +45,138 @@ export function filterForPool(
   });
 }
 
+// ---- Auction Decay ----
+// Reference: 1inch/fusion-sdk AuctionCalculator
+//
+// Fusion V2 uses piecewise linear interpolation on a "rate bump" that decays to 0.
+// resolvedTakingAmount = baseTakingAmount * (rateBump + RATE_BUMP_DENOMINATOR) / RATE_BUMP_DENOMINATOR
+//
+// The bump starts at `initialRateBump` and decays through `points` to 0 at auction end.
+// Each point has:
+//   - delay: seconds after PREVIOUS point (cumulative from auction start)
+//   - coefficient: the rate bump value at this point (absolute, not delta)
+// Between points, decay is linearly interpolated.
+
+const RATE_BUMP_DENOMINATOR = 10_000_000n;
+
+/**
+ * Compute the auction rate bump at a given timestamp using piecewise linear interpolation.
+ *
+ * Algorithm (from AuctionCalculator.sol / auction-calculator.ts):
+ *   1. Before auction start: return initialRateBump
+ *   2. Walk through points: if timestamp falls between two points, linearly interpolate
+ *   3. After last point: linearly decay from last point's coefficient to 0 at finishTime
+ *   4. After finishTime: return 0
+ */
+function getAuctionBump(
+  timestamp: number,
+  startTime: number,
+  duration: number,
+  initialRateBump: number,
+  points: Array<{ delay: number; coefficient: number }>,
+): bigint {
+  const finishTime = startTime + duration;
+
+  if (timestamp <= startTime) return BigInt(initialRateBump);
+  if (timestamp >= finishTime) return 0n;
+
+  let currentPointTime = startTime;
+  let currentBump = initialRateBump;
+
+  for (const point of points) {
+    const nextPointTime = currentPointTime + point.delay;
+
+    if (timestamp <= nextPointTime) {
+      // Linear interpolation between currentBump and point.coefficient
+      // Formula: ((t - t0) * r1 + (t1 - t) * r0) / (t1 - t0)
+      const elapsed = timestamp - currentPointTime;
+      const segment = nextPointTime - currentPointTime;
+      if (segment === 0) return BigInt(point.coefficient);
+      return BigInt(
+        Math.floor(
+          (elapsed * point.coefficient + (segment - elapsed) * currentBump) / segment,
+        ),
+      );
+    }
+
+    currentPointTime = nextPointTime;
+    currentBump = point.coefficient;
+  }
+
+  // After last point: linear decay from currentBump to 0 at finishTime
+  const remaining = finishTime - timestamp;
+  const tailDuration = finishTime - currentPointTime;
+  if (tailDuration === 0) return 0n;
+  return BigInt(Math.floor((remaining * currentBump) / tailDuration));
+}
+
 /**
  * Resolve Fusion order amounts at a given timestamp.
  *
- * In 1inch Fusion Dutch auctions:
- * - makingAmount is fixed (what the maker sells)
- * - takingAmount decays DOWN over time (resolver pays less as auction progresses)
+ * Uses the piecewise linear auction to compute the rate bump, then:
+ *   resolvedTakingAmount = baseTakingAmount * (bump + 10_000_000) / 10_000_000
  *
- * The API may provide `calculatedTakingAmount` pre-resolved. If not,
- * we use the auction start/end amounts with linear interpolation.
+ * For partial fills, scales takingAmount proportionally to remaining maker amount.
  */
 export function resolveAmounts(
   order: FusionApiOrder,
   timestamp: number,
 ): ResolvedFusionAmounts {
-  const makingAmount = BigInt(order.remainingMakerAmount || order.order.makingAmount);
+  const fullMakingAmount = BigInt(order.order.makingAmount);
+  const remainingMakingAmount = BigInt(order.remainingMakerAmount || order.order.makingAmount);
 
-  // If the API provides a pre-calculated taking amount, use it
+  // If the API provides a pre-calculated taking amount, use it (already accounts for decay)
   if (order.calculatedTakingAmount) {
-    return {
-      makingAmount,
-      takingAmount: BigInt(order.calculatedTakingAmount),
-    };
+    let takingAmount = BigInt(order.calculatedTakingAmount);
+    // Scale for partial fills if needed
+    if (remainingMakingAmount < fullMakingAmount && fullMakingAmount > 0n) {
+      takingAmount = (takingAmount * remainingMakingAmount) / fullMakingAmount;
+    }
+    return { makingAmount: remainingMakingAmount, takingAmount };
   }
 
-  // Otherwise resolve from auction parameters
-  const { auctionStartDate, auctionEndDate } = order;
+  // Resolve from auction parameters
   const baseTakingAmount = BigInt(order.order.takingAmount);
+  const { auctionStartDate, auctionEndDate } = order;
+  const duration = auctionEndDate - auctionStartDate;
 
-  if (!order.auctionDetails) {
-    // No auction details — use base taking amount
-    return { makingAmount, takingAmount: baseTakingAmount };
+  if (!order.auctionDetails || duration <= 0) {
+    // No auction — use base taking amount, scaled for partial fills
+    const scaled = fullMakingAmount > 0n
+      ? (baseTakingAmount * remainingMakingAmount) / fullMakingAmount
+      : baseTakingAmount;
+    return { makingAmount: remainingMakingAmount, takingAmount: scaled };
   }
 
+  // Compute initial rate bump from start/end amounts
   const startAmount = BigInt(order.auctionDetails.startAmount);
   const endAmount = BigInt(order.auctionDetails.endAmount);
 
-  if (timestamp <= auctionStartDate) {
-    return { makingAmount, takingAmount: startAmount };
+  // initialRateBump = (DENOMINATOR * startAmount / endAmount) - DENOMINATOR
+  // endAmount is the base (minimum), startAmount is the initial (with premium)
+  const initialRateBump =
+    endAmount > 0n
+      ? Number((RATE_BUMP_DENOMINATOR * startAmount) / endAmount - RATE_BUMP_DENOMINATOR)
+      : 0;
+
+  const bump = getAuctionBump(
+    timestamp,
+    auctionStartDate,
+    duration,
+    initialRateBump,
+    order.auctionDetails.points,
+  );
+
+  // resolvedTakingAmount = baseTakingAmount * (bump + DENOMINATOR) / DENOMINATOR
+  // baseTakingAmount here is the endAmount (minimum the maker accepts)
+  let takingAmount = (endAmount * (bump + RATE_BUMP_DENOMINATOR)) / RATE_BUMP_DENOMINATOR;
+
+  // Scale for partial fills
+  if (remainingMakingAmount < fullMakingAmount && fullMakingAmount > 0n) {
+    takingAmount = (takingAmount * remainingMakingAmount) / fullMakingAmount;
   }
-  if (timestamp >= auctionEndDate) {
-    return { makingAmount, takingAmount: endAmount };
-  }
 
-  // Linear decay between start and end
-  const elapsed = BigInt(timestamp - auctionStartDate);
-  const duration = BigInt(auctionEndDate - auctionStartDate);
-
-  // Taking amount decreases linearly: start - (start - end) * elapsed / duration
-  const takingAmount = startAmount - ((startAmount - endAmount) * elapsed) / duration;
-
-  return { makingAmount, takingAmount };
+  return { makingAmount: remainingMakingAmount, takingAmount };
 }
 
 /** Check if an order's auction has expired */
