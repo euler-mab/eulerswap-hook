@@ -434,24 +434,31 @@ export async function fetchSwapEvents(
   return events;
 }
 
-/** ERC4626 event ABIs for getLogs */
+/** Vault event ABIs for getLogs */
 const depositEventAbi = parseAbiItem(
   "event Deposit(address indexed caller, address indexed owner, uint256 assets, uint256 shares)"
 );
 const withdrawEventAbi = parseAbiItem(
   "event Withdraw(address indexed caller, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)"
 );
+const borrowEventAbi = parseAbiItem(
+  "event Borrow(address indexed account, uint256 assets)"
+);
+const repayEventAbi = parseAbiItem(
+  "event Repay(address indexed account, uint256 assets)"
+);
 
 /**
- * Fetch external capital flows (deposits/withdrawals) for a pool's euler account.
- * Scans ERC4626 Deposit/Withdraw events on both supply vaults, then filters out
+ * Fetch all vault events (Deposit, Withdraw, Borrow, Repay) for a pool's euler account.
+ * Scans both vaults (which serve as both supply and borrow vaults), then filters out
  * any events that occur in the same transaction as a Swap (those are pool operations).
+ * Returns non-swap events sorted by block + logIndex.
  */
 export async function fetchVaultFlows(
   client: PublicClient,
   pool: PoolConfig,
-  supplyVault0: Address,
-  supplyVault1: Address,
+  vault0: Address,
+  vault1: Address,
   eulerAccount: Address,
   swapTxHashes: Set<string>,
   fromBlock: bigint,
@@ -461,59 +468,63 @@ export async function fetchVaultFlows(
   const flows: VaultFlow[] = [];
 
   const vaults: { address: Address; index: 0 | 1 }[] = [];
-  if (supplyVault0 !== ZERO) vaults.push({ address: supplyVault0, index: 0 });
-  if (supplyVault1 !== ZERO) vaults.push({ address: supplyVault1, index: 1 });
+  if (vault0 !== ZERO) vaults.push({ address: vault0, index: 0 });
+  if (vault1 !== ZERO) vaults.push({ address: vault1, index: 1 });
 
   for (const vault of vaults) {
     let cursor = fromBlock;
     while (cursor <= toBlock) {
       const end = cursor + maxBlockRange > toBlock ? toBlock : cursor + maxBlockRange;
 
-      const [deposits, withdrawals] = await Promise.all([
+      const [deposits, withdrawals, borrows, repays] = await Promise.all([
         client.getLogs({
           address: vault.address,
           event: depositEventAbi,
           args: { owner: eulerAccount },
-          fromBlock: cursor,
-          toBlock: end,
+          fromBlock: cursor, toBlock: end,
         }),
         client.getLogs({
           address: vault.address,
           event: withdrawEventAbi,
           args: { owner: eulerAccount },
-          fromBlock: cursor,
-          toBlock: end,
+          fromBlock: cursor, toBlock: end,
+        }),
+        client.getLogs({
+          address: vault.address,
+          event: borrowEventAbi,
+          args: { account: eulerAccount },
+          fromBlock: cursor, toBlock: end,
+        }),
+        client.getLogs({
+          address: vault.address,
+          event: repayEventAbi,
+          args: { account: eulerAccount },
+          fromBlock: cursor, toBlock: end,
         }),
       ]);
 
       for (const log of deposits) {
-        if (swapTxHashes.has(log.transactionHash)) continue; // swap-induced
-        flows.push({
-          blockNumber: log.blockNumber,
-          transactionHash: log.transactionHash,
-          vaultIndex: vault.index,
-          direction: "deposit",
-          assets: log.args.assets!,
-        });
+        if (swapTxHashes.has(log.transactionHash)) continue;
+        flows.push({ blockNumber: log.blockNumber, transactionHash: log.transactionHash, logIndex: log.logIndex, vaultIndex: vault.index, operation: "deposit", assets: log.args.assets! });
       }
-
       for (const log of withdrawals) {
-        if (swapTxHashes.has(log.transactionHash)) continue; // swap-induced
-        flows.push({
-          blockNumber: log.blockNumber,
-          transactionHash: log.transactionHash,
-          vaultIndex: vault.index,
-          direction: "withdraw",
-          assets: log.args.assets!,
-        });
+        if (swapTxHashes.has(log.transactionHash)) continue;
+        flows.push({ blockNumber: log.blockNumber, transactionHash: log.transactionHash, logIndex: log.logIndex, vaultIndex: vault.index, operation: "withdraw", assets: log.args.assets! });
+      }
+      for (const log of borrows) {
+        if (swapTxHashes.has(log.transactionHash)) continue;
+        flows.push({ blockNumber: log.blockNumber, transactionHash: log.transactionHash, logIndex: log.logIndex, vaultIndex: vault.index, operation: "borrow", assets: log.args.assets! });
+      }
+      for (const log of repays) {
+        if (swapTxHashes.has(log.transactionHash)) continue;
+        flows.push({ blockNumber: log.blockNumber, transactionHash: log.transactionHash, logIndex: log.logIndex, vaultIndex: vault.index, operation: "repay", assets: log.args.assets! });
       }
 
       cursor = end + 1n;
     }
   }
 
-  // Sort by block number
-  flows.sort((a, b) => Number(a.blockNumber - b.blockNumber));
+  flows.sort((a, b) => Number(a.blockNumber - b.blockNumber) || a.logIndex - b.logIndex);
   return flows;
 }
 

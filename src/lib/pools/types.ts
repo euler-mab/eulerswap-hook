@@ -124,16 +124,24 @@ export interface SwapEvent {
   reserve1: bigint;
 }
 
-/** External capital flow (deposit or withdrawal) to/from a vault */
+/**
+ * A vault event affecting the euler account's equity.
+ * Covers all 4 operations on both vaults:
+ *   deposit  → supply increases  → equity +
+ *   withdraw → supply decreases  → equity -
+ *   borrow   → debt increases    → equity -
+ *   repay    → debt decreases    → equity +
+ */
 export interface VaultFlow {
   blockNumber: bigint;
   transactionHash: string;
+  logIndex: number;
   timestamp?: number;
-  /** Which vault (supply0 or supply1) */
+  /** Which vault (0 = asset0, 1 = asset1) */
   vaultIndex: 0 | 1;
-  /** "deposit" = capital in, "withdraw" = capital out */
-  direction: "deposit" | "withdraw";
-  /** Raw asset amount */
+  /** The vault operation type */
+  operation: "deposit" | "withdraw" | "borrow" | "repay";
+  /** Raw asset amount (always positive — sign is determined by operation) */
   assets: bigint;
 }
 

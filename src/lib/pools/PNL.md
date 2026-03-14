@@ -42,8 +42,8 @@ The remaining events represent real LP capital movements: initial deposits, top-
 ## P&L Math
 
 ```
-netInvested = Σ(external deposits) - Σ(external withdrawals)    [per asset, in human units]
-netInvestedUsd = netDeposit0 × currentPrice0 + netDeposit1 × currentPrice1
+netInvested = Σ(external capital equity effects)    [per asset, in human units]
+netInvestedUsd = extCap0 × currentPrice0 + extCap1 × currentPrice1
 
 currentNav  = (vaultDep0 - vaultDebt0) × currentPrice0
             + (vaultDep1 - vaultDebt1) × currentPrice1
@@ -52,32 +52,47 @@ totalPnl    = currentNav - netInvestedUsd
 returnPct   = totalPnl / netInvestedUsd
 ```
 
-### Three-way decomposition
-
-For each swap, the pool's net position change gives the rebalancing component:
+### Four-way decomposition
 
 ```
 Per swap:
   fee_i      = swap.fee{0,1}              (charged separately, NOT included in amountIn)
   rebal_i    = (amountIn - amountOut) per asset
 
+External rebalancing (non-swap vault events, e.g. DEX rebalancing):
+  extRebal   = Σ equity effects of non-swap, non-capital vault events
+
 Accumulated (at current prices):
   fees       = Σ(fee0) × p0 + Σ(fee1) × p1                (always positive)
-  rebalUsd   = Σ(rebal0) × p0 + Σ(rebal1) × p1            (positive or negative)
-  interest   = totalPnl - fees - rebalUsd                   (residual: net vault interest)
+  swapRebal  = Σ(rebal0) × p0 + Σ(rebal1) × p1            (IL from pool swaps)
+  extRebal   = extRebal0 × p0 + extRebal1 × p1             (cost of external rebalancing)
+  interest   = totalPnl - fees - swapRebal - extRebal       (residual: net vault interest)
 ```
 
 | Component | Meaning | Sign |
 |---|---|---|
 | **fees** | Swap fees earned by the pool | Always positive |
-| **rebal** | Net rebalancing P&L from position shifts | Positive = favorable (pool traded well), Negative = adverse selection |
-| **interest** | Net vault interest (supply earned - borrow paid) | Typically positive |
+| **swapRebal** | IL from pool swaps (adverse selection) | Usually negative |
+| **extRebal** | Cost of external rebalancing (DEX swaps) | Usually negative |
+| **interest** | Net vault interest (supply earned - borrow paid) | Small, can be +/- |
 
-Identity: `totalPnl = fees + rebal + interest`
+Identity: `totalPnl = fees + swapRebal + extRebal + interest`
 
-Note: Rebalancing is derived from actual swap history — not from a constant-product IL formula. It captures the exact position-shift P&L for whatever curve the pool uses. Unlike traditional "impermanent loss" (which is always negative), rebalancing can be positive when the pool trades favorably — e.g. selling WETH before a price drop.
+### Vault event scanning
 
-Note: All three components are valued at *current* prices (consistent with `netInvestedUsd`). This means rebalancing captures both the per-trade adverse selection and the mark-to-market effect of the accumulated position shift.
+All 4 event types are scanned on both vaults (each vault serves as both supply and borrow):
+- **Deposit** (ERC4626): supply increases → equity +
+- **Withdraw** (ERC4626): supply decreases → equity -
+- **Borrow** (EVault): debt increases → equity -
+- **Repay** (EVault): debt decreases → equity +
+
+Events in swap transactions are excluded (swap-induced). Remaining events are categorized:
+- **External capital**: txs touching only one vault with one-directional ops (pure LP deposits/withdrawals)
+- **External rebalancing**: txs touching both vaults or mixing supply+debt ops (DEX rebalancing, reconfigurations)
+
+Note: Swap rebalancing is derived from actual swap history — not from a constant-product IL formula. It captures the exact position-shift P&L for whatever curve the pool uses.
+
+Note: All components are valued at *current* prices (consistent with `netInvestedUsd`).
 
 ## P&L Time Series
 
@@ -138,7 +153,7 @@ The cache resets when `pool.address` changes.
 | Row | Content |
 |---|---|
 | **NAV** | `$905.71 +$2.31 (+0.26%) (invested $903.40, 5 flows) (+3.1% ann., 30d)` |
-| **P&L breakdown** | `fees +$3.15 · rebal +$0.62 · interest +$0.12` |
+| **P&L breakdown** | `fees +$3.15 · IL -$1.50 · ext rebal -$0.87 · interest +$0.02` |
 
 Charts tab "P&L": cumulative fees / rebalancing / net lines over time.
 

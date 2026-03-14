@@ -127,7 +127,7 @@ export function usePoolPnl(
 
         // 2. Compute current P&L (uses cached capital or zero placeholder)
         if (cancelled) return;
-        const capital = cacheRef.current?.capital ?? { netDeposit0: 0, netDeposit1: 0, flowCount: 0 };
+        const capital = cacheRef.current?.capital ?? { extCap0: 0, extCap1: 0, extRebal0: 0, extRebal1: 0, capitalFlowCount: 0, rebalFlowCount: 0 };
         const costBasis = cacheRef.current?.costBasisUsd ?? 0;
         const deployTs = cacheRef.current?.deployTimestamp ?? 0;
         const poolAgeDays = deployTs > 0 ? (Date.now() / 1000 - deployTs) / 86400 : 0;

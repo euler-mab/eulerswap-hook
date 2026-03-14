@@ -150,7 +150,7 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
       )}
 
       {/* P&L breakdown */}
-      {pnl && (pnl.feesUsd > 0 || pnl.rebalUsd !== 0 || pnl.interestUsd !== 0) && (
+      {pnl && (pnl.feesUsd > 0 || pnl.swapRebalUsd !== 0 || pnl.extRebalUsd !== 0 || pnl.interestUsd !== 0) && (
         <Row label="P&L breakdown">
           <span className="text-xs space-x-3">
             {pnl.feesUsd > 0 && (
@@ -158,9 +158,14 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
                 fees +{fmtUsd(pnl.feesUsd)}
               </span>
             )}
-            {pnl.rebalUsd !== 0 && (
-              <span className={pnl.rebalUsd >= 0 ? "text-emerald-700" : "text-red-700"}>
-                rebal {pnl.rebalUsd >= 0 ? "+" : ""}{fmtUsd(pnl.rebalUsd)}
+            {pnl.swapRebalUsd !== 0 && (
+              <span className={pnl.swapRebalUsd >= 0 ? "text-emerald-700" : "text-red-700"}>
+                IL {pnl.swapRebalUsd >= 0 ? "+" : ""}{fmtUsd(pnl.swapRebalUsd)}
+              </span>
+            )}
+            {pnl.extRebalUsd !== 0 && (
+              <span className={pnl.extRebalUsd >= 0 ? "text-emerald-700" : "text-red-700"}>
+                ext rebal {pnl.extRebalUsd >= 0 ? "+" : ""}{fmtUsd(pnl.extRebalUsd)}
               </span>
             )}
             {pnl.interestUsd !== 0 && (

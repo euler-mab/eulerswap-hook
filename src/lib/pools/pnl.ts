@@ -3,11 +3,27 @@ import type { Address } from "viem";
 import type { PoolState, SwapEvent, VaultFlow } from "./types";
 import { fetchCurrentPrices, interpolatePrice, type PriceChartPoint } from "./prices";
 
+/**
+ * Equity effect of a vault event:
+ *   deposit  → equity + (supply increases)
+ *   withdraw → equity - (supply decreases)
+ *   borrow   → equity - (debt increases)
+ *   repay    → equity + (debt decreases)
+ */
+function equitySign(op: VaultFlow["operation"]): number {
+  switch (op) {
+    case "deposit": return +1;
+    case "withdraw": return -1;
+    case "borrow": return -1;
+    case "repay": return +1;
+  }
+}
+
 /** P&L attribution breakdown, all denominated in USD */
 export interface PnlAttribution {
   /** Current NAV in USD */
   navUsd: number;
-  /** Total external capital deployed (deposits - withdrawals) in USD at current prices (= HODL NAV) */
+  /** Total external capital deployed in USD at current prices */
   netInvestedUsd: number;
   /** Value of deposited assets at the time of deposit (cost basis) */
   depositedNavUsd: number;
@@ -15,16 +31,20 @@ export interface PnlAttribution {
   totalPnl: number;
   /** Accumulated swap fees in USD (valued at current prices) */
   feesUsd: number;
-  /** Rebalancing P&L from swap position shifts (positive = favorable, negative = adverse selection) */
-  rebalUsd: number;
-  /** Net vault interest (supply earned - borrow paid), computed as residual */
+  /** Swap rebalancing P&L (IL from pool swaps, valued at current prices) */
+  swapRebalUsd: number;
+  /** External rebalancing P&L (cost of DEX rebalancing txs, valued at current prices) */
+  extRebalUsd: number;
+  /** Net vault interest (residual: totalPnl - fees - swapRebal - extRebal) */
   interestUsd: number;
   /** Return percentage: totalPnl / netInvestedUsd */
   returnPct: number;
   /** Current token prices in USD */
   currentPrices: { asset0: number; asset1: number };
-  /** Number of external capital flow events detected */
+  /** Number of external capital flow events */
   flowCount: number;
+  /** Number of external rebalancing events */
+  extRebalCount: number;
   /** Number of swaps */
   swapCount: number;
   /** Total volume per asset (raw human units) */
@@ -40,40 +60,74 @@ export interface PnlAttribution {
 
 /** Cached capital flow data (fetched once, immutable) */
 export interface CapitalSnapshot {
-  /** Net external deposits per asset (deposits - withdrawals) in raw human units */
-  netDeposit0: number;
-  netDeposit1: number;
-  /** Number of flow events */
-  flowCount: number;
+  /** Net external capital per asset (equity effect of pure capital flows) */
+  extCap0: number;
+  extCap1: number;
+  /** Net external rebalancing per asset (equity effect of rebalancing txs) */
+  extRebal0: number;
+  extRebal1: number;
+  /** Number of external capital events */
+  capitalFlowCount: number;
+  /** Number of external rebalancing events */
+  rebalFlowCount: number;
 }
 
 /**
- * Build capital snapshot from on-chain vault flow events.
- * Nets deposits and withdrawals per asset.
+ * Build capital snapshot from non-swap vault events.
+ *
+ * Categorizes events into external capital vs external rebalancing:
+ * - External capital: txs that only touch one vault with one-directional ops (pure deposits/withdrawals)
+ * - External rebalancing: txs that touch both vaults or mix supply+debt ops (DEX rebalancing, reconfigurations)
  */
 export function buildCapitalSnapshot(
   flows: VaultFlow[],
   asset0Decimals: number,
   asset1Decimals: number,
 ): CapitalSnapshot {
-  let netDeposit0 = 0;
-  let netDeposit1 = 0;
-
+  // Group by tx hash
+  const byTx = new Map<string, VaultFlow[]>();
   for (const f of flows) {
-    const decimals = f.vaultIndex === 0 ? asset0Decimals : asset1Decimals;
-    const amount = Number(formatUnits(f.assets, decimals));
-    const signed = f.direction === "deposit" ? amount : -amount;
-
-    if (f.vaultIndex === 0) netDeposit0 += signed;
-    else netDeposit1 += signed;
+    const arr = byTx.get(f.transactionHash) ?? [];
+    arr.push(f);
+    byTx.set(f.transactionHash, arr);
   }
 
-  return { netDeposit0, netDeposit1, flowCount: flows.length };
+  let extCap0 = 0, extCap1 = 0;
+  let extRebal0 = 0, extRebal1 = 0;
+  let capitalFlowCount = 0, rebalFlowCount = 0;
+
+  for (const [, txEvents] of byTx) {
+    const vaults = new Set(txEvents.map(e => e.vaultIndex));
+    const ops = new Set(txEvents.map(e => e.operation));
+    const touchesBothVaults = vaults.size > 1;
+    const mixesSupplyAndDebt =
+      (ops.has("deposit") || ops.has("withdraw")) &&
+      (ops.has("borrow") || ops.has("repay"));
+    const isRebal = touchesBothVaults || mixesSupplyAndDebt;
+
+    for (const ev of txEvents) {
+      const decimals = ev.vaultIndex === 0 ? asset0Decimals : asset1Decimals;
+      const amount = Number(formatUnits(ev.assets, decimals));
+      const signed = amount * equitySign(ev.operation);
+
+      if (isRebal) {
+        if (ev.vaultIndex === 0) extRebal0 += signed;
+        else extRebal1 += signed;
+        rebalFlowCount++;
+      } else {
+        if (ev.vaultIndex === 0) extCap0 += signed;
+        else extCap1 += signed;
+        capitalFlowCount++;
+      }
+    }
+  }
+
+  return { extCap0, extCap1, extRebal0, extRebal1, capitalFlowCount, rebalFlowCount };
 }
 
 /**
- * Compute cost basis: value of each flow at its historical USD price.
- * Returns the net deposited value in USD at the time of each deposit/withdrawal.
+ * Compute cost basis: value of each external capital flow at its historical USD price.
+ * Only includes pure capital flows (not rebalancing).
  */
 export function computeCostBasis(
   flows: VaultFlow[],
@@ -82,15 +136,32 @@ export function computeCostBasis(
   asset0Decimals: number,
   asset1Decimals: number,
 ): number {
+  // Group by tx to identify capital vs rebal (same logic as buildCapitalSnapshot)
+  const byTx = new Map<string, VaultFlow[]>();
+  for (const f of flows) {
+    const arr = byTx.get(f.transactionHash) ?? [];
+    arr.push(f);
+    byTx.set(f.transactionHash, arr);
+  }
+
+  const capitalTxs = new Set<string>();
+  for (const [txHash, txEvents] of byTx) {
+    const vaults = new Set(txEvents.map(e => e.vaultIndex));
+    const ops = new Set(txEvents.map(e => e.operation));
+    const isRebal = vaults.size > 1 ||
+      ((ops.has("deposit") || ops.has("withdraw")) && (ops.has("borrow") || ops.has("repay")));
+    if (!isRebal) capitalTxs.add(txHash);
+  }
+
   let total = 0;
   for (const f of flows) {
-    if (!f.timestamp) continue;
+    if (!f.timestamp || !capitalTxs.has(f.transactionHash)) continue;
     const decimals = f.vaultIndex === 0 ? asset0Decimals : asset1Decimals;
     const amount = Number(formatUnits(f.assets, decimals));
     const price = f.vaultIndex === 0
       ? interpolatePrice(chart0, f.timestamp)
       : interpolatePrice(chart1, f.timestamp);
-    const signed = f.direction === "deposit" ? amount : -amount;
+    const signed = amount * equitySign(f.operation);
     total += signed * price;
   }
   return total;
@@ -99,15 +170,11 @@ export function computeCostBasis(
 /**
  * Compute P&L attribution using on-chain capital flows and current prices.
  *
- * P&L = NAV - netInvested
- *     = (vaultEquity × currentPrices) - (netDeposits × currentPrices)
- *
- * Three-way attribution:
- *   fees     = swap fees earned (from event logs)
- *   rebal    = net position change from swaps (Σ(amountIn - amountOut) × price)
- *             amountIn excludes fee in EulerSwap events
- *             positive = favorable rebalancing, negative = adverse selection
- *   interest = residual: totalPnl - fees - rebal (net vault interest)
+ * 4-way decomposition:
+ *   fees       = swap fees earned (from Swap event logs)
+ *   swapRebal  = net position change from swaps (IL/adverse selection)
+ *   extRebal   = net equity change from non-swap vault operations (DEX rebalancing)
+ *   interest   = residual: totalPnl - fees - swapRebal - extRebal (net vault interest)
  */
 export async function computePnl(
   state: PoolState,
@@ -138,21 +205,17 @@ export async function computePnl(
   const dbt1 = Number(formatUnits(state.vaultDebt1, state.asset1Decimals));
   const navUsd = (dep0 - dbt0) * currentPrice0 + (dep1 - dbt1) * currentPrice1;
 
-  // Net invested = external capital in - external capital out (at current prices)
-  const netInvestedUsd = capital.netDeposit0 * currentPrice0 + capital.netDeposit1 * currentPrice1;
+  // Net invested = external capital equity effect at current prices
+  const netInvestedUsd = capital.extCap0 * currentPrice0 + capital.extCap1 * currentPrice1;
 
   // Total P&L
   const totalPnl = navUsd - netInvestedUsd;
 
   // Accumulated fees and rebalancing from swap events (valued at current prices)
-  let totalFee0 = 0;
-  let totalFee1 = 0;
-  let totalRebal0 = 0;
-  let totalRebal1 = 0;
-  let totalVol0 = 0;
-  let totalVol1 = 0;
-  let volIn0 = 0;
-  let volIn1 = 0;
+  let totalFee0 = 0, totalFee1 = 0;
+  let swapRebal0 = 0, swapRebal1 = 0;
+  let totalVol0 = 0, totalVol1 = 0;
+  let volIn0 = 0, volIn1 = 0;
   for (const s of swaps) {
     const f0 = Number(formatUnits(s.fee0, state.asset0Decimals));
     const f1 = Number(formatUnits(s.fee1, state.asset1Decimals));
@@ -162,22 +225,20 @@ export async function computePnl(
     const out1 = Number(formatUnits(s.amount1Out, state.asset1Decimals));
     totalFee0 += f0;
     totalFee1 += f1;
-    // Rebalancing = net position change from swap (amountIn excludes fee in EulerSwap)
-    totalRebal0 += (in0 - out0);
-    totalRebal1 += (in1 - out1);
-    // Volume: track total per asset (in + out) for raw display, input-only for USD
+    swapRebal0 += (in0 - out0);
+    swapRebal1 += (in1 - out1);
     totalVol0 += in0 + out0;
     totalVol1 += in1 + out1;
     volIn0 += in0;
     volIn1 += in1;
   }
   const feesUsd = totalFee0 * currentPrice0 + totalFee1 * currentPrice1;
-  const rebalUsd = totalRebal0 * currentPrice0 + totalRebal1 * currentPrice1;
-  // Volume USD: input side only to avoid double-counting
+  const swapRebalUsd = swapRebal0 * currentPrice0 + swapRebal1 * currentPrice1;
+  const extRebalUsd = capital.extRebal0 * currentPrice0 + capital.extRebal1 * currentPrice1;
   const volumeUsd = volIn0 * currentPrice0 + volIn1 * currentPrice1;
 
-  // Interest = residual (totalPnl - fees - rebalancing = net vault interest)
-  const interestUsd = totalPnl - feesUsd - rebalUsd;
+  // Interest = residual after all tracked components
+  const interestUsd = totalPnl - feesUsd - swapRebalUsd - extRebalUsd;
 
   const returnPct = netInvestedUsd > 0 ? totalPnl / netInvestedUsd : 0;
 
@@ -187,11 +248,13 @@ export async function computePnl(
     depositedNavUsd: costBasisUsd,
     totalPnl,
     feesUsd,
-    rebalUsd,
+    swapRebalUsd,
+    extRebalUsd,
     interestUsd,
     returnPct,
     currentPrices: { asset0: currentPrice0, asset1: currentPrice1 },
-    flowCount: capital.flowCount,
+    flowCount: capital.capitalFlowCount,
+    extRebalCount: capital.rebalFlowCount,
     swapCount: swaps.length,
     volume0: totalVol0,
     volume1: totalVol1,
@@ -278,7 +341,8 @@ export interface TwrResult {
 }
 
 /**
- * Compute time-weighted return across capital flow events.
+ * Compute time-weighted return across external capital flow events.
+ * Only uses pure capital flows (not rebalancing) for TWR calculation.
  *
  * Chains sub-period returns between flows:
  *   R_i = nav_before_flow_i / nav_after_flow_{i-1} - 1
@@ -295,10 +359,27 @@ export function computeTwr(
   asset0Decimals: number,
   asset1Decimals: number,
 ): TwrResult | null {
-  if (flows.length === 0) return null;
+  // Filter to capital-only flows (exclude rebalancing txs)
+  const byTx = new Map<string, VaultFlow[]>();
+  for (const f of flows) {
+    const arr = byTx.get(f.transactionHash) ?? [];
+    arr.push(f);
+    byTx.set(f.transactionHash, arr);
+  }
+  const capitalTxs = new Set<string>();
+  for (const [txHash, txEvents] of byTx) {
+    const vaults = new Set(txEvents.map(e => e.vaultIndex));
+    const ops = new Set(txEvents.map(e => e.operation));
+    const isRebal = vaults.size > 1 ||
+      ((ops.has("deposit") || ops.has("withdraw")) && (ops.has("borrow") || ops.has("repay")));
+    if (!isRebal) capitalTxs.add(txHash);
+  }
 
-  // Sort flows by timestamp (should already be sorted by block, but need timestamps)
-  const timedFlows = flows
+  const capitalFlows = flows.filter(f => capitalTxs.has(f.transactionHash));
+  if (capitalFlows.length === 0) return null;
+
+  // Sort flows by timestamp
+  const timedFlows = capitalFlows
     .filter(f => f.timestamp !== undefined && f.timestamp > 0)
     .sort((a, b) => a.timestamp! - b.timestamp!);
 
@@ -331,15 +412,14 @@ export function computeTwr(
     return 0;
   }
 
-  /** Value a flow in USD at its timestamp */
+  /** Value a capital flow's equity effect in USD at its timestamp */
   function flowUsd(f: VaultFlow): number {
     const p0 = interpolatePrice(chart0, f.timestamp!);
     const p1 = interpolatePrice(chart1, f.timestamp!);
     const decimals = f.vaultIndex === 0 ? asset0Decimals : asset1Decimals;
     const amount = Number(formatUnits(f.assets, decimals));
     const price = f.vaultIndex === 0 ? p0 : p1;
-    const signed = f.direction === "deposit" ? amount : -amount;
-    return signed * price;
+    return amount * equitySign(f.operation) * price;
   }
 
   // Chain sub-period returns
