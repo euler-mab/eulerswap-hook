@@ -292,3 +292,177 @@ Study these existing liquidity sources in the repo:
 | Balancer V2 | Medium | Multiple pool types, vault-based settlement |
 
 EulerSwap is closest to **Uniswap V2** in settlement pattern (transfer + swap) but closer to **Uniswap V3** in curve complexity (concentrated liquidity with specialized math).
+
+## Error Handling
+
+### Pool Discovery Errors
+
+| Error | Action |
+|-------|--------|
+| Registry call fails | Log warning, return empty pool list. Retry next cycle. |
+| `getAssets()` reverts for a pool | Skip that pool, log warning. |
+| `isInstalled()` returns false | Exclude pool from active set. |
+| Pool has `expiration != 0 && expiration <= now` | Exclude from active set. |
+
+### State Fetching Errors
+
+| Error | Action |
+|-------|--------|
+| `getReserves()` fails in multicall | Skip pool for this block. Use last known state if available. |
+| `getDynamicParams()` fails | Skip pool for this block. |
+| `status != 1` (locked or unactivated) | Temporarily exclude pool. |
+| `fee >= 1e18` | Pool is rejecting swaps. Exclude from liquidity. |
+
+### Quote Computation Errors
+
+| Error | Action |
+|-------|--------|
+| `computeQuote()` reverts (Phase 1) | Return `None` from `get_amount_out()`. |
+| Curve math overflow (Phase 2) | Return `None`. The Solidity returns `type(uint256).max` as overflow sentinel. |
+| Amount exceeds limits | Return `None`. Driver should pre-check against cached limits. |
+| `hook.getFee()` reverts (Phase 2) | Fall back to `fee0`/`fee1` from DynamicParams. |
+
+### Settlement Errors
+
+| Error | Action |
+|-------|--------|
+| Settlement reverts on-chain | CoW Protocol handles this — solver loses the auction but no user funds are at risk. |
+| State changed between quote and settle | Expected. Settlement validates on-chain. The solver should include a margin. |
+
+**General principle:** Never crash or block the auction loop. Skip individual pools that fail and continue with remaining liquidity. Log all errors for debugging.
+
+## Detecting Pool Properties
+
+### Hook detection
+
+```rust
+fn has_hook(params: &DynamicParams) -> bool {
+    params.swap_hook != Address::zero()
+}
+
+fn has_dynamic_fees(params: &DynamicParams) -> bool {
+    params.swap_hooked_operations & 0x02 != 0  // EULER_SWAP_HOOK_GET_FEE
+}
+
+fn has_after_swap(params: &DynamicParams) -> bool {
+    params.swap_hooked_operations & 0x04 != 0  // EULER_SWAP_HOOK_AFTER_SWAP
+}
+```
+
+### Fee resolution
+
+```rust
+fn resolve_fee(params: &DynamicParams, asset0_is_input: bool) -> u64 {
+    // If hook provides dynamic fees, fee0/fee1 in DynamicParams will be 0.
+    // The actual fee comes from hook.getFee() which must be called via eth_call.
+    // For pools without hooks, use fee0/fee1 directly.
+    if has_dynamic_fees(params) {
+        // Must call hook.getFee(asset0_is_input, reserve0, reserve1, true) via eth_call
+        // Cache result per block per direction
+        unimplemented!("call hook via eth_call")
+    } else {
+        if asset0_is_input { params.fee0 } else { params.fee1 }
+    }
+}
+```
+
+### Pool filtering
+
+```rust
+fn is_active(pool: &Pool, now: u64) -> bool {
+    let not_expired = pool.params.expiration == 0 || pool.params.expiration > now;
+    let is_unlocked = pool.reserves.status == 1;
+    not_expired && is_unlocked
+}
+```
+
+## Config Details
+
+### Full TOML schema
+
+```toml
+[[liquidity.euler-swap]]
+# Required: registry contract address for pool discovery
+registry = "0x5FcCB84363F020c0cADE052C9c654aABF932814A"
+
+# Optional: gas estimate per swap (default: 150000)
+gas-estimate = 150000
+
+# Optional: how often to refresh pool list from registry, in seconds (default: 300)
+discovery-interval = 300
+
+# Optional: specific pool addresses to always include (skip registry discovery)
+# pools = ["0x4311031739918Aba578C3C667DA3028A12Ce28A8"]
+```
+
+### Multi-chain support
+
+Use the canonical addresses from `euler-xyz/euler-interfaces`:
+
+```toml
+# Mainnet
+[[liquidity.euler-swap]]
+registry = "0x5FcCB84363F020c0cADE052C9c654aABF932814A"
+
+# Base (if deployed)
+# [[liquidity.euler-swap]]
+# registry = "0x..."
+```
+
+## Testing Guide
+
+### Unit tests (curve math, Phase 2)
+
+Use test vectors from `test-vectors.json`. For each pool:
+
+```rust
+#[test]
+fn test_usdc_weth_exact_in() {
+    let pool = load_pool_state("pool_usdc_weth");  // from test-vectors.json
+
+    // 1 WETH -> ~2055 USDC
+    let out = pool.get_amount_out(
+        USDC,
+        (WETH, U256::from(1_000_000_000_000_000_000u128)),
+    );
+    assert_eq!(out, Some(U256::from(2_055_313_102u64)));
+}
+```
+
+### Integration test (mainnet fork)
+
+```rust
+#[tokio::test]
+async fn test_pool_discovery_and_quotes() {
+    // Fork mainnet at block 24655259
+    let web3 = fork_mainnet(24655259);
+
+    // Discover pools
+    let registry = EulerSwapRegistry::new(REGISTRY_ADDR, &web3);
+    let pools = registry.pools().await.unwrap();
+    assert_eq!(pools.len(), 4);
+
+    // Compare native quotes with on-chain computeQuote
+    for pool in &pools {
+        let on_chain = pool.compute_quote(WETH, USDC, 1e18, true).await;
+        let native = curve_math::compute_quote(&pool.state, WETH, USDC, 1e18, true);
+        assert_eq!(on_chain, native);
+    }
+}
+```
+
+### Settlement simulation
+
+```rust
+#[tokio::test]
+async fn test_settlement_with_euler_swap() {
+    let web3 = fork_mainnet(24655259);
+
+    // Fund settlement contract with 1 WETH
+    // Encode interactions: transfer + swap
+    // Execute settlement
+    // Verify USDC received matches quote
+}
+```
+
+Test framework: `tokio::test` with `ethcontract`'s forking support or Foundry's `anvil --fork-url`.

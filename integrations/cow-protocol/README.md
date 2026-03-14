@@ -52,12 +52,14 @@ integrations/cow-protocol/
   abi/
     IEulerSwap.json                 # Pool interface ABI
     IEulerSwapRegistry.json         # Registry interface ABI
+    IEulerSwapHookTarget.json       # Hook interface ABI (getFee, beforeSwap, afterSwap)
   spec/
+    architecture-primer.md          # How the CoW driver works and where EulerSwap fits
     curve-math.md                   # Mathematical specification for Rust porting
     pool-fetching.md                # Pool discovery and state caching
     settlement-encoding.md          # Swap calldata encoding for CoW settlement
     cow-pr-guide.md                 # Guide for the PR to cowprotocol/services
-    test-vectors.json               # Known-good quote results for validation
+    test-vectors.json               # Known-good quote results from 3 pools (31 vectors)
 ```
 
 ## Key Pool Interface

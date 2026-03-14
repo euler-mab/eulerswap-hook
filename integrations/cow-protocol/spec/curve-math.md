@@ -87,14 +87,33 @@ else:
 
 ### Step 2: Compute shift to prevent overflow
 
+The discriminant `B² + 4AC` is computed via 512-bit multiply-then-shift. The shift amount
+must be large enough that neither `B²` nor `4AC` overflows 254 bits after shifting.
+
 ```
 shiftSquaredB = saturating_sub(bit_length(absB), 127)
 shiftFourAc   = saturating_sub(bit_length(x0 * 3814697265625), 109)
-# Note: 3814697265625 = 5e17 with trailing zeros removed
-
 shift    = max(shiftSquaredB, shiftFourAc)
 twoShift = shift << 1
 ```
+
+**Why 127?** `unsafeMulShift(absB, absB, twoShift)` computes `(absB * absB) >> twoShift`.
+The 512-bit product is 2 * bit_length(absB) bits. To fit in 254 bits after shifting:
+`2 * bit_length(absB) - twoShift ≤ 254`, so `twoShift ≥ 2 * (bit_length(absB) - 127)`.
+Since `twoShift = 2 * shift`, we need `shift ≥ bit_length(absB) - 127`.
+
+**Why 109?** `4AC = (cx * (1e18 - cx) << 2) * (x0 * x0) >> twoShift`.
+The first factor `cx * (1e18 - cx) << 2` is at most `1e36 << 2` ≈ 122 bits.
+The product with `x0²` is at most `122 + 2 * bit_length(x0)` bits.
+But the constant `3814697265625` (= 5e17 >> 17, i.e. 5e17 with trailing zero bits removed)
+is used as a proxy: `x0 * 3814697265625` approximates the bit-width of the full `4AC` term.
+`bit_length(x0 * 3814697265625) - 109` ensures `4AC >> twoShift` fits in 254 bits.
+The threshold 109 accounts for the remaining constant factors and the `<< 2` shift.
+
+**Why 3814697265625?** This is `5 * 10^17 / 2^17 = 5e17 >> 17`. The full 4AC expression
+includes `cx * (1e18 - cx)` which is maximized at `cx = 0.5e18`, giving `0.25e36`.
+The constant `3814697265625` captures the bit-width contribution of this maximum value
+in a single multiplication with `x0`, avoiding a separate multi-step bit-length calculation.
 
 ### Step 3: Solve quadratic (sign-dependent formula)
 
@@ -129,7 +148,25 @@ return x
 
 ### Why citardauq?
 
-When B is large and positive, the standard formula computes `(-B + sqrt(B² + 4AC))` — subtracting two nearly-equal large numbers causes catastrophic cancellation. The citardauq formula `2C / (B + sqrt(B² + 4AC))` avoids this by only adding positive terms.
+The quadratic equation is `A·x² + B·x - C = 0` where A > 0, C > 0, and B can be positive
+or negative. The positive root we want is always `x = (-B + sqrt(B² + 4AC)) / (2A)`.
+
+**When B < 0:** `-B` is positive, `sqrt(B² + 4AC) > |B|`, so the numerator sums two
+positive values. Standard formula is numerically stable.
+
+**When B ≥ 0:** `-B` is negative, `sqrt(B² + 4AC)` is slightly larger than B. The
+numerator subtracts two nearly-equal large numbers → catastrophic cancellation (e.g.,
+if B = 1e36 and sqrt(B²+4AC) = 1e36 + 1e18, the result should be 1e18 but floating
+rounding loses all precision).
+
+The **citardauq** (quadratic spelled backwards) uses the identity:
+```
+(-B + sqrt(D)) / (2A) = 2C / (B + sqrt(D))
+```
+The denominator `B + sqrt(D)` **adds** two positive values — no cancellation. This is
+algebraically identical but numerically stable when B ≥ 0.
+
+**Both branches compute the same mathematical root.** The choice is purely numerical.
 
 ## Quote Computation: `findCurvePoint`
 
@@ -208,7 +245,43 @@ quote = (rawQuote * 1e18) / (1e18 - fee)            # floor division, inflates i
 return quote  # this is the required input amount
 ```
 
-**Dynamic fees:** When a hook is configured (`swapHookedOperations & EULER_SWAP_HOOK_GET_FEE`), the fee is determined by calling `hook.getFee()` rather than using `fee0`/`fee1`. For Phase 1 (eth_call), this is handled automatically by `computeQuote()`. For Phase 2 (Rust math), call `getFee()` via eth_call and use the returned fee with native curve math.
+### Dynamic Fees (Hook-Based)
+
+When a hook is configured (`swapHookedOperations & 0x02 != 0`), the fee is determined by
+calling the hook's `getFee()` instead of using `fee0`/`fee1` from DynamicParams.
+
+**Hook interface** (ABI in `abi/IEulerSwapHookTarget.json`):
+
+```solidity
+function getFee(
+    bool asset0IsInput,   // swap direction
+    uint112 reserve0,     // current reserve0
+    uint112 reserve1,     // current reserve1
+    bool readOnly         // true for view calls (quoting), false for state-changing (swap)
+) external returns (uint64 fee);  // scale: 1e18
+```
+
+**Return value:** Fee as a fraction of 1e18. Examples:
+- `5e14` = 0.05% (5 bps)
+- `1e16` = 1%
+- `type(uint64).max` = sentinel meaning "use fallback fee0/fee1"
+
+**Fallback logic:**
+```
+fee = hook.getFee(asset0IsInput, reserve0, reserve1, readOnly)
+if fee == type(uint64).max:
+    fee = asset0IsInput ? fee0 : fee1
+```
+
+**Fee rejection:** If `fee >= 1e18`, the swap is rejected (`SwapRejected` error).
+This is how hooks block swaps — return fee = 1e18.
+
+**For Phase 1 (eth_call):** `computeQuote()` handles all of this automatically.
+
+**For Phase 2 (Rust math):** Call `hook.getFee(direction, r0, r1, true)` via `eth_call` to
+get the current fee, then apply it with native curve math. Cache per block per direction.
+If the call reverts, fall back to `fee0`/`fee1`. If both are 0 and no hook is set, the pool
+has zero fees (unusual but valid for some pool types).
 
 ## Curve Verification: `verify(dParams, newReserve0, newReserve1)`
 
