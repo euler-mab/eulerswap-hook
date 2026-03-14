@@ -121,6 +121,22 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
         assertTrue(p1b >= p2, "price should decrease with amount (1k vs 100k)");
     }
 
+    function test_price_near_limit_graceful() public {
+        // Get actual pool limits
+        uint256[] memory limits = adapter.getLimits(POOL_ID, USDC, WETH);
+        uint256 sellLimit = limits[0];
+
+        // Request price at the sell limit — computeQuote(limit + delta) will revert
+        // but the adapter should return Fraction(0, 1) instead of reverting
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = sellLimit;
+
+        Fraction[] memory prices = adapter.price(POOL_ID, USDC, WETH, amounts);
+        assertEq(prices.length, 1, "should return 1 price");
+        // Either a valid price or graceful zero
+        assertTrue(prices[0].denominator > 0, "denominator should never be 0");
+    }
+
     // ─── swap (sell) ─────────────────────────────────────────────────────
 
     function test_swap_sell_USDC_for_WETH() public {

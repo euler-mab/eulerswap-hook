@@ -80,7 +80,7 @@ contract EulerSwapAdapter is ISwapAdapter {
     // ─── ISwapAdapter ────────────────────────────────────────────────────
 
     /// @inheritdoc ISwapAdapter
-    function getTokens(bytes32 poolId) external view override returns (address[] memory tokens) {
+    function getTokens(bytes32 poolId) external override returns (address[] memory tokens) {
         IEulerSwapPool pool = _pool(poolId);
         (address asset0, address asset1) = pool.getAssets();
         tokens = new address[](2);
@@ -91,7 +91,6 @@ contract EulerSwapAdapter is ISwapAdapter {
     /// @inheritdoc ISwapAdapter
     function getPoolIds(uint256 offset, uint256 limit)
         external
-        view
         override
         returns (bytes32[] memory ids)
     {
@@ -127,7 +126,6 @@ contract EulerSwapAdapter is ISwapAdapter {
     /// @inheritdoc ISwapAdapter
     function getLimits(bytes32 poolId, address sellToken, address buyToken)
         external
-        view
         override
         returns (uint256[] memory limits)
     {
@@ -152,41 +150,35 @@ contract EulerSwapAdapter is ISwapAdapter {
         address poolAddr = address(bytes20(poolId));
         bool isAsset0 = _sellIsAsset0(pool, sellToken);
 
-        uint256 gasBefore = gasleft();
-
         if (side == OrderSide.Sell) {
             // Exact input: specifiedAmount of sellToken -> ? buyToken
             uint256 amountOut = pool.computeQuote(sellToken, buyToken, specifiedAmount, true);
 
-            // Transfer sell tokens directly to the pool (Uni V2 pattern)
+            // Gas measurement covers only transfer + swap (excludes quote computation)
+            uint256 gasBefore = gasleft();
             IERC20(sellToken).safeTransferFrom(msg.sender, poolAddr, specifiedAmount);
-
-            // Execute swap — output goes to msg.sender
             if (isAsset0) {
                 pool.swap(0, amountOut, msg.sender, "");
             } else {
                 pool.swap(amountOut, 0, msg.sender, "");
             }
-
+            trade.gasUsed = gasBefore - gasleft();
             trade.calculatedAmount = amountOut;
         } else {
             // Exact output: ? sellToken -> specifiedAmount of buyToken
             uint256 amountIn = pool.computeQuote(sellToken, buyToken, specifiedAmount, false);
 
-            // Transfer required input to the pool
+            uint256 gasBefore = gasleft();
             IERC20(sellToken).safeTransferFrom(msg.sender, poolAddr, amountIn);
-
-            // Execute swap
             if (isAsset0) {
                 pool.swap(0, specifiedAmount, msg.sender, "");
             } else {
                 pool.swap(specifiedAmount, 0, msg.sender, "");
             }
-
+            trade.gasUsed = gasBefore - gasleft();
             trade.calculatedAmount = amountIn;
         }
 
-        trade.gasUsed = gasBefore - gasleft();
         trade.price = _marginalPrice(pool, sellToken, buyToken);
     }
 
@@ -196,29 +188,46 @@ contract EulerSwapAdapter is ISwapAdapter {
         address sellToken,
         address buyToken,
         uint256[] memory specifiedAmounts
-    ) external view override returns (Fraction[] memory prices) {
+    ) external override returns (Fraction[] memory prices) {
         IEulerSwapPool pool = _pool(poolId);
         prices = new Fraction[](specifiedAmounts.length);
         uint256 delta = _priceDelta(sellToken);
 
         for (uint256 i = 0; i < specifiedAmounts.length; i++) {
-            uint256 amt = specifiedAmounts[i];
-
-            if (amt == 0) {
-                // Marginal price at current state
-                uint256 out = pool.computeQuote(sellToken, buyToken, delta, true);
-                prices[i] = Fraction(out, delta);
-            } else {
-                // Marginal price after trading `amt`:
-                // f'(amt) ≈ (f(amt + delta) - f(amt)) / delta
-                uint256 outAt = pool.computeQuote(sellToken, buyToken, amt, true);
-                uint256 outAtDelta = pool.computeQuote(sellToken, buyToken, amt + delta, true);
-                prices[i] = Fraction(outAtDelta - outAt, delta);
-            }
+            prices[i] = _priceAt(pool, sellToken, buyToken, specifiedAmounts[i], delta);
         }
     }
 
     // ─── Internal ────────────────────────────────────────────────────────
+
+    /// @dev Numerical marginal price at a given amount. Returns Fraction(0, 1) if
+    /// computeQuote reverts (e.g. amount near or beyond pool limits).
+    function _priceAt(
+        IEulerSwapPool pool,
+        address sellToken,
+        address buyToken,
+        uint256 amt,
+        uint256 delta
+    ) internal view returns (Fraction memory) {
+        if (amt == 0) {
+            // Marginal price at current state: f(delta) / delta
+            try pool.computeQuote(sellToken, buyToken, delta, true) returns (uint256 out) {
+                return Fraction(out, delta);
+            } catch {
+                return Fraction(0, 1);
+            }
+        }
+        // Marginal price after trading `amt`: (f(amt + delta) - f(amt)) / delta
+        try pool.computeQuote(sellToken, buyToken, amt, true) returns (uint256 outAt) {
+            try pool.computeQuote(sellToken, buyToken, amt + delta, true) returns (uint256 outAtDelta) {
+                return Fraction(outAtDelta - outAt, delta);
+            } catch {
+                return Fraction(0, 1);
+            }
+        } catch {
+            return Fraction(0, 1);
+        }
+    }
 
     /// @dev Computes the marginal price at the current pool state using a numerical
     /// derivative: price ≈ computeQuote(delta) / delta for a small delta.
@@ -228,8 +237,11 @@ contract EulerSwapAdapter is ISwapAdapter {
         returns (Fraction memory)
     {
         uint256 delta = _priceDelta(sellToken);
-        uint256 out = pool.computeQuote(sellToken, buyToken, delta, true);
-        return Fraction(out, delta);
+        try pool.computeQuote(sellToken, buyToken, delta, true) returns (uint256 out) {
+            return Fraction(out, delta);
+        } catch {
+            return Fraction(0, 1);
+        }
     }
 }
 
