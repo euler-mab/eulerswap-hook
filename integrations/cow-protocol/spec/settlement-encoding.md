@@ -6,6 +6,11 @@ How to encode EulerSwap swaps as CoW Protocol settlement interactions.
 
 EulerSwap uses the **Uniswap V2 swap pattern**: transfer input tokens to the pool contract, then call `swap()`. The pool reads its own balance to determine how much was deposited.
 
+> **Key difference from CoW's Uniswap V2 integration:** The existing Uniswap V2 integration
+> in `cowprotocol/services` routes swaps through the **Uniswap V2 Router** contract. EulerSwap
+> swaps go **directly to the pool** — no router is needed. This is simpler (fewer interactions)
+> and saves gas. The settlement encoding below reflects this direct-to-pool approach.
+
 ## Settlement Interactions
 
 Each EulerSwap swap requires **two interactions** in the CoW settlement:

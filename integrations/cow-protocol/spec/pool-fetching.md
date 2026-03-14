@@ -144,6 +144,19 @@ struct EulerSwapPool {
 }
 ```
 
+## Initialization Pattern
+
+Use `BackgroundInitLiquiditySource` to wrap the pool fetcher. This is a CoW driver pattern
+that allows async initialization (registry discovery) without blocking the driver startup.
+The first auction round may not include EulerSwap pools while discovery completes in the
+background.
+
+```rust
+// In boundary/liquidity/euler_swap.rs
+let fetcher = EulerSwapPoolFetcher::new(registry, web3.clone());
+let source = BackgroundInitLiquiditySource::new(fetcher);
+```
+
 ## Caching
 
 ### Block-based cache

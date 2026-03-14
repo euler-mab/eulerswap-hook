@@ -4,11 +4,16 @@ Step-by-step guide for adding EulerSwap as a liquidity source in `cowprotocol/se
 
 ## Overview
 
-The PR touches 4 crates across 3 architectural layers:
+The PR touches 5 crates across 3 architectural layers:
 
 1. **`liquidity-sources`** — pool discovery, state fetching, curve math
 2. **`driver`** — boundary (conversion + interaction encoding) and domain (canonical types)
 3. **`solvers-dto`** — JSON types for solver communication
+4. **`solver`** — legacy solver crate (still required for baseline solver integration)
+
+> **Important:** The `cowprotocol/services` repo has both a modern `driver` crate and a legacy
+> `solver` crate. New liquidity sources must integrate with **both**. The legacy solver uses
+> `BaselineSolvable` for offline quoting. Study how Uniswap V2 is wired through both paths.
 
 ## Files to Create
 
@@ -62,15 +67,28 @@ pub struct Limits {
     pub limit_out_1to0: U256,
 }
 
+/// BaselineSolvable uses `impl Future` return types, NOT `async_trait`.
 impl BaselineSolvable for Pool {
-    fn get_amount_out(&self, out_token: Address, input: (Address, U256)) -> Option<U256> {
+    fn get_amount_out(
+        &self,
+        out_token: Address,
+        input: (Address, U256),
+    ) -> impl Future<Output = Option<U256>> + Send {
         // Phase 1: call computeQuote via eth_call
         // Phase 2: native curve math (see curve-math.md)
+        let result = self.compute_amount_out(out_token, input);
+        async move { result }
     }
 
-    fn get_amount_in(&self, in_token: Address, output: (Address, U256)) -> Option<U256> {
+    fn get_amount_in(
+        &self,
+        in_token: Address,
+        output: (Address, U256),
+    ) -> impl Future<Output = Option<U256>> + Send {
         // Phase 1: call computeQuote via eth_call (exactIn=false)
         // Phase 2: native curve math
+        let result = self.compute_amount_in(in_token, output);
+        async move { result }
     }
 
     fn gas_cost(&self) -> usize {
@@ -106,11 +124,22 @@ Required dependencies:
 
 Boundary layer: converts liquidity-sources types to domain types and encodes settlement interactions.
 
+**Important pattern:** The driver uses a `SettlementHandling<L>` trait for encoding swap
+interactions. Each liquidity source provides its own settlement handler. The handler is stored
+alongside the domain liquidity and called during settlement encoding.
+
+> **EulerSwap vs Uniswap V2 settlement:** The existing Uniswap V2 integration routes through
+> the Uniswap V2 Router. EulerSwap swaps go **directly to the pool** — no router needed.
+> This is simpler and saves gas.
+
 ```rust
-/// Creates the EulerSwap liquidity collector
+/// Creates the EulerSwap liquidity collector.
+/// Use BackgroundInitLiquiditySource to wrap the fetcher for async initialization
+/// (registry discovery can be slow on first call).
 pub fn collector(config: &EulerSwapConfig, web3: &Web3) -> Box<dyn LiquidityCollecting> {
     // Initialize registry contract
     // Create pool fetcher with caching
+    // Wrap in BackgroundInitLiquiditySource for non-blocking startup
     // Return collector that implements LiquidityCollecting
 }
 
@@ -130,28 +159,29 @@ pub fn to_domain(pool: &euler_swap::Pool) -> Liquidity {
     }
 }
 
-/// Encodes a swap as settlement interactions
-pub fn to_interaction(
-    pool: &domain::euler_swap::Pool,
-    input: &eth::Asset,
-    output: &eth::Asset,
-    settlement: Address,
-) -> Vec<Interaction> {
-    // See settlement-encoding.md for exact encoding
-    vec![
-        // 1. Transfer input tokens to pool
-        Interaction {
-            target: input.token,
+/// Settlement handler for EulerSwap pools.
+/// Implements SettlementHandling<EulerSwapOrder> to encode swap interactions.
+pub struct EulerSwapSettlementHandler {
+    pub pool: euler_swap::Pool,
+}
+
+impl SettlementHandling<EulerSwapOrder> for EulerSwapSettlementHandler {
+    fn encode(&self, execution: AmmOrderExecution, encoder: &mut SettlementEncoder) -> Result<()> {
+        // See settlement-encoding.md for exact encoding
+        // 1. Transfer input tokens to pool (direct — not via router)
+        encoder.append_to_execution_plan(Interaction {
+            target: execution.input.token,
             value: 0.into(),
-            calldata: erc20_transfer(pool.address, input.amount),
-        },
-        // 2. Call pool.swap()
-        Interaction {
-            target: pool.address,
+            calldata: erc20_transfer(self.pool.address, execution.input.amount),
+        });
+        // 2. Call pool.swap() directly
+        encoder.append_to_execution_plan(Interaction {
+            target: self.pool.address,
             value: 0.into(),
-            calldata: euler_swap_call(pool, input, output, settlement),
-        },
-    ]
+            calldata: euler_swap_call(&self.pool, &execution, settlement),
+        });
+        Ok(())
+    }
 }
 ```
 
@@ -167,6 +197,34 @@ pub struct Pool {
     pub params: CurveParams,
     pub fees: Fees,
     pub limits: Limits,
+}
+```
+
+### 6. `crates/solver/src/liquidity/euler_swap.rs` (Legacy solver crate)
+
+The legacy `solver` crate still powers the baseline solver. EulerSwap must be registered here too.
+
+```rust
+use crate::liquidity::{AmmOrderExecution, SettlementHandling};
+use liquidity_sources::euler_swap;
+
+/// Wraps liquidity-sources Pool for the legacy solver's baseline routing.
+pub struct EulerSwapLiquidity {
+    pub inner: euler_swap::Pool,
+    pub settlement_handler: Arc<EulerSwapSettlementHandler>,
+}
+
+/// Convert to the legacy AmmOrder format used by the baseline solver.
+impl From<&EulerSwapLiquidity> for AmmOrder {
+    fn from(liq: &EulerSwapLiquidity) -> Self {
+        AmmOrder {
+            tokens: liq.inner.tokens.clone(),
+            reserves: (liq.inner.reserves.reserve0.into(), liq.inner.reserves.reserve1.into()),
+            fee: Ratio::new(0u32, 1u32), // Fees handled internally by curve math
+            settlement_handling: liq.settlement_handler.clone(),
+            cost: AmmOrderCost { gas: 150_000.into(), ..Default::default() },
+        }
+    }
 }
 ```
 
@@ -230,10 +288,11 @@ pub struct EulerSwapPool {
 
 ### 4. `crates/driver/src/infra/liquidity/config.rs`
 
-Add TOML config:
+Add TOML config. Note: CoW config structs use `#[serde(deny_unknown_fields)]` to catch typos.
 
 ```rust
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct EulerSwapConfig {
     pub registry: Address,
     #[serde(default = "default_gas")]
@@ -263,6 +322,16 @@ if let Some(euler_config) = &config.euler_swap {
 registry = "0x5FcCB84363F020c0cADE052C9c654aABF932814A"
 ```
 
+### 7. `crates/solver/src/liquidity/mod.rs`
+
+Register EulerSwap in the legacy solver's liquidity module:
+
+```rust
+pub mod euler_swap;  // Add module declaration
+```
+
+Wire into the baseline solver's pool list so `BaselineSolvable` pools are discovered.
+
 ## PR Structure
 
 ### Recommended commit order:
@@ -270,10 +339,11 @@ registry = "0x5FcCB84363F020c0cADE052C9c654aABF932814A"
 1. **Add ABI bindings** — generate Rust contract bindings from ABIs
 2. **Add pool fetching** — registry discovery + state caching
 3. **Add domain types** — Pool struct, Kind::EulerSwap variant
-4. **Add boundary layer** — collector, to_domain, to_interaction
+4. **Add boundary layer** — collector, to_domain, to_interaction, SettlementHandling impl
 5. **Add DTO** — EulerSwapPool for solver communication
-6. **Add config** — TOML parsing, wire into driver
-7. **Add tests** — unit tests with test vectors, integration test with mainnet fork
+6. **Add config** — TOML parsing, wire into driver (use `deny_unknown_fields`)
+7. **Add legacy solver integration** — wire EulerSwap into the `solver` crate baseline
+8. **Add tests** — unit tests with test vectors, integration test with mainnet fork
 
 ### Testing approach:
 

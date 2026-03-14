@@ -133,6 +133,29 @@ fn to_interaction(pool, input, output, settlement) -> Vec<Interaction> {
 
 These interactions go into the settlement transaction alongside user trade executions.
 
+## Legacy Solver Crate
+
+The `cowprotocol/services` repo contains a legacy `solver` crate alongside the modern `driver`
+crate. New liquidity sources must integrate with **both**:
+
+- **`driver` crate** — modern architecture with `LiquidityCollecting`, `SettlementHandling<L>`,
+  domain types, and DTOs. This is the primary integration path.
+- **`solver` crate** — legacy baseline solver that uses `BaselineSolvable` for offline quoting.
+  Still active and needs wiring for EulerSwap pools.
+
+The `BaselineSolvable` trait has a notable API pattern — it uses `impl Future` return types
+rather than `async_trait`:
+
+```rust
+trait BaselineSolvable {
+    fn get_amount_out(&self, out_token: Address, input: (Address, U256))
+        -> impl Future<Output = Option<U256>> + Send;
+    fn get_amount_in(&self, in_token: Address, output: (Address, U256))
+        -> impl Future<Output = Option<U256>> + Send;
+    fn gas_cost(&self) -> usize;
+}
+```
+
 ## Three-Layer Architecture
 
 The driver separates concerns into three layers:
