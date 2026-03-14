@@ -13,9 +13,11 @@ import {
 
 const API_BASE = "https://api.uniswap.org/v2";
 
-/** Fetch open orders from UniswapX API */
+/** Fetch open V2 Dutch orders from UniswapX API.
+ * Explicitly requests orderType=Dutch_V2 to avoid receiving V1, Priority,
+ * or other order types that use different reactors and encoding. */
 export async function fetchOpenOrders(chainId = 1): Promise<UniswapXApiOrder[]> {
-  const url = `${API_BASE}/orders?orderStatus=open&chainId=${chainId}&limit=100`;
+  const url = `${API_BASE}/orders?orderStatus=open&chainId=${chainId}&orderType=Dutch_V2&limit=100`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`UniswapX API ${res.status}: ${res.statusText}`);
   const data = (await res.json()) as UniswapXApiResponse;

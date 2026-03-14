@@ -41,6 +41,10 @@ export interface QuoteResult {
  * which tracks actual simulation results with an EMA. */
 const DEFAULT_GAS_ESTIMATE = 250_000n;
 const DEFAULT_PRIORITY_FEE = 1_500_000_000n; // 1.5 gwei
+/** Buffer added to current time when resolving decay.
+ * Accounts for the delay between evaluation and on-chain execution.
+ * 2 blocks (24s) is conservative for Flashbots bundles targeting block+1/+2. */
+const DECAY_BUFFER_SECONDS = 24n;
 
 /**
  * Adaptive gas estimator using exponential moving average (EMA).
@@ -105,6 +109,10 @@ export async function evaluateOrder(
 ): Promise<QuoteResult> {
   const now = BigInt(Math.floor(Date.now() / 1000));
   const decoded = decodeV2DutchOrder(apiOrder.encodedOrder);
+  // Decay is evaluated at `now`. Dutch decay favors the filler over time (outputs
+  // decrease, inputs increase), so `now` is conservative — the on-chain fill at
+  // block.timestamp will be at least as favorable. The buffer is applied only to
+  // the exclusivity check below: an order exclusive at `now` may be open by execution.
   const resolved = resolveAmounts(decoded, now);
 
   const inputToken = decoded.input.token;
@@ -133,13 +141,27 @@ export async function evaluateOrder(
       profitable: false,
     };
   }
-  const requiredOutput = resolved.outputAmounts.reduce((a, b) => a + b, 0n);
+  let requiredOutput = resolved.outputAmounts.reduce((a, b) => a + b, 0n);
 
-  // Check exclusivity
-  const { exclusiveFiller, decayStartTime } = decoded.cosignerData;
-  const exclusive =
+  // Check exclusivity and override penalty.
+  // Use now + buffer for exclusivity: if the order exits exclusivity within the
+  // buffer window, we can still fill it (our tx lands after exclusivity ends).
+  const { exclusiveFiller, decayStartTime, exclusivityOverrideBps } =
+    decoded.cosignerData;
+  const executionTime = now + DECAY_BUFFER_SECONDS;
+  const inExclusivityWindow =
     exclusiveFiller !== "0x0000000000000000000000000000000000000000" &&
-    now <= decayStartTime;
+    executionTime <= decayStartTime;
+  // exclusivityOverrideBps = 0 means strict exclusivity (unfillable by non-exclusive)
+  const strictExclusive = inExclusivityWindow && exclusivityOverrideBps === 0n;
+  const exclusive = strictExclusive;
+
+  // Apply exclusivity override penalty: outputs scale up by (10000 + overrideBps) / 10000
+  // This matches ExclusivityLib.sol: output.amount.mulDivUp(BPS + overrideBps, BPS)
+  if (inExclusivityWindow && !strictExclusive && exclusivityOverrideBps > 0n) {
+    requiredOutput =
+      (requiredOutput * (10000n + exclusivityOverrideBps) + 9999n) / 10000n; // round up
+  }
 
   // Check pool limits + get quote + get gas price
   const [limits, eulerSwapOutput, gasPrice] = await Promise.all([

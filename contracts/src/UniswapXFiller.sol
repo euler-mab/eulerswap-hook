@@ -56,7 +56,7 @@ contract UniswapXFiller {
 
     error Unauthorized();
     error OnlyReactor();
-    error MultipleOutputsNotSupported();
+    error MixedOutputTokens();
     error InsufficientProfit();
 
     modifier onlyOwner() {
@@ -89,13 +89,17 @@ contract UniswapXFiller {
     }
 
     function _fillOrder(ResolvedOrder calldata order, address pool, uint256 minProfit) internal {
-        // Only single-output orders supported (covers standard UniswapX swaps)
-        if (order.outputs.length != 1) revert MultipleOutputsNotSupported();
-
         address tokenIn = order.input.token;
         uint256 amountIn = order.input.amount;
+
+        // All outputs must be the same token (standard for UniswapX swaps).
+        // Sum required amounts across all recipients (swapper + fee recipients).
         address tokenOut = order.outputs[0].token;
-        uint256 requiredOutput = order.outputs[0].amount;
+        uint256 totalRequired;
+        for (uint256 j = 0; j < order.outputs.length; j++) {
+            if (order.outputs[j].token != tokenOut) revert MixedOutputTokens();
+            totalRequired += order.outputs[j].amount;
+        }
 
         // Get quote before transfer (avoids stale-state if pool changes mid-block)
         uint256 amountOut = IEulerSwapPool(pool).computeQuote(tokenIn, tokenOut, amountIn, true);
@@ -118,9 +122,9 @@ contract UniswapXFiller {
         // Verify minimum profit using balance delta (not total balance)
         // Prevents cross-subsidy between orders in batch fills
         uint256 received = IERC20(tokenOut).balanceOf(address(this)) - balBefore;
-        if (received < requiredOutput + minProfit) revert InsufficientProfit();
+        if (received < totalRequired + minProfit) revert InsufficientProfit();
 
-        // Reactor will now pull required output via transferFrom.
+        // Reactor will now pull outputs via transferFrom to each recipient.
         // Any excess output stays in this contract as profit.
     }
 
