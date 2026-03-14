@@ -1,0 +1,18 @@
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+libs = ["../../contracts/eulerswap/lib"]
+solc = "0.8.27"
+optimizer = true
+optimizer_runs = 200
+
+remappings = [
+  "forge-std/=../../contracts/eulerswap/lib/forge-std/src/",
+  "openzeppelin-contracts/=../../contracts/eulerswap/lib/openzeppelin-contracts/contracts/",
+  "eulerswap/=../../contracts/eulerswap/src/",
+  "src/=src/",
+]
+
+[rpc_endpoints]
+mainnet = "${ETH_RPC_URL}"

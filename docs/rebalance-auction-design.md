@@ -15,8 +15,10 @@ Working document capturing the analysis and design reasoning for the next-genera
 | 17 | Competitive landscape: Uniswap pool data (March 2026) |
 | 18 | Empirical validation experiments |
 | 19 | Design principles summary |
-| 20-22 | **Hook designs:** V1-V3 recap, V4 design, open questions |
-| 23 | **Variance drain:** the fundamental cost of rebalancing leveraged pools |
+| 20-21 | **Hook designs:** V1-V3 recap, V4 design |
+| 22 | **V7 design:** continuous recenter, curvature-aware surcharge, exposure-sized auctions |
+| 23 | Open questions |
+| 24 | **Variance drain:** the fundamental cost of rebalancing leveraged pools |
 
 ## 1. EulerSwap Building Blocks
 
@@ -1046,7 +1048,276 @@ All hooks share the same pool — only the hook contract changes:
 
 Pool's static params (vaults, assets, euler account) stay the same.
 
-## 22. Open Questions
+## 22. V7 Hook Design
+
+Clean rebuild with three key improvements over V4: (1) continuous recentering on every exposure-reducing swap, (2) curvature-aware smart surcharge that provably prevents round-trip extraction through recenters, (3) exposure-sized auction shifts instead of fixed magnitudes. The NAV (deposits − debts) replaces gross deposits as the exposure denominator, fixing V6's ratio invariance problem.
+
+Contract: `contracts/src/LPAgentHookV7.sol`. Tests: `contracts/test/LPAgentHookV7.t.sol` (40 tests, 256-run fuzz tests).
+
+Pool sets `swapHookedOperations = GET_FEE | AFTER_SWAP` (0x06).
+
+### Two mechanisms
+
+**Mechanism 1: Continuous recenter + smart surcharge.** After every swap, if range-based exposure decreased compared to the previous swap, recenter immediately — free rebalancing from natural flow. A smart surcharge protects the recenter by covering both curvature bonus (from curve displacement) and oracle price change.
+
+**Mechanism 2: Clearing auction (fallback).** When exposure keeps growing and relative exposure (`|netWeth| × ethPrice / NAV`) exceeds the trigger threshold, start a fee-decay auction. The shift magnitude is computed from actual absolute exposure, not a fixed parameter. Price-convergence clearing ends the auction.
+
+### Key differences from V4
+
+| Aspect | V4 | V7 |
+|--------|-----|-----|
+| Recentering | Only after auction clears | After every exposure-reducing swap |
+| Surcharge | Fixed initial amount (param) | Computed per-recenter from exposure + price change |
+| Surcharge theory | Heuristic protection | Provably covers curvature bonus (see derivation below) |
+| Exposure denominator | Gross deposits (approxNav) | NAV = deposits − debts (cachedNav) |
+| Auction shift | Fixed shiftMagnitude param | Computed from absolute exposure, capped at maxShiftMagnitude |
+| Auction starting fee | = shiftMagnitude | = shift × 1.5 (exposure-dependent) |
+| Exposure metric (trigger) | Range-based only | Range-based for recenter; vault-inferred relative exposure for auction trigger |
+| Marginal price | c=0 approximation: (px/py) × (x₀/x)² | Concentration-aware: (px/py) × [cx + (1-cx) × (x₀/x)²] |
+
+### afterSwap flow
+
+```
+function afterSwap(... reserve0, reserve1):
+    if !auctionActive:
+        d = pool.getDynamicParams()
+        (exposure, asset0Deficit) = computeExposure(reserve0, reserve1, d)
+
+        if exposure < lastExposure:
+            // Exposure decreased → recenter immediately
+            recenterMag = recenterAtMarket(reserve0, reserve1, d)
+            initSurcharge(recenterMag, lastExposure, d)    // smart surcharge
+            cacheVaultState()                               // refresh baseNetAsset1 + cachedNav
+            postExposure = measure post-recenter exposure
+            lastExposure = postExposure
+        else:
+            lastExposure = exposure
+            // Check vault-inferred relative exposure for auction trigger
+            relExposure = computeRelativeExposure(reserve1, d)
+            if relExposure > auctionTriggerThreshold:
+                absExposure = computeAbsoluteExposureWeth(reserve1, d)
+                startAuction(reserve0, reserve1, asset0Deficit, d, absExposure)
+
+    else:
+        // Auction mode: check price convergence after minimum blocks
+        if block.number >= auctionStartBlock + minAuctionBlocks:
+            if checkPriceConvergence(reserve0, reserve1):
+                endAuctionAndRecenter(reserve0, reserve1)
+```
+
+### Exposure metrics (three levels)
+
+V7 uses three distinct exposure metrics for different purposes:
+
+**1. Range-based exposure** (for continuous recenter trigger):
+```
+exposure = (eq - reserve) / (eq - min)    on deficit side
+```
+At equilibrium: 0. At boundary: 1.0. Same as V4. Used to detect whether a swap improved exposure (compare to `lastExposure`). Monotonically non-decreasing between recenters — each recenter resets it.
+
+**2. Relative exposure** (for auction trigger):
+```
+relativeExposure = |netWeth| × ethPrice / cachedNav
+```
+Where `netWeth = baseNetAsset1 + (reserve1 − eq1)` — the actual WETH position inferred from vault state at last recenter plus swap displacement since. `cachedNav` is NAV at last recenter. This metric can exceed 100% (exposure exceeding equity). Used only to decide whether to start an auction.
+
+**Why NAV, not gross deposits:** V6 used gross deposits as denominator. When exposure grows, debt grows, so gross deposits (which include borrowed amounts) grow proportionally. The ratio stays approximately constant — the auction can never reduce it because both numerator and denominator shrink together. NAV (deposits − debts) fixes this: as debt grows, NAV shrinks, making the ratio grow faster and triggering correctly.
+
+**3. Absolute exposure** (for auction shift sizing):
+```
+absoluteExposureWeth = |baseNetAsset1 + (reserve1 − eq1)|
+```
+Raw WETH amount of directional exposure. The auction shift is sized proportionally:
+```
+shift = absoluteExposureWeth × WAD / eq1    (capped at maxShiftMagnitude)
+```
+This ensures the arb opportunity matches the exposure to clear.
+
+### Smart surcharge: curvature bonus + price change
+
+The surcharge must cover two sources of arb value created by recentering:
+
+#### Source 1: Curvature bonus (displacement-dependent)
+
+When the pool is displaced from eq (say `x < x₀` on the X branch), the marginal price is steep:
+```
+price(x) = (px/py) × [cx + (1-cx) × (x₀/x)²]
+```
+
+A trader selling token0 at this displaced position gets the steep price (more token1 per unit). Recentering flattens the curve — the new eq is at the current reserves, so marginal price resets to px/py. The trader can buy token0 back at the flat price.
+
+**Per-unit curvature bonus** (see Appendix below for full derivation):
+```
+bonus/Δ ≈ (px/py) × (1-cx) × [(x₀/(x₀-δ))² − 1]
+        ≈ (px/py) × 2(1-cx) × δ/x₀          for small displacements
+```
+
+In WAD fee terms (dividing by px/py): `curvature_rate ≈ 2(1-cx) × exposure_fraction`.
+
+The factor of 2 appears in the small-displacement approximation. V7 uses the **exact** formula `(1-c) × [(eq/reserve)² - 1]` directly, avoiding this approximation entirely.
+
+#### Source 2: Price change (oracle-dependent)
+
+The recenter aligns pool price to oracle. If the oracle moved since the last recenter:
+```
+priceComponent = |oraclePrice − poolPrice| / max(oraclePrice, poolPrice)
+```
+
+This is `recenterMagnitude` returned by `_recenterAtMarket()`.
+
+#### Combined formula
+
+```solidity
+function _initSurcharge(recenterMagnitude, reserve0, reserve1, preEq0, preEq1, d) {
+    // Exact curvature bonus: (1-c) × [(eq/reserve)² - 1]
+    if (reserve0 < preEq0) {
+        ratioSq = preEq0² × WAD / reserve0²;
+        curvatureComponent = (WAD - d.concentrationX) × (ratioSq - WAD) / WAD;
+    } else if (reserve1 < preEq1) {
+        ratioSq = preEq1² × WAD / reserve1²;
+        curvatureComponent = (WAD - d.concentrationY) × (ratioSq - WAD) / WAD;
+    }
+    priceComponent = recenterMagnitude;
+    amount = (curvatureComponent + priceComponent) × surchargeMultiplier / WAD;
+    floor = baseFee / 2;    // prevents micro-recenters from being free
+    surchargeInitialAmount = max(amount, floor);
+    surchargeStartBlock = block.number;
+}
+```
+
+- Uses the **exact** curvature bonus formula `(1-c) × [(eq₀/r₀)² - 1]`, not a linear approximation. Works correctly for all parameter combinations including high concentration and wide ranges.
+- `preEq0/preEq1` are the equilibrium reserves **before** `_recenterAtMarket` mutates the params struct. Must be cached at the call site.
+- `surchargeMultiplier` (param, e.g. 1.25e18): pure safety margin on the exact formula. Any value ≥ 1e18 provides coverage.
+- The surcharge decays linearly via `surchargeDecayPerBlock` (same mechanism as V4).
+
+**Key difference from V4:** In V4, `surchargeInitialAmount` was a fixed param. In V7, it's mutable state computed from actual displacement and price change at each recenter. Small recenters get small surcharges; large recenters get large ones.
+
+### Appendix: Curvature bonus derivation
+
+**Setup.** EulerSwap X branch (`x ≤ x₀`):
+```
+y(x) = y₀ + (px/py) × (x₀ - x) × [cx + (1-cx) × x₀/x]
+```
+
+Pool displaced by δ: current position at `x = x₀ − δ`.
+
+**Attack sequence:**
+1. **Leg 1** (sell Δ token0 at displaced position): x increases from `x₀−δ` to `x₀−δ+Δ`. Revenue ≈ `(px/py) × Δ × [cx + (1-cx) × (x₀/(x₀-δ))²]` for small Δ.
+2. **Recenter**: new eq = `(x₀−δ+Δ, y_new)`, price updated to oracle ≈ px/py.
+3. **Leg 2** (buy Δ token0 from new flat eq): Cost ≈ `(px/py) × Δ` (at eq, curvature term = 1).
+
+**Per-unit bonus:**
+```
+bonus/Δ = (px/py) × (1-cx) × [(x₀/(x₀-δ))² − 1]
+```
+
+For small ε = δ/x₀:
+```
+bonus/Δ ≈ (px/py) × 2(1-cx) × ε
+```
+
+**Surcharge coverage.** The surcharge must exceed `bonus/Δ` in WAD fee terms:
+```
+surcharge ≥ (1-cx) × [(x₀/(x₀-δ))² - 1]
+```
+
+V7 uses this **exact** formula directly: `curvatureComponent = (1-c) × [(eq₀/r₀)² - 1]`, where `eq₀` and `r₀` are the pre-recenter equilibrium and current reserve. The `surchargeMultiplier` provides pure safety margin — any value ≥ 1e18 covers the theoretical bound. Unlike a linear approximation, this works correctly for all parameter combinations including high concentration and wide ranges.
+
+**Important implementation detail:** `_recenterAtMarket()` mutates the `DynamicParams` struct in memory (setting `equilibriumReserve0 = reserve0`). The caller must cache `preEq0/preEq1` before calling `_recenterAtMarket`, then pass them to `_initSurcharge`.
+
+**Fuzz verification:** `test_fuzz_surchargeCoversRoundTrip` (256 runs) creates pools with random concentration (0.1–0.9), performs swaps creating displacement, and verifies the computed surcharge exceeds the theoretical curvature bonus for all tested `(δ, c)` combinations.
+
+### Exposure-sized auctions
+
+V4 used a fixed `shiftMagnitude` param (e.g. 108 bps). This creates the same-sized arb regardless of actual exposure — too small when exposure is large, wastefully large when exposure is small.
+
+V7 computes the shift from actual absolute exposure:
+
+```solidity
+function _computeAuctionShift(absExposureWeth, eq1) {
+    shift = absExposureWeth × WAD / eq1;       // exposure as fraction of eq
+    shift = min(shift, maxShiftMagnitude);      // cap
+    shift = max(shift, clearThreshold × 2);     // floor: must exceed clear threshold
+    return shift;
+}
+```
+
+The starting fee is `shift × 1.5` (capped at maxFee, floored at baseFee). The 1.5x ensures the LP captures value from the clearing arb — the fee starts above the mispricing, decaying through it.
+
+### Concentration-aware marginal price
+
+V4 used a c=0 approximation for marginal price: `(px/py) × (x₀/x)²`. This is wrong for concentrated pools:
+- At c=0.5, the formula overestimates displacement from eq price
+- The convergence check reports a larger deviation than actually exists
+- Auctions can never clear because the check thinks the price hasn't converged
+
+V7 uses the full formula:
+```
+X branch: price = (px/py) × [cx + (1-cx) × (x₀/x)²]
+Y branch: price = (px/py) / [cy + (1-cy) × (y₀/y)²]
+```
+
+This is critical for both convergence checks (auction clearing) and fee computation (arb vs attract direction detection).
+
+### Storage layout
+
+```
+// Immutables (10)
+pool, owner, supplyVault0, supplyVault1, borrowVault0, borrowVault1,
+eulerAccount, asset0, asset1, uniswapPool, uniswapToken0IsAsset0
+
+// Fee params
+baseFee, maxFee, gasCoeff, externalFee (uint64 each)
+captureRate, attractRate (uint256 each)
+
+// Surcharge params
+surchargeDecayPerBlock (uint64)
+surchargeMultiplier (uint64)     — NEW: replaces fixed surchargeInitialAmount param
+
+// Auction params
+decayPerBlock, auctionTriggerThreshold, clearThreshold, maxShiftMagnitude (uint64 each)
+minAuctionBlocks (uint64)        — renamed from V4's shiftMagnitude → maxShiftMagnitude
+
+// Recenter params
+recenterRange, maxRecenterDrift (uint64 each)
+
+// Mutable: exposure tracking
+lastExposure (uint64)            — range-fraction after previous swap
+baseNetAsset1 (int128)           — net WETH at last recenter
+cachedNav (uint128)              — NEW: NAV in asset0 terms (replaces approxGrossDeposits)
+
+// Mutable: surcharge
+surchargeStartBlock (uint64)
+surchargeInitialAmount (uint64)  — NOW MUTABLE STATE: computed per-recenter
+
+// Mutable: auction
+auctionActive (bool), auctionStartBlock (uint64), auctionStartingFee (uint64)
+auctionClearAsset0 (bool), preShiftPriceY (uint80)
+```
+
+### Admin functions
+
+Same as V4, plus:
+- `setSurchargeParams(surchargeDecayPerBlock, surchargeMultiplier)` — new multiplier param
+- `refreshVaultState()` — owner can re-read vaults to fix drift from interest accrual
+- `endAuction()` — owner can force-end a stuck auction (emergency)
+
+### Risks (V7-specific)
+
+- **surchargeMultiplier too low.** If < 1e18, the surcharge doesn't cover the curvature bonus. V7 uses the exact formula `(1-c) × [(eq/r)² - 1]` so the multiplier is a pure safety margin (no 2x approximation factor needed). Recommended ≥ 1.25e18.
+- **cachedNav staleness.** NAV is cached at each recenter. Between recenters, interest accrual changes real deposits/debts but cachedNav is stale. If interest accrual is significant between recenters (unlikely over minutes, possible over hours), the relative exposure trigger may fire early or late. `refreshVaultState()` is the escape valve.
+- **Continuous recenter frequency.** Every exposure-reducing swap triggers a reconfigure (~50k extra gas). In normal mode with balanced flow, this could fire on every other swap. Gas cost is borne by the swapper. For pools with high swap frequency, this may be a concern.
+- **Curvature bonus bound validity.** The derivation assumes small trades (Δ ≪ δ). For large trades that significantly change the displacement, the actual bonus diverges from the marginal approximation. Since V7 uses the exact formula rather than a linear bound, the multiplier can be tighter (1.25e18 recommended).
+
+### Resolved open questions from V4
+
+Several questions from section 23 are resolved by V7:
+
+- **Q5 (Surcharge calibration):** Resolved. Surcharge uses the exact curvature formula `(1-c) × [(eq/r)² - 1]` plus oracle price change. The multiplier is a pure safety margin (≥ 1e18 covers; 1.25e18 recommended).
+- **Q6 (Reconfigure mechanics):** Resolved. Implementation in `_recenterAtMarket()` and `_startAuction()` handles priceX/priceY encoding, eq reserve setting, and min reserve computation.
+- **Q7 (Iterative vs single-cycle):** Resolved. V7's exposure-sized shifts mean larger exposure → larger shift → more clearing per cycle. Still iterative (capped at maxShiftMagnitude), but each cycle clears proportional to actual exposure rather than a fixed amount.
+
+## 23. Open Questions
 
 1. **Clearing threshold calibration.** The `clearThreshold` is a price-convergence metric (`|marginalPrice - oraclePrice| / oraclePrice`). Must be < `shiftMagnitude`. Starting value: 0.5% (50 bps). What values minimize total cost? Too tight = never clears (marginal price has noise). Too loose = clears before arb is fully consumed. With `minAuctionBlocks`, the convergence check is deferred — the threshold now gates clearing only after the minimum duration, not immediately after the shift.
 
@@ -1070,7 +1341,7 @@ Pool's static params (vaults, assets, euler account) stay the same.
 
 11. **Stablecoin pool calibration.** High-c pools (c ≥ 0.8) need 5-10x more arb volume to clear the same mispricing. Should shiftMagnitude and decayPerBlock be parameterized per pool type, or can a single calibration work across volatile and stable pairs? Empirical testing with realistic stablecoin pool parameters would resolve this.
 
-## 23. Variance Drain: The Fundamental Cost of Rebalancing Leveraged Pools
+## 24. Variance Drain: The Fundamental Cost of Rebalancing Leveraged Pools
 
 Rebalancing is not free. Each recenter crystallizes the pool's impermanent loss into a permanent NAV reduction. For leveraged pools, this loss is amplified by the leverage factor and compounds multiplicatively across recenters. This section derives the cost analytically and validates against simulation.
 

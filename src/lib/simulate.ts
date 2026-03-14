@@ -107,6 +107,53 @@ export function generatePricePath(startPrice: number, config: SimConfig): number
   return prices;
 }
 
+// ─── GARCH(1,1) Price Path ──────────────────────────────────────────
+
+export interface GarchParams {
+  omega: number;   // long-run variance weight (annualized)
+  alpha: number;   // shock coefficient (sensitivity to last return²)
+  beta: number;    // persistence (sensitivity to last variance)
+}
+
+/** Typical crypto GARCH(1,1) params: persistence ≈ 0.95 */
+export const DEFAULT_GARCH_PARAMS: GarchParams = {
+  omega: 0.00001,
+  alpha: 0.15,
+  beta: 0.80,
+};
+
+/**
+ * Generate GARCH(1,1) price path with volatility clustering.
+ * σ²(t) = ω + α·ε²(t-1) + β·σ²(t-1)
+ * The long-run variance is vol² (annualized), which calibrates ω.
+ */
+export function generateGarchPricePath(startPrice: number, config: SimConfig, garch: GarchParams): number[] {
+  const { vol, drift, durationDays, stepsPerDay, seed } = config;
+  const rng = mulberry32(seed);
+  const n = durationDays * stepsPerDay;
+  const dt = 1 / (365 * stepsPerDay);
+
+  // Calibrate omega so unconditional variance = vol² * dt
+  // E[σ²] = ω / (1 - α - β) => ω = E[σ²] * (1 - α - β)
+  const unconditionalVar = vol * vol * dt;
+  const omega = unconditionalVar * (1 - garch.alpha - garch.beta);
+
+  let sigma2 = unconditionalVar;  // initialize at unconditional
+  const prices = new Array<number>(n + 1);
+  prices[0] = startPrice;
+
+  for (let i = 1; i <= n; i++) {
+    const z = boxMuller(rng);
+    const epsilon = Math.sqrt(sigma2) * z;
+    prices[i] = prices[i - 1] * Math.exp((drift - 0.5 * sigma2 / dt) * dt + epsilon);
+    // GARCH(1,1) variance update
+    sigma2 = omega + garch.alpha * epsilon * epsilon + garch.beta * sigma2;
+    // Floor at 10% of unconditional to prevent degenerate paths
+    if (sigma2 < unconditionalVar * 0.1) sigma2 = unconditionalVar * 0.1;
+  }
+  return prices;
+}
+
 // ─── Closed-Form Arb Solver ─────────────────────────────────────────
 
 /** Solve for virtual x given target price p (Y per X) on X side.

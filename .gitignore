@@ -33,6 +33,9 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# claude
+.claude/
+
 # vercel
 .vercel
 
@@ -43,3 +46,5 @@ next-env.d.ts
 # foundry
 /contracts/out/
 /contracts/cache/
+/integrations/tycho/out/
+/integrations/tycho/cache/

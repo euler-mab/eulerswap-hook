@@ -1,5 +1,9 @@
 # Debt Management in Leveraged EulerSwap Pools
 
+> **Note:** This document is historical context. The Dutch auction approach described here
+> was abandoned in favour of the V4 autonomous hook design (see `rebalance-auction-design.md`).
+> The exposure/health analysis and design reasoning remain valuable reference material.
+
 > **Related docs:**
 > - [`contracts/src/TWAP_RECENTERING.md`](../contracts/src/TWAP_RECENTERING.md) —
 >   TWAP-based onchain recentering analysis. Covers oracle choice (slot0 vs TWAP),
