@@ -61,6 +61,37 @@ FORK_URL=<archive_rpc_url> cargo test
 The tests pin block **24,655,259** so the RPC must serve archive state at that
 height.
 
+## Upstream Integration Status
+
+The solver-side integration into `cowprotocol/services` is complete on
+`feature/euler-swap-integration` branch. The following files were added or
+modified:
+
+### New Files
+| File | Purpose |
+|------|---------|
+| `crates/contracts/artifacts/EulerSwap.json` | Pool ABI (computeQuote, swap, getAssets, getReserves) |
+| `crates/contracts/artifacts/EulerSwapRegistry.json` | Registry ABI (pools, poolsLength, poolsSlice) |
+| `crates/solvers/src/domain/liquidity/euler_swap.rs` | Domain pool type (tokens, asset0, asset1) |
+| `crates/solvers/src/boundary/liquidity/euler_swap.rs` | BaselineSolvable impl via computeQuote() eth_call |
+
+### Modified Files
+| File | Change |
+|------|--------|
+| `crates/contracts/build.rs` | Register EulerSwap + EulerSwapRegistry contracts |
+| `crates/solvers/src/domain/liquidity/mod.rs` | Add `EulerSwap` variant to `State` enum |
+| `crates/solvers/src/boundary/liquidity/mod.rs` | Add `euler_swap` module |
+| `crates/solvers/src/boundary/baseline.rs` | Add EulerSwap dispatch (6 match arms) |
+| `crates/solvers-dto/src/auction.rs` | Add `EulerSwap` DTO variant + `EulerSwapPool` struct |
+| `crates/solvers/src/api/routes/solve/dto/auction.rs` | Add DTO-to-domain conversion |
+| `crates/solvers/src/domain/solver/baseline.rs` | Add `euler_swap_node_url` config + provider init |
+| `crates/solvers/src/infra/config/baseline.rs` | Add `euler-swap-node-url` TOML field |
+
+### Remaining (driver-side, not yet implemented)
+- Pool discovery via registry (driver infra)
+- Settlement interaction encoding (driver boundary)
+- Driver config for EulerSwap liquidity source
+
 ## cowprotocol/services Mapping
 
 When porting this code into the upstream CoW solver, each file maps to a
