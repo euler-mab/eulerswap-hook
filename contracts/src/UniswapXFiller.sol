@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 
 interface IEulerSwapPool {
     function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
@@ -47,6 +48,8 @@ struct OutputToken {
 ///      this contract swaps input tokens through EulerSwap to source output tokens.
 ///      Profit (excess output beyond what the reactor pulls) accumulates in this contract.
 contract UniswapXFiller {
+    using SafeERC20 for IERC20;
+
     address public immutable owner;
     address public immutable reactor;
     address public immutable pool;
@@ -55,6 +58,7 @@ contract UniswapXFiller {
 
     error Unauthorized();
     error OnlyReactor();
+    error MultipleOutputsNotSupported();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -69,8 +73,8 @@ contract UniswapXFiller {
         asset1 = _asset1;
 
         // Pre-approve reactor to pull output tokens after swap
-        IERC20(_asset0).approve(_reactor, type(uint256).max);
-        IERC20(_asset1).approve(_reactor, type(uint256).max);
+        IERC20(_asset0).forceApprove(_reactor, type(uint256).max);
+        IERC20(_asset1).forceApprove(_reactor, type(uint256).max);
     }
 
     /// @notice Called by the reactor during executeWithCallback.
@@ -85,12 +89,15 @@ contract UniswapXFiller {
     }
 
     function _fillOrder(ResolvedOrder calldata order) internal {
+        // Only single-output orders supported (covers standard UniswapX swaps)
+        if (order.outputs.length != 1) revert MultipleOutputsNotSupported();
+
         address tokenIn = order.input.token;
         uint256 amountIn = order.input.amount;
         address tokenOut = order.outputs[0].token;
 
         // Transfer input tokens to EulerSwap pool
-        IERC20(tokenIn).transfer(pool, amountIn);
+        IERC20(tokenIn).safeTransfer(pool, amountIn);
 
         // Get quote for exact input
         uint256 amountOut = IEulerSwapPool(pool).computeQuote(tokenIn, tokenOut, amountIn, true);
@@ -110,13 +117,13 @@ contract UniswapXFiller {
 
     /// @notice Withdraw accumulated profit
     function withdraw(address token, uint256 amount, address to) external onlyOwner {
-        IERC20(token).transfer(to, amount);
+        IERC20(token).safeTransfer(to, amount);
     }
 
     /// @notice Withdraw all of a token
     function withdrawAll(address token, address to) external onlyOwner {
         uint256 bal = IERC20(token).balanceOf(address(this));
-        if (bal > 0) IERC20(token).transfer(to, bal);
+        if (bal > 0) IERC20(token).safeTransfer(to, bal);
     }
 
     /// @notice Allow receiving ETH (for WETH unwrapping if needed)

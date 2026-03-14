@@ -102,6 +102,36 @@ contract UniswapXFillerTest is Test {
         assertEq(IERC20(WETH).balanceOf(address(filler)), 0);
     }
 
+    function test_reactorCallback_reverts_multipleOutputs() public {
+        uint256 usdcAmount = 1000e6;
+        deal(USDC, address(filler), usdcAmount);
+
+        // Build order with 2 outputs
+        OutputToken[] memory outputs = new OutputToken[](2);
+        outputs[0] = OutputToken({token: WETH, amount: 0, recipient: address(this)});
+        outputs[1] = OutputToken({token: WETH, amount: 0, recipient: makeAddr("feeRecipient")});
+
+        ResolvedOrder[] memory orders = new ResolvedOrder[](1);
+        orders[0] = ResolvedOrder({
+            info: OrderInfo({
+                reactor: address(0),
+                swapper: address(0),
+                nonce: 0,
+                deadline: type(uint256).max,
+                additionalValidationContract: address(0),
+                additionalValidationData: ""
+            }),
+            input: InputToken({token: USDC, amount: usdcAmount, maxAmount: usdcAmount}),
+            outputs: outputs,
+            sig: "",
+            hash: bytes32(0)
+        });
+
+        vm.prank(REACTOR);
+        vm.expectRevert(UniswapXFiller.MultipleOutputsNotSupported.selector);
+        filler.reactorCallback(orders, "");
+    }
+
     // ---- Helpers ----
 
     function _buildOrder(address tokenIn, uint256 amountIn, address tokenOut, address recipient)

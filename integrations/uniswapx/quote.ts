@@ -43,9 +43,30 @@ export async function evaluateOrder(
   const resolved = resolveAmounts(decoded, now);
 
   const inputToken = decoded.input.token;
-  const outputToken = decoded.outputs[0].token;
   const inputAmount = resolved.inputAmount;
-  const requiredOutput = resolved.outputAmounts[0];
+
+  // All outputs must be the same token (standard for UniswapX swaps).
+  // Sum all output amounts (covers fee-recipient splits).
+  const outputToken = decoded.outputs[0].token;
+  const allSameToken = decoded.outputs.every(
+    (o) => o.token.toLowerCase() === outputToken.toLowerCase(),
+  );
+  if (!allSameToken) {
+    return {
+      orderHash: apiOrder.orderHash,
+      inputToken,
+      outputToken,
+      inputAmount,
+      requiredOutput: 0n,
+      eulerSwapOutput: 0n,
+      grossProfit: 0n,
+      profitBps: 0,
+      withinLimits: false,
+      exclusive: false,
+      profitable: false,
+    };
+  }
+  const requiredOutput = resolved.outputAmounts.reduce((a, b) => a + b, 0n);
 
   // Check exclusivity
   const { exclusiveFiller, decayStartTime } = decoded.cosignerData;

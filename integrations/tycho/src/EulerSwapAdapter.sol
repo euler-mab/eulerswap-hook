@@ -5,6 +5,9 @@ import {ISwapAdapter} from "src/interfaces/ISwapAdapter.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 
+/// @dev Minimal interface for EulerSwap pool contracts. Each pool is a standalone
+/// contract with a Uniswap V2-style swap interface (optimistic output transfer,
+/// then verify input). See: https://github.com/euler-xyz/euler-swap
 interface IEulerSwapPool {
     function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
     function computeQuote(address tokenIn, address tokenOut, uint256 amount, bool exactIn)
@@ -13,11 +16,11 @@ interface IEulerSwapPool {
         returns (uint256);
     function getLimits(address tokenIn, address tokenOut) external view returns (uint256 limitIn, uint256 limitOut);
     function getAssets() external view returns (address asset0, address asset1);
-    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 status);
 }
 
+/// @dev EulerSwap pool registry — tracks all deployed pools on-chain.
+/// Mainnet: 0x5FcCB84363F020c0cADE052C9c654aABF932814A
 interface IEulerSwapRegistry {
-    function pools() external view returns (address[] memory);
     function poolsSlice(uint256 start, uint256 end) external view returns (address[] memory);
     function poolsLength() external view returns (uint256);
 }
@@ -26,16 +29,25 @@ interface IEulerSwapRegistry {
 /// @notice Implements ISwapAdapter to enable Propeller solvers to route through EulerSwap pools.
 /// @dev Uses EulerSwap's direct Uni V2-style interface (swap, computeQuote, getLimits) rather
 /// than routing through Uniswap V4 PoolManager, saving gas and reducing complexity.
+///
+/// Pool IDs are bytes32(bytes20(poolAddress)) — each EulerSwap pool is a separate contract.
+///
+/// EulerSwap swap flow (Uni V2 pattern):
+///   1. Transfer input tokens directly to the pool contract
+///   2. Call pool.swap(amount0Out, amount1Out, recipient, "")
+///   3. Pool sends output tokens to recipient, then verifies curve invariant
+///
+/// Note on hooks: EulerSwap pools may have dynamic fee hooks (e.g. V7 hook reads a Uniswap
+/// oracle). The computeQuote view function staticcalls the hook — if Tycho's VM doesn't index
+/// the hook contract and its dependencies, computeQuote will revert. Ensure the substreams
+/// indexer captures hook contract storage.
 contract EulerSwapAdapter is ISwapAdapter {
     using SafeERC20 for IERC20;
 
     IEulerSwapRegistry public immutable registry;
 
-    /// @dev Small delta for numerical price derivative. Token-decimal aware.
-    uint256 constant PRICE_DELTA_18 = 1e12; // 1e12 wei for 18-decimal tokens
-    uint256 constant PRICE_DELTA_6 = 1; // 1 unit for 6-decimal tokens
-    uint256 constant PRICE_DELTA_8 = 1e2; // 100 units for 8-decimal tokens
-    uint256 constant PRICE_DELTA_DEFAULT = 1e6; // fallback
+    /// @dev Fallback delta for numerical price derivative if decimals() call fails.
+    uint256 constant PRICE_DELTA_DEFAULT = 1e6;
 
     constructor(address registry_) {
         registry = IEulerSwapRegistry(registry_);
@@ -52,12 +64,14 @@ contract EulerSwapAdapter is ISwapAdapter {
         return sellToken == asset0;
     }
 
+    /// @dev Picks a small delta for the numerical price derivative based on token decimals.
+    /// The delta must be large enough to avoid rounding to zero in the curve math,
+    /// but small enough to approximate the true derivative. We use ~1e-6 in token terms
+    /// (e.g. 1e12 wei for 18-decimal tokens, 1 for 6-decimal tokens like USDC).
     function _priceDelta(address token) internal view returns (uint256) {
-        // Use token decimals to pick a sensible delta for numerical derivative
         try IERC20Decimals(token).decimals() returns (uint8 d) {
             if (d <= 6) return 1;
-            if (d <= 8) return 10 ** (d - 6);
-            return 10 ** (d - 6); // ~1e12 for 18 decimals
+            return 10 ** (d - 6);
         } catch {
             return PRICE_DELTA_DEFAULT;
         }
@@ -206,7 +220,8 @@ contract EulerSwapAdapter is ISwapAdapter {
 
     // ─── Internal ────────────────────────────────────────────────────────
 
-    /// @dev Computes the marginal price at the current pool state.
+    /// @dev Computes the marginal price at the current pool state using a numerical
+    /// derivative: price ≈ computeQuote(delta) / delta for a small delta.
     function _marginalPrice(IEulerSwapPool pool, address sellToken, address buyToken)
         internal
         view
