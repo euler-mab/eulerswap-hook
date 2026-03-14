@@ -123,6 +123,9 @@ forge test --match-contract UniswapXFillerTest --fork-url $NEXT_PUBLIC_RPC_URL -
 - **Batch fills.** Multiple profitable orders in the same poll cycle are filled atomically via `executeBatchWithCallback`, amortizing gas.
 - **Rate limiting.** Token bucket limiter (6 req/s) prevents exceeding UniswapX API limits at the default 200ms poll interval.
 - **Webhook sourcing.** Optional HTTP server receives order push notifications from UniswapX (register at Uniswap filler onboarding, whitelist IP `3.14.56.90`). Runs alongside polling as complementary source.
-- **Flashbots bundles.** When `FLASHBOTS_AUTH_KEY` is set, fills are submitted as bundles to `relay.flashbots.net`. Failed bundles cost zero gas. Targets block+1 and block+2 for redundancy.
+- **Flashbots bundles.** Two MEV protection modes:
+  - **Bundle mode** (`FLASHBOTS_AUTH_KEY` set): Builds a raw signed transaction, submits it as a Flashbots bundle to `relay.flashbots.net` targeting block+1 and block+2. Failed bundles cost **zero gas** — the tx is never on-chain if it would revert. The auth key is a throwaway private key (not your filler key) used to identify you to the relay.
+  - **Protect RPC** (`FLASHBOTS_RPC_URL` set, no auth key): Routes transactions through Flashbots Protect RPC, which hides them from the public mempool. Simpler setup but **reverts still cost gas**.
+  - **Standard** (neither set): Submits directly via your RPC. No MEV protection.
 - **Exclusivity window.** Orders with a non-zero `exclusiveFiller` before `decayStartTime` are flagged but not filled.
 - **Pool limits.** `getLimits()` is checked to ensure the order size doesn't exceed what the pool can handle.

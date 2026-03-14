@@ -13,7 +13,8 @@
  *   NEXT_PUBLIC_RPC_URL   - Ethereum RPC endpoint (required)
  *   PRIVATE_KEY           - Filler wallet private key (required for --live)
  *   EXECUTOR_ADDRESS      - Deployed UniswapXFiller contract (required for --live)
- *   FLASHBOTS_AUTH_KEY    - Throwaway key for Flashbots relay auth (optional)
+ *   FLASHBOTS_AUTH_KEY    - Throwaway key for bundle mode (zero gas on failure)
+ *   FLASHBOTS_RPC_URL    - Flashbots Protect RPC URL (fallback, reverts cost gas)
  *   MIN_PROFIT_BPS        - Minimum profit threshold in bps (default: 5)
  *   MAX_GAS_GWEI          - Skip fills above this base fee (default: 50)
  *   POLL_INTERVAL_MS      - Polling interval in ms (default: 200)
@@ -52,9 +53,15 @@ import { evaluateOrder, formatQuote, type QuoteResult } from "./quote";
 import {
   callbackFill,
   batchCallbackFill,
+  buildSignedFillTx,
+  buildSignedBatchFillTx,
   simulateFill,
   simulateBatchFill,
 } from "./fill";
+import {
+  submitBundleWithRedundancy,
+  getCurrentBlock,
+} from "./flashbots";
 import { startWebhookServer } from "./webhook";
 import { ADDRESSES, type UniswapXApiOrder } from "./types";
 
@@ -82,13 +89,20 @@ const client = createPublicClient({
   batch: { multicall: true },
 });
 
-// Wallet client for live fills
+// Wallet client for live fills.
+// Always uses normal RPC for nonce/gas estimation.
+// For bundle mode (FLASHBOTS_AUTH_KEY), the signed tx goes directly to the relay.
+// For non-bundle mode, FLASHBOTS_RPC_URL provides Protect RPC (reverts still cost gas).
 const walletClient =
   LIVE && process.env.PRIVATE_KEY
     ? createWalletClient({
         account: privateKeyToAccount(process.env.PRIVATE_KEY as Hex),
         chain: mainnet,
-        transport: http(process.env.FLASHBOTS_RPC_URL ?? RPC_URL),
+        transport: http(
+          FLASHBOTS_AUTH_KEY
+            ? RPC_URL // Bundle mode: wallet uses normal RPC, signed tx → relay
+            : (process.env.FLASHBOTS_RPC_URL ?? RPC_URL), // Protect RPC fallback
+        ),
       })
     : undefined;
 
@@ -235,30 +249,60 @@ async function executeFills(
       `  SIM OK (gas: ${sim.gasEstimate ?? "unknown"}) — submitting fill...`,
     );
 
-    // Submit fill via Flashbots Protect RPC (if FLASHBOTS_RPC_URL configured
-    // in wallet client transport) or standard RPC.
-    // TODO: Wire up full Flashbots bundle submission for zero-gas-on-failure.
-    // Requires: encodeFunctionData + signTransaction + submitBundleWithRedundancy.
-    const txHash =
-      orders.length === 1
-        ? await callbackFill(
-            walletClient,
-            client,
-            orders[0],
-            EXECUTOR_ADDRESS,
-            ADDRESSES.pool,
-            0n,
-          )
-        : await batchCallbackFill(
-            walletClient,
-            client,
-            orders,
-            EXECUTOR_ADDRESS,
-            ADDRESSES.pool,
-            0n,
-          );
+    if (FLASHBOTS_AUTH_KEY) {
+      // Bundle mode: build raw signed tx, submit to Flashbots relay.
+      // Failed bundles cost zero gas (vs Protect RPC where reverts still pay).
+      const signedTx =
+        orders.length === 1
+          ? await buildSignedFillTx(
+              walletClient,
+              client,
+              orders[0],
+              EXECUTOR_ADDRESS,
+              ADDRESSES.pool,
+              0n,
+            )
+          : await buildSignedBatchFillTx(
+              walletClient,
+              client,
+              orders,
+              EXECUTOR_ADDRESS,
+              ADDRESSES.pool,
+              0n,
+            );
 
-    console.log(`  FILLED: ${txHash}`);
+      const currentBlock = await getCurrentBlock(client);
+      const bundle = await submitBundleWithRedundancy(
+        signedTx,
+        currentBlock,
+        FLASHBOTS_AUTH_KEY,
+      );
+      console.log(
+        `  BUNDLE SUBMITTED: ${bundle.bundleHash} (target: ${currentBlock + 1n}+)`,
+      );
+    } else {
+      // Non-bundle mode: submit via wallet client RPC (Protect or standard).
+      const txHash =
+        orders.length === 1
+          ? await callbackFill(
+              walletClient,
+              client,
+              orders[0],
+              EXECUTOR_ADDRESS,
+              ADDRESSES.pool,
+              0n,
+            )
+          : await batchCallbackFill(
+              walletClient,
+              client,
+              orders,
+              EXECUTOR_ADDRESS,
+              ADDRESSES.pool,
+              0n,
+            );
+
+      console.log(`  FILLED: ${txHash}`);
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`  FILL ERROR: ${msg}`);
@@ -329,7 +373,9 @@ async function main() {
   console.log(`Min profit:     ${MIN_PROFIT_BPS} bps`);
   console.log(`Max gas:        ${MAX_GAS_GWEI} gwei`);
   console.log(`Poll interval:  ${POLL_INTERVAL_MS}ms`);
-  console.log(`Flashbots:      ${FLASHBOTS_AUTH_KEY ? "enabled" : "disabled"}`);
+  console.log(
+    `Flashbots:      ${FLASHBOTS_AUTH_KEY ? "bundle mode (zero gas on failure)" : process.env.FLASHBOTS_RPC_URL ? "protect RPC (reverts still cost gas)" : "disabled"}`,
+  );
   console.log(`Webhook:        ${WEBHOOK_PORT ? `port ${WEBHOOK_PORT}` : "disabled"}`);
 
   if (LIVE && !walletClient) {

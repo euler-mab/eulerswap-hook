@@ -2,7 +2,7 @@
 // Supports direct fill (from wallet inventory) and callback fill (via executor contract)
 
 import type { Address, Hex, WalletClient, PublicClient } from "viem";
-import { encodeAbiParameters } from "viem";
+import { encodeAbiParameters, encodeFunctionData } from "viem";
 import type { UniswapXApiOrder } from "./types";
 import { ADDRESSES } from "./types";
 
@@ -280,6 +280,80 @@ export async function simulateBatchFill(
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, error: msg };
   }
+}
+
+/**
+ * Build and sign a raw fill transaction for Flashbots bundle submission.
+ * Uses encodeFunctionData + prepareTransactionRequest + signTransaction
+ * to produce a signed EIP-1559 transaction hex without broadcasting.
+ */
+export async function buildSignedFillTx(
+  walletClient: WalletClient,
+  publicClient: PublicClient,
+  apiOrder: UniswapXApiOrder,
+  executorAddress: Address,
+  poolAddress: Address = ADDRESSES.pool,
+  minProfit: bigint = 0n,
+  reactorAddress: Address = ADDRESSES.reactorV2,
+): Promise<Hex> {
+  const account = walletClient.account;
+  if (!account) throw new Error("WalletClient has no account");
+
+  const data = encodeFunctionData({
+    abi: reactorAbi,
+    functionName: "executeWithCallback",
+    args: [
+      { order: apiOrder.encodedOrder, sig: apiOrder.signature },
+      encodeCallbackData(poolAddress, minProfit),
+    ],
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- viem's strict generics
+  const prepared = await walletClient.prepareTransactionRequest({
+    to: reactorAddress,
+    data,
+    account,
+    chain: walletClient.chain,
+  } as any);
+
+  return walletClient.signTransaction({ ...prepared, account } as any);
+}
+
+/**
+ * Build and sign a raw batch fill transaction for Flashbots bundle submission.
+ */
+export async function buildSignedBatchFillTx(
+  walletClient: WalletClient,
+  publicClient: PublicClient,
+  apiOrders: UniswapXApiOrder[],
+  executorAddress: Address,
+  poolAddress: Address = ADDRESSES.pool,
+  minProfit: bigint = 0n,
+  reactorAddress: Address = ADDRESSES.reactorV2,
+): Promise<Hex> {
+  const account = walletClient.account;
+  if (!account) throw new Error("WalletClient has no account");
+
+  const signedOrders = apiOrders.map((o) => ({
+    order: o.encodedOrder,
+    sig: o.signature,
+  }));
+
+  const data = encodeFunctionData({
+    abi: reactorAbi,
+    functionName: "executeBatchWithCallback",
+    args: [signedOrders, encodeCallbackData(poolAddress, minProfit)],
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- viem's strict generics
+  const prepared = await walletClient.prepareTransactionRequest({
+    to: reactorAddress,
+    data,
+    account,
+    chain: walletClient.chain,
+  } as any);
+
+  return walletClient.signTransaction({ ...prepared, account } as any);
 }
 
 /**
