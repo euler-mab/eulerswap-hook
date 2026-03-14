@@ -162,8 +162,12 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
         assertEq(wethAfter - wethBefore, trade.calculatedAmount, "balance change should match");
         assertTrue(trade.gasUsed > 0, "gas should be tracked");
 
+        // Post-swap price: real marginal if afterSwap didn't reconfigure, else Fraction(0,1)
+        assertTrue(trade.price.denominator > 0, "post-swap price denominator > 0");
+
         console.log("Sold 1000 USDC, got %d WETH (wei)", trade.calculatedAmount);
         console.log("Gas used: %d", trade.gasUsed);
+        console.log("Post-swap price: %d / %d", trade.price.numerator, trade.price.denominator);
     }
 
     function test_swap_sell_WETH_for_USDC() public {
@@ -213,6 +217,8 @@ contract EulerSwapAdapterForkTest is Test, ISwapAdapterTypes {
     function test_swap_zero_amount() public {
         Trade memory trade = adapter.swap(POOL_ID, USDC, WETH, OrderSide.Sell, 0);
         assertEq(trade.calculatedAmount, 0, "zero input should yield zero output");
+        assertEq(trade.price.denominator, 1, "zero-trade price denominator should be 1");
+        assertEq(trade.price.numerator, 0, "zero-trade price numerator should be 0");
     }
 
     function test_swap_beyond_limit_reverts() public {

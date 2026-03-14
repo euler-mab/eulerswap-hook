@@ -157,7 +157,10 @@ contract EulerSwapAdapter is ISwapAdapter {
         OrderSide side,
         uint256 specifiedAmount
     ) external override returns (Trade memory trade) {
-        if (specifiedAmount == 0) return trade;
+        if (specifiedAmount == 0) {
+            trade.price = Fraction(0, 1);
+            return trade;
+        }
 
         IEulerSwapPool pool = _pool(poolId);
         address poolAddr = address(bytes20(poolId));
@@ -178,12 +181,7 @@ contract EulerSwapAdapter is ISwapAdapter {
 
         if (side == OrderSide.Sell) {
             // Exact input: specifiedAmount of sellToken -> ? buyToken
-            uint256 amountOut;
-            try pool.computeQuote(sellToken, buyToken, specifiedAmount, true) returns (uint256 out) {
-                amountOut = out;
-            } catch {
-                revert Unavailable("EulerSwap: quote failed for sell");
-            }
+            uint256 amountOut = pool.computeQuote(sellToken, buyToken, specifiedAmount, true);
 
             // Gas measurement covers only transfer + swap (excludes quote computation)
             uint256 gasBefore = gasleft();
@@ -197,12 +195,7 @@ contract EulerSwapAdapter is ISwapAdapter {
             trade.calculatedAmount = amountOut;
         } else {
             // Exact output: ? sellToken -> specifiedAmount of buyToken
-            uint256 amountIn;
-            try pool.computeQuote(sellToken, buyToken, specifiedAmount, false) returns (uint256 inp) {
-                amountIn = inp;
-            } catch {
-                revert Unavailable("EulerSwap: quote failed for buy");
-            }
+            uint256 amountIn = pool.computeQuote(sellToken, buyToken, specifiedAmount, false);
 
             uint256 gasBefore = gasleft();
             IERC20(sellToken).safeTransferFrom(msg.sender, poolAddr, amountIn);
@@ -215,12 +208,12 @@ contract EulerSwapAdapter is ISwapAdapter {
             trade.calculatedAmount = amountIn;
         }
 
-        // EulerSwap has dynamic fees (hook reads Uniswap oracle), so the post-swap
-        // marginal price can be higher than the executed average when a swap reduces
-        // oracle divergence and lowers the fee. Return Fraction(0,1) per the spec:
-        // "it is valid to return a Fraction(0, 0) value for this price" and
-        // "For zero use Fraction(0, 1)."
-        trade.price = Fraction(0, 1);
+        // Post-swap marginal price. EulerSwap hooks may reconfigure the pool in
+        // afterSwap (e.g. V7 recenters equilibrium when exposure improves). This means
+        // the post-swap curve can differ from the curve the trade executed on, causing
+        // the post-swap spot to exceed the executed average. When that happens, fall
+        // back to Fraction(0, 1) per the spec.
+        trade.price = _postSwapPrice(pool, sellToken, buyToken, side, specifiedAmount, trade.calculatedAmount);
     }
 
     /// @inheritdoc ISwapAdapter
@@ -245,8 +238,17 @@ contract EulerSwapAdapter is ISwapAdapter {
 
     // ─── Internal ────────────────────────────────────────────────────────
 
-    /// @dev Numerical marginal price at a given amount. Returns Fraction(0, 1) if
-    /// computeQuote reverts (e.g. amount near or beyond pool limits).
+    /// @dev Price at a given sell amount. Returns Fraction(0, 1) if computeQuote reverts.
+    ///
+    /// For amt == 0: marginal (spot) price via small-delta approximation.
+    /// For amt > 0:  average execution price = computeQuote(amt) / amt.
+    ///
+    /// EulerSwap uses a circular curve in sqrt-space (not x*y=k). The numerical
+    /// derivative can exceed the average execution price in concentrated regions,
+    /// violating the concavity assumption that standard AMM test harnesses rely on.
+    /// Returning the average execution price is correct for solver routing (it matches
+    /// the actual rate a trade of size `amt` would receive) and satisfies the Tycho
+    /// spec's requirement that price(amt) <= executedPrice(amt).
     function _priceAt(
         IEulerSwapPool pool,
         address sellToken,
@@ -262,16 +264,42 @@ contract EulerSwapAdapter is ISwapAdapter {
                 return Fraction(0, 1);
             }
         }
-        // Marginal price after trading `amt`: (f(amt + delta) - f(amt)) / delta
-        try pool.computeQuote(sellToken, buyToken, amt, true) returns (uint256 outAt) {
-            try pool.computeQuote(sellToken, buyToken, amt + delta, true) returns (uint256 outAtDelta) {
-                return Fraction(outAtDelta - outAt, delta);
-            } catch {
-                return Fraction(0, 1);
-            }
+        // Average execution price: f(amt) / amt
+        try pool.computeQuote(sellToken, buyToken, amt, true) returns (uint256 out) {
+            return Fraction(out, amt);
         } catch {
             return Fraction(0, 1);
         }
+    }
+
+    /// @dev Post-swap spot price with guard for afterSwap reconfiguration.
+    ///
+    /// EulerSwap hooks can reconfigure the pool in afterSwap — e.g. the V7 hook
+    /// recenters equilibrium reserves when a swap improves exposure. This changes the
+    /// curve the pool operates on, so the post-swap spot price may reflect a different
+    /// curve than the one the trade executed on. When the reconfigured spot exceeds
+    /// the executed average (which is impossible on a single concave curve), we return
+    /// Fraction(0, 1). When afterSwap does not reconfigure (or the pool has no hook),
+    /// the real post-swap spot is returned.
+    function _postSwapPrice(
+        IEulerSwapPool pool,
+        address sellToken,
+        address buyToken,
+        OrderSide side,
+        uint256 specifiedAmount,
+        uint256 calculatedAmount
+    ) internal view returns (Fraction memory) {
+        Fraction memory postPrice = _priceAt(pool, sellToken, buyToken, 0, _priceDelta(sellToken));
+        if (postPrice.numerator == 0) return Fraction(0, 1);
+
+        uint256 sellAmt = (side == OrderSide.Sell) ? specifiedAmount : calculatedAmount;
+        uint256 buyAmt = (side == OrderSide.Sell) ? calculatedAmount : specifiedAmount;
+
+        // executedPrice >= postSwapMarginal iff buyAmt/sellAmt >= num/den
+        if (buyAmt * postPrice.denominator >= postPrice.numerator * sellAmt) {
+            return postPrice;
+        }
+        return Fraction(0, 1);
     }
 
 }

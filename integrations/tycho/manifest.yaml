@@ -3,7 +3,7 @@ author:
   email: security@euler.xyz
 
 constants:
-  protocol_gas: 120000
+  protocol_gas: 250000
   capabilities:
     - SellSide
     - BuySide
