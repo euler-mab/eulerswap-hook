@@ -118,7 +118,7 @@ forge test --match-contract UniswapXFillerTest --fork-url $NEXT_PUBLIC_RPC_URL -
 ## Design notes
 
 - **No SDK dependency.** The `@uniswap/uniswapx-sdk` uses `workspace:*` deps that break `npm install`. Instead, orders are decoded directly using viem's `decodeAbiParameters` with the V2DutchOrder ABI tuple.
-- **Gas-aware profitability.** Net profit accounts for gas cost (250k gas estimate * effective gas price), converted to output token units via EulerSwap's own price.
+- **Adaptive gas estimation.** Starts with a conservative 250k gas estimate. After each successful simulation, the actual gas is fed into an EMA (α=0.3) with a 20% safety margin. The estimate self-corrects over time — no manual tuning needed.
 - **Simulate before fill.** Every fill is preceded by `eth_call` simulation to avoid wasting gas on reverts.
 - **Batch fills.** Multiple profitable orders in the same poll cycle are filled atomically via `executeBatchWithCallback`, amortizing gas.
 - **Rate limiting.** Token bucket limiter (6 req/s) prevents exceeding UniswapX API limits at the default 200ms poll interval.
