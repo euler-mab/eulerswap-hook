@@ -128,4 +128,5 @@ forge test --match-contract UniswapXFillerTest --fork-url $NEXT_PUBLIC_RPC_URL -
   - **Protect RPC** (`FLASHBOTS_RPC_URL` set, no auth key): Routes transactions through Flashbots Protect RPC, which hides them from the public mempool. Simpler setup but **reverts still cost gas**.
   - **Standard** (neither set): Submits directly via your RPC. No MEV protection.
 - **Exclusivity window.** Orders with a non-zero `exclusiveFiller` before `decayStartTime` are flagged but not filled.
+- **Pool status check.** Before evaluating orders, the bot checks pool availability via multicall: status must be unlocked (1), pool must be installed in EVC, not expired, and fees must be < 100%. Mirrors the CoW driver's pool filtering pattern.
 - **Pool limits.** `getLimits()` is checked to ensure the order size doesn't exceed what the pool can handle.
