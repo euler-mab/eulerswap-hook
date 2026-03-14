@@ -81,6 +81,82 @@ specific location in the `cowprotocol/services` monorepo:
 | EulerSwap Registry | `0x5FcCB84363F020c0cADE052C9c654aABF932814A` |
 | CoW Settlement | `0x9008D19f58AAbD9eD0D60971565AA8510560ab41` |
 
+## Upstream PR Guide: cowprotocol/services Integration
+
+This section documents the specific adaptations needed to port this standalone
+crate into a pull request against `cowprotocol/services`. The architecture
+differs from our standalone workspace — this is the gap analysis.
+
+### Traits to Implement
+
+The upstream repo requires three trait implementations:
+
+**1. `BaselineSolvable`** (in `crates/liquidity-sources/src/baseline_solvable.rs`)
+
+```rust
+// Phase 1: delegate to computeQuote() via eth_call (same pattern as UniV3)
+// See: crates/solvers/src/boundary/liquidity/concentrated.rs
+fn get_amount_out(&self, out_token: Address, input: (U256, Address)) -> Option<U256>;
+fn get_amount_in(&self, in_token: Address, output: (U256, Address)) -> Option<U256>;
+fn gas_cost(&self) -> usize;
+```
+
+Our `EthCallQuoter` provides the logic. For Phase 1, the impl is async
+(eth_call per quote), matching the UniV3 Concentrated Liquidity precedent
+from PR #3468.
+
+**2. `SettlementHandling<EulerSwapOrder>`** (in `crates/solver/src/liquidity/`)
+
+```rust
+fn encode(&self, execution: AmmOrderExecution, encoder: &mut SettlementEncoder) -> Result<()>;
+```
+
+Our `encode_swap()` produces the correct interactions. The adaptation is
+wrapping them in upstream's `EncodedInteraction` type and pushing them
+into the `SettlementEncoder`.
+
+**3. `LiquidityCollecting`** (in `crates/solver/src/liquidity_collector.rs`)
+
+```rust
+async fn get_liquidity(&self, pairs: HashSet<TokenPair>, at_block: Block) -> Result<Vec<Liquidity>>;
+```
+
+Our `PoolFetcher` provides the data. Wrap in `BackgroundInitLiquiditySource`
+for retry-safe async initialization.
+
+### Files to Create in cowprotocol/services
+
+| New file | Based on | Purpose |
+|----------|----------|---------|
+| `crates/liquidity-sources/src/euler_swap/mod.rs` | `abi.rs` + `types.rs` + `quoting.rs` | Pool type + `BaselineSolvable` impl |
+| `crates/liquidity-sources/src/euler_swap/pool_fetching.rs` | `pool_fetching.rs` | Registry discovery + state refresh |
+| `crates/driver/src/domain/liquidity/euler_swap.rs` | `types.rs` | Domain types |
+| `crates/driver/src/boundary/liquidity/euler_swap.rs` | `settlement.rs` | `SettlementHandling` impl |
+| `crates/driver/src/infra/liquidity/config.rs` | (modify) | Add `EulerSwapConfig { registry }` |
+| `crates/solvers-dto/src/auction.rs` | (modify) | Add `EulerSwap` variant to `Liquidity` DTO |
+| `crates/solvers/src/boundary/baseline.rs` | (modify) | Add `EulerSwap` variant to `LiquiditySource` enum |
+
+### Key Adaptations
+
+- **Contract bindings**: Upstream generates bindings in `crates/contracts/` from ABIs, not inline `sol!`. Add our ABI JSONs there.
+- **Error handling**: Replace `eyre::Result` with `anyhow::Result`.
+- **Token pairs**: Replace our `TokenPair` with upstream's `model::TokenPair` (has ordering guarantees).
+- **Caching**: Integrate with `RecentBlockCache` for per-block state refresh.
+- **Provider type**: Replace generic `P: Provider` with upstream's concrete `Web3` / `ethrpc` types.
+
+### Precedent PRs
+
+- **UniV3 Baseline** (PR #3468): Added async eth_call quoting to the baseline solver. Closest pattern to our Phase 1 approach.
+- **Swapr**: UniV2 fork with dynamic fees. Shows how to add a source that reuses `ConstantProductOrder` with extra fee data.
+
+### Config
+
+```toml
+# In the driver TOML config:
+[[liquidity.euler-swap]]
+registry = "0x5FcCB84363F020c0cADE052C9c654aABF932814A"
+```
+
 ## Phase 2 Roadmap
 
 Phase 2 replaces `eth_call` quoting with native Rust curve math for sub-ms

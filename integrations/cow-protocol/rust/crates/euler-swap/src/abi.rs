@@ -65,9 +65,10 @@ sol! {
         function getFee(bool asset0IsInput, uint112 reserve0, uint112 reserve1, bool readOnly) external returns (uint64 fee);
     }
 
-    /// ERC20 transfer for settlement encoding.
+    /// ERC20 functions used in settlement encoding and balance checks.
     #[sol(rpc)]
     interface IERC20 {
         function transfer(address to, uint256 amount) external returns (bool);
+        function balanceOf(address account) external view returns (uint256);
     }
 }
