@@ -6,8 +6,8 @@
  * against our EulerSwap pool, and optionally fills profitable orders.
  *
  * Usage:
- *   npx tsx scripts/uniswapx-filler.ts              # monitoring mode (default)
- *   npx tsx scripts/uniswapx-filler.ts --live        # live fill mode
+ *   npx tsx integrations/uniswapx/filler.ts              # monitoring mode (default)
+ *   npx tsx integrations/uniswapx/filler.ts --live        # live fill mode
  *
  * Env vars:
  *   NEXT_PUBLIC_RPC_URL   - Ethereum RPC endpoint (required)
