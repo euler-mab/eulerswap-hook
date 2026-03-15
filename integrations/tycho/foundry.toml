@@ -2,15 +2,14 @@
 src = "src"
 out = "out"
 test = "test"
-libs = ["../../contracts/eulerswap/lib"]
+libs = ["lib"]
 solc = "0.8.27"
 optimizer = true
 optimizer_runs = 200
 
 remappings = [
-  "forge-std/=../../contracts/eulerswap/lib/forge-std/src/",
-  "openzeppelin-contracts/=../../contracts/eulerswap/lib/openzeppelin-contracts/contracts/",
-  "eulerswap/=../../contracts/eulerswap/src/",
+  "forge-std/=lib/forge-std/src/",
+  "openzeppelin-contracts/=lib/openzeppelin-contracts/contracts/",
   "src/=src/",
 ]
 
