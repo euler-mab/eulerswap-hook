@@ -1,0 +1,81 @@
+specVersion: v0.1.0
+package:
+  name: "ethereum_eulerswap"
+  version: v0.1.0
+
+protobuf:
+  files:
+    - tycho/evm/v1/common.proto
+    - tycho/evm/v1/utils.proto
+  importPaths:
+    - ../../proto
+
+binaries:
+  default:
+    type: wasm/rust-v1
+    file: ../target/wasm32-unknown-unknown/release/ethereum_eulerswap.wasm
+
+network: mainnet
+
+# Params format (serde_qs query-string):
+#   registry_address  — EulerSwapRegistry contract address
+#   hook_contracts    — comma-separated hook contract addresses to track storage for
+#   oracle_contracts  — comma-separated oracle addresses (e.g. Uniswap V3 pools for slot0)
+#
+# The pool contracts are discovered automatically via PoolRegistered events.
+# Hook and oracle contracts are per-deployment configuration because substreams
+# cannot make external calls to read DynamicParams.swapHook or hook.uniswapPool().
+params:
+  map_protocol_components: "registry_address=5FcCB84363F020c0cADE052C9c654aABF932814A"
+  map_relative_component_balance: "registry_address=5FcCB84363F020c0cADE052C9c654aABF932814A"
+  map_protocol_changes: "registry_address=5FcCB84363F020c0cADE052C9c654aABF932814A&hook_contracts=7bb638b9842eA4275901aafB2e34943d9C2Fe4FB&oracle_contracts=88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"
+
+modules:
+  # 1. DISCOVERY: Watch PoolRegistered/PoolUnregistered events on the registry
+  - name: map_protocol_components
+    kind: map
+    inputs:
+      - params: string
+      - source: sf.ethereum.type.v2.Block
+    output:
+      type: proto:tycho.evm.v1.BlockTransactionProtocolComponents
+
+  # 2. STORE TOKENS: Track which tokens belong to which pool components
+  - name: store_protocol_tokens
+    kind: store
+    updatePolicy: set
+    valueType: string
+    inputs:
+      - map: map_protocol_components
+
+  # 3. BALANCE DELTAS: Extract reserve changes from Swap events
+  - name: map_relative_component_balance
+    kind: map
+    inputs:
+      - params: string
+      - source: sf.ethereum.type.v2.Block
+      - store: store_protocol_tokens
+    output:
+      type: proto:tycho.evm.v1.BlockBalanceDeltas
+
+  # 4. ACCUMULATE: Store running absolute reserve balances
+  - name: store_component_balances
+    kind: store
+    updatePolicy: add
+    valueType: bigint
+    inputs:
+      - map: map_relative_component_balance
+
+  # 5. AGGREGATE: Combine components + balances + contract storage changes
+  - name: map_protocol_changes
+    kind: map
+    inputs:
+      - params: string
+      - source: sf.ethereum.type.v2.Block
+      - map: map_protocol_components
+      - map: map_relative_component_balance
+      - store: store_protocol_tokens
+      - store: store_component_balances
+        mode: deltas
+    output:
+      type: proto:tycho.evm.v1.BlockChanges

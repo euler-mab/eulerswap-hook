@@ -2,25 +2,14 @@
 /**
  * 1inch Fusion Filler Bot for EulerSwap
  *
- * Monitors 1inch Fusion active orders, evaluates profitability against an
- * EulerSwap pool, and optionally fills profitable orders via the
- * OneInchFusionResolver contract.
- *
  * Usage:
- *   npx tsx integrations/1inch-fusion/filler.ts              # monitoring mode (mainnet)
+ *   npx tsx integrations/1inch-fusion/filler.ts              # monitor mode
  *   npx tsx integrations/1inch-fusion/filler.ts --live        # live fill mode
- *   CHAIN_ID=42161 npx tsx integrations/1inch-fusion/filler.ts  # different chain
+ *   CHAIN_ID=42161 npx tsx integrations/1inch-fusion/filler.ts
  *
- * Env vars:
- *   NEXT_PUBLIC_RPC_URL   - RPC endpoint (required)
- *   ONEINCH_API_KEY       - 1inch Developer Portal API key (required)
- *   CHAIN_ID              - Chain ID (default: 1 = Ethereum mainnet)
- *   PRIVATE_KEY           - Filler wallet private key (required for --live)
- *   RESOLVER_ADDRESS      - Deployed OneInchFusionResolver contract (required for --live)
- *   FLASHBOTS_AUTH_KEY    - Throwaway key for bundle mode (mainnet only)
- *   MIN_PROFIT_BPS        - Minimum profit threshold in bps (default: 5)
- *   MAX_GAS_GWEI          - Skip fills above this base fee (default: 50)
- *   POLL_INTERVAL_MS      - Polling interval in ms (default: 2000)
+ * Env vars: NEXT_PUBLIC_RPC_URL, ONEINCH_API_KEY, CHAIN_ID (default 1),
+ *   PRIVATE_KEY, RESOLVER_ADDRESS, FLASHBOTS_AUTH_KEY,
+ *   MIN_PROFIT_BPS (5), MAX_GAS_GWEI (50), POLL_INTERVAL_MS (2000)
  */
 
 import { readFileSync } from "fs";
@@ -29,15 +18,13 @@ import { resolve } from "path";
 // Load .env.local if present
 try {
   const envPath = resolve(process.cwd(), ".env.local");
-  const envContent = readFileSync(envPath, "utf-8");
-  for (const line of envContent.split("\n")) {
+  for (const line of readFileSync(envPath, "utf-8").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     const eqIdx = trimmed.indexOf("=");
     if (eqIdx === -1) continue;
     const key = trimmed.slice(0, eqIdx);
-    const val = trimmed.slice(eqIdx + 1);
-    if (!process.env[key]) process.env[key] = val;
+    if (!process.env[key]) process.env[key] = trimmed.slice(eqIdx + 1);
   }
 } catch {}
 
@@ -49,38 +36,25 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { fetchActiveOrders, filterForPool, formatOrder } from "./api";
+import { fetchActiveOrders, filterForPool } from "./api";
 import { eulerSwapAbi } from "../../src/lib/pools/abi";
 import { evaluateOrder, formatQuote, type QuoteResult } from "./quote";
 import { buildFillCalldata, submitFill, simulateFill, buildSignedFillTx } from "./fill";
-import {
-  submitBundleWithRedundancy,
-  getCurrentBlock,
-} from "../uniswapx/flashbots";
+import { submitBundleWithRedundancy, getCurrentBlock } from "../uniswapx/flashbots";
 import { type ChainConfig, type FusionApiOrder, getChainConfig } from "./types";
 
 // ---- Config ----
 
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL;
-if (!RPC_URL) {
-  console.error("NEXT_PUBLIC_RPC_URL not set");
-  process.exit(1);
-}
+if (!RPC_URL) { console.error("NEXT_PUBLIC_RPC_URL not set"); process.exit(1); }
 
 const API_KEY = process.env.ONEINCH_API_KEY;
-if (!API_KEY) {
-  console.error("ONEINCH_API_KEY not set (get one at portal.1inch.dev)");
-  process.exit(1);
-}
+if (!API_KEY) { console.error("ONEINCH_API_KEY not set"); process.exit(1); }
 
 const CHAIN_ID = parseInt(process.env.CHAIN_ID ?? "1");
 let chainConfig: ChainConfig;
-try {
-  chainConfig = getChainConfig(CHAIN_ID);
-} catch (err) {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
-}
+try { chainConfig = getChainConfig(CHAIN_ID); }
+catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(1); }
 
 const LIVE = process.argv.includes("--live");
 const MIN_PROFIT_BPS = parseInt(process.env.MIN_PROFIT_BPS ?? "5");
@@ -100,11 +74,7 @@ const walletClient =
     ? createWalletClient({
         account: privateKeyToAccount(process.env.PRIVATE_KEY as Hex),
         chain: chainConfig.chain,
-        transport: http(
-          FLASHBOTS_AUTH_KEY
-            ? RPC_URL
-            : (process.env.FLASHBOTS_RPC_URL ?? RPC_URL),
-        ),
+        transport: http(FLASHBOTS_AUTH_KEY ? RPC_URL : (process.env.FLASHBOTS_RPC_URL ?? RPC_URL)),
       })
     : undefined;
 
@@ -112,94 +82,49 @@ const walletClient =
 
 class RateLimiter {
   private timestamps: number[] = [];
-  constructor(
-    private maxRequests: number,
-    private windowMs: number,
-  ) {}
+  constructor(private maxRequests: number, private windowMs: number) {}
   async waitForSlot(): Promise<void> {
     const now = Date.now();
     this.timestamps = this.timestamps.filter((t) => now - t < this.windowMs);
     if (this.timestamps.length >= this.maxRequests) {
-      const oldest = this.timestamps[0];
-      const waitMs = this.windowMs - (now - oldest) + 1;
+      const waitMs = this.windowMs - (now - this.timestamps[0]) + 1;
       await new Promise((r) => setTimeout(r, waitMs));
     }
     this.timestamps.push(Date.now());
   }
 }
 
-// 1inch API: conservative rate limit (check portal for actual limits)
 const rateLimiter = new RateLimiter(3, 1000);
 
 // ---- State ----
 
-const seenOrders = new Map<string, number>(); // hash -> auctionEndDate
+const seenOrders = new Map<string, number>();
 const pendingFills = new Set<string>();
-let totalOrdersSeen = 0;
 let totalMatchingOrders = 0;
 let totalProfitable = 0;
 let cycleCount = 0;
 let consecutiveErrors = 0;
 
-function evictStaleOrders() {
-  const now = Math.floor(Date.now() / 1000);
-  for (const [hash, endDate] of seenOrders) {
-    if (endDate < now) seenOrders.delete(hash);
-  }
-}
-
 // ---- Pool Status ----
 
-const WAD = 1_000_000_000_000_000_000n; // 1e18
+const WAD = 1_000_000_000_000_000_000n;
 
-/**
- * Check if the pool is available for swaps.
- * Mirrors the CoW driver's pool filtering: skip if expired, locked, fee >= 100%, or not installed.
- * Returns null if available, or a reason string if not.
- */
 async function checkPoolAvailable(poolAddress: Address): Promise<string | null> {
   try {
     const [reserves, dynamicParams, installed] = await Promise.all([
-      client.readContract({
-        address: poolAddress,
-        abi: eulerSwapAbi,
-        functionName: "getReserves",
-      }) as Promise<readonly [bigint, bigint, number]>,
-      client.readContract({
-        address: poolAddress,
-        abi: eulerSwapAbi,
-        functionName: "getDynamicParams",
-      }) as Promise<{
-        fee0: bigint;
-        fee1: bigint;
-        expiration: number;
-        [key: string]: unknown;
-      }>,
-      client.readContract({
-        address: poolAddress,
-        abi: eulerSwapAbi,
-        functionName: "isInstalled",
-      }) as Promise<boolean>,
+      client.readContract({ address: poolAddress, abi: eulerSwapAbi, functionName: "getReserves" }) as Promise<readonly [bigint, bigint, number]>,
+      client.readContract({ address: poolAddress, abi: eulerSwapAbi, functionName: "getDynamicParams" }) as Promise<{ fee0: bigint; fee1: bigint; expiration: number; [k: string]: unknown }>,
+      client.readContract({ address: poolAddress, abi: eulerSwapAbi, functionName: "isInstalled" }) as Promise<boolean>,
     ]);
 
-    const [, , status] = reserves;
-    if (status !== 1) return `pool status ${status} (expected 1=unlocked)`;
-
-    if (!installed) return "pool not installed in EVC";
-
+    if (reserves[2] !== 1) return `pool status ${reserves[2]} (expected 1=unlocked)`;
+    if (!installed) return "pool not installed";
     const now = Math.floor(Date.now() / 1000);
-    if (dynamicParams.expiration !== 0 && dynamicParams.expiration <= now) {
-      return `pool expired at ${dynamicParams.expiration}`;
-    }
-
-    if (dynamicParams.fee0 >= WAD || dynamicParams.fee1 >= WAD) {
-      return "fee >= 100% (swap rejected)";
-    }
-
-    return null; // available
+    if (dynamicParams.expiration !== 0 && dynamicParams.expiration <= now) return "pool expired";
+    if (dynamicParams.fee0 >= WAD || dynamicParams.fee1 >= WAD) return "fee >= 100%";
+    return null;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return `pool status check failed: ${msg}`;
+    return `pool check failed: ${err instanceof Error ? err.message : err}`;
   }
 }
 
@@ -208,50 +133,33 @@ async function checkPoolAvailable(poolAddress: Address): Promise<string | null> 
 async function evaluateAndFill(apiOrders: FusionApiOrder[]) {
   if (LIVE) {
     try {
-      const gasPrice = await client.getGasPrice();
-      const gasPriceGwei = Number(gasPrice / 1_000_000_000n);
-      if (gasPriceGwei > MAX_GAS_GWEI) {
-        console.log(`  gas ${gasPriceGwei} gwei > max ${MAX_GAS_GWEI} — skipping`);
-        return;
-      }
+      const gwei = Number((await client.getGasPrice()) / 1_000_000_000n);
+      if (gwei > MAX_GAS_GWEI) { console.log(`  gas ${gwei} gwei > max ${MAX_GAS_GWEI} — skipping`); return; }
     } catch {}
   }
 
-  // Check pool status before evaluating (mirrors CoW driver pattern)
   const unavailable = await checkPoolAvailable(chainConfig.pool);
-  if (unavailable) {
-    console.log(`  POOL UNAVAILABLE: ${unavailable}`);
-    return;
-  }
+  if (unavailable) { console.log(`  POOL UNAVAILABLE: ${unavailable}`); return; }
 
   const profitable: { order: FusionApiOrder; quote: QuoteResult }[] = [];
 
   for (const apiOrder of apiOrders) {
     if (pendingFills.has(apiOrder.orderHash)) continue;
     try {
-      const quote = await evaluateOrder(
-        client,
-        apiOrder,
-        MIN_PROFIT_BPS,
-        chainConfig,
-      );
-
-      const tag = quote.profitable ? ">>>" : "   ";
-      console.log(`  ${tag} ${formatQuote(quote, chainConfig)}`);
-
+      const quote = await evaluateOrder(client, apiOrder, MIN_PROFIT_BPS, chainConfig);
+      console.log(`  ${quote.profitable ? ">>>" : "   "} ${formatQuote(quote, chainConfig)}`);
       if (quote.profitable) {
         totalProfitable++;
         profitable.push({ order: apiOrder, quote });
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.log(`  ERR ${apiOrder.orderHash.slice(0, 10)}: ${msg}`);
+      console.log(`  ERR ${apiOrder.orderHash.slice(0, 10)}: ${err instanceof Error ? err.message : err}`);
     }
   }
 
   if (profitable.length > 0 && LIVE) {
-    for (const fill of profitable) {
-      await executeFill(fill.order, fill.quote);
+    for (const { order, quote } of profitable) {
+      await executeFill(order, quote);
     }
   }
 }
@@ -262,61 +170,34 @@ async function executeFill(order: FusionApiOrder, quote: QuoteResult) {
     return;
   }
 
-  const fillerAddress = walletClient.account.address;
   pendingFills.add(order.orderHash);
-
   try {
-    // Pass gasCost as on-chain minProfit floor — if price moves between
-    // simulation and execution, the contract reverts rather than filling at a loss
+    // Pass gasCost as on-chain minProfit floor
     const fillCalldata = buildFillCalldata(order, RESOLVER_ADDRESS, chainConfig.pool, quote.gasCost);
 
-    // Simulate first
-    const sim = await simulateFill(client, RESOLVER_ADDRESS, fillCalldata, fillerAddress);
-    if (!sim.success) {
-      console.log(`  SIM FAIL: ${sim.error}`);
+    const sim = await simulateFill(client, RESOLVER_ADDRESS, fillCalldata, walletClient.account.address);
+    if (!sim.success) { console.log(`  SIM FAIL: ${sim.error}`); return; }
+    console.log(`  SIM OK — submitting...`);
+
+    if (FLASHBOTS_AUTH_KEY && CHAIN_ID === 1) {
+      const signedTx = await buildSignedFillTx(walletClient, RESOLVER_ADDRESS, fillCalldata);
+      const currentBlock = await getCurrentBlock(client);
+      const bundle = await submitBundleWithRedundancy(signedTx, currentBlock, FLASHBOTS_AUTH_KEY);
+      console.log(`  BUNDLE: ${bundle.bundleHash} (target: ${currentBlock + 1n}+)`);
       return;
     }
 
-    console.log(`  SIM OK — submitting fill...`);
+    const txHash = await submitFill(walletClient, RESOLVER_ADDRESS, fillCalldata);
+    console.log(`  TX SENT: ${txHash}`);
 
-    let txHash: Hex;
-    if (FLASHBOTS_AUTH_KEY && CHAIN_ID === 1) {
-      const signedTx = await buildSignedFillTx(
-        walletClient,
-        client,
-        RESOLVER_ADDRESS,
-        fillCalldata,
-      );
-      const currentBlock = await getCurrentBlock(client);
-      const bundle = await submitBundleWithRedundancy(
-        signedTx,
-        currentBlock,
-        FLASHBOTS_AUTH_KEY,
-      );
-      console.log(`  BUNDLE: ${bundle.bundleHash} (target: ${currentBlock + 1n}+)`);
-      return; // bundle confirmation is async
-    } else {
-      txHash = await submitFill(walletClient, client, RESOLVER_ADDRESS, fillCalldata);
-      console.log(`  TX SENT: ${txHash}`);
-    }
-
-    // Wait for confirmation
     try {
-      const receipt = await client.waitForTransactionReceipt({
-        hash: txHash,
-        timeout: 60_000,
-      });
-      if (receipt.status === "success") {
-        console.log(`  CONFIRMED: ${txHash} (block ${receipt.blockNumber}, gas ${receipt.gasUsed})`);
-      } else {
-        console.log(`  REVERTED: ${txHash} (block ${receipt.blockNumber})`);
-      }
-    } catch (err) {
-      console.log(`  CONFIRM TIMEOUT: ${txHash} — check manually`);
+      const receipt = await client.waitForTransactionReceipt({ hash: txHash, timeout: 60_000 });
+      console.log(`  ${receipt.status === "success" ? "CONFIRMED" : "REVERTED"}: ${txHash} (block ${receipt.blockNumber})`);
+    } catch {
+      console.log(`  CONFIRM TIMEOUT: ${txHash}`);
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`  FILL ERROR: ${msg}`);
+    console.error(`  FILL ERROR: ${err instanceof Error ? err.message : err}`);
   } finally {
     pendingFills.delete(order.orderHash);
   }
@@ -331,8 +212,6 @@ async function poll() {
   try {
     const allOrders = await fetchActiveOrders(API_KEY, CHAIN_ID);
     const matching = filterForPool(allOrders, chainConfig.asset0, chainConfig.asset1);
-
-    // Reset error backoff on success
     consecutiveErrors = 0;
 
     let newOrders = 0;
@@ -343,29 +222,24 @@ async function poll() {
         totalMatchingOrders++;
       }
     }
-    totalOrdersSeen += allOrders.length;
 
-    if (cycleCount % 50 === 0) evictStaleOrders();
+    // Evict expired orders periodically
+    if (cycleCount % 50 === 0) {
+      const now = Math.floor(Date.now() / 1000);
+      for (const [hash, end] of seenOrders) { if (end < now) seenOrders.delete(hash); }
+    }
 
     if (matching.length === 0) {
       if (cycleCount <= 3 || cycleCount % 15 === 0) {
-        console.log(
-          `[${ts()}] ${allOrders.length} active orders, 0 ${pairLabel} | total: ${totalMatchingOrders} matching, ${totalProfitable} profitable`,
-        );
+        console.log(`[${ts()}] ${allOrders.length} active, 0 ${pairLabel} | total: ${totalMatchingOrders} matching, ${totalProfitable} profitable`);
       }
       return;
     }
 
-    console.log(
-      `[${ts()}] ${allOrders.length} active orders, ${matching.length} ${pairLabel} (${newOrders} new)`,
-    );
-
+    console.log(`[${ts()}] ${allOrders.length} active, ${matching.length} ${pairLabel} (${newOrders} new)`);
     await evaluateAndFill(matching);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[${ts()}] poll error: ${msg}`);
-
-    // Exponential backoff on consecutive errors (max 30s)
+    console.error(`[${ts()}] poll error: ${err instanceof Error ? err.message : err}`);
     consecutiveErrors++;
     const backoffMs = Math.min(1000 * 2 ** consecutiveErrors, 30_000);
     console.log(`  backing off ${backoffMs}ms (${consecutiveErrors} consecutive errors)`);
@@ -373,73 +247,39 @@ async function poll() {
   }
 }
 
-function ts(): string {
-  return new Date().toISOString().slice(11, 23);
-}
+function ts(): string { return new Date().toISOString().slice(11, 23); }
 
 // ---- Entry point ----
 
 async function main() {
   console.log("1inch Fusion Filler Bot for EulerSwap");
   console.log("======================================");
-  console.log(`Chain:          ${chainConfig.chain.name} (${CHAIN_ID})`);
-  console.log(`Mode:           ${LIVE ? "LIVE (fills enabled)" : "MONITOR (read-only)"}`);
-  console.log(`Pool:           ${chainConfig.pool}`);
-  console.log(`Pair:           ${pairLabel}`);
-  console.log(`LOP:            ${chainConfig.limitOrderProtocol}`);
-  console.log(`Resolver:       ${RESOLVER_ADDRESS ?? "(not set)"}`);
-  console.log(`Min profit:     ${MIN_PROFIT_BPS} bps`);
-  console.log(`Max gas:        ${MAX_GAS_GWEI} gwei`);
-  console.log(`Poll interval:  ${POLL_INTERVAL_MS}ms`);
-  console.log(`Flashbots:      ${FLASHBOTS_AUTH_KEY && CHAIN_ID === 1 ? "bundle mode" : "disabled"}`);
+  console.log(`Chain:     ${chainConfig.chain.name} (${CHAIN_ID})`);
+  console.log(`Mode:      ${LIVE ? "LIVE" : "MONITOR"}`);
+  console.log(`Pool:      ${chainConfig.pool}`);
+  console.log(`Pair:      ${pairLabel}`);
+  console.log(`Resolver:  ${RESOLVER_ADDRESS ?? "(not set)"}`);
+  console.log(`Profit:    ${MIN_PROFIT_BPS} bps min, ${MAX_GAS_GWEI} gwei max`);
+  console.log(`Flashbots: ${FLASHBOTS_AUTH_KEY && CHAIN_ID === 1 ? "yes" : "no"}`);
 
-  if (LIVE && !walletClient) {
-    console.error("--live requires PRIVATE_KEY env var");
-    process.exit(1);
-  }
-  if (LIVE && !RESOLVER_ADDRESS) {
-    console.error("--live requires RESOLVER_ADDRESS env var");
-    process.exit(1);
-  }
+  if (LIVE && !walletClient) { console.error("--live requires PRIVATE_KEY"); process.exit(1); }
+  if (LIVE && !RESOLVER_ADDRESS) { console.error("--live requires RESOLVER_ADDRESS"); process.exit(1); }
 
-  console.log("");
-
-  // Verify pool is accessible
+  // Verify pool assets match config
   try {
     const [asset0, asset1] = (await client.readContract({
-      address: chainConfig.pool,
-      abi: [
-        {
-          name: "getAssets",
-          type: "function",
-          stateMutability: "view",
-          inputs: [],
-          outputs: [
-            { name: "asset0", type: "address" },
-            { name: "asset1", type: "address" },
-          ],
-        },
-      ],
-      functionName: "getAssets",
+      address: chainConfig.pool, abi: eulerSwapAbi, functionName: "getAssets",
     })) as [string, string];
-    console.log(`Pool assets: ${asset0} / ${asset1}`);
-
-    // Verify pool assets match config
-    if (
-      asset0.toLowerCase() !== chainConfig.asset0.toLowerCase() ||
-      asset1.toLowerCase() !== chainConfig.asset1.toLowerCase()
-    ) {
-      console.error(
-        `Pool asset mismatch! Pool: ${asset0}/${asset1}, Config: ${chainConfig.asset0}/${chainConfig.asset1}`,
-      );
+    if (asset0.toLowerCase() !== chainConfig.asset0.toLowerCase() ||
+        asset1.toLowerCase() !== chainConfig.asset1.toLowerCase()) {
+      console.error(`Pool asset mismatch! Pool: ${asset0}/${asset1}, Config: ${chainConfig.asset0}/${chainConfig.asset1}`);
       process.exit(1);
     }
+    console.log(`Assets:    ${asset0} / ${asset1}\n`);
   } catch {
     console.error("Failed to read pool — check RPC_URL and pool address");
     process.exit(1);
   }
-
-  console.log(`\nStarting poll loop...\n`);
 
   while (true) {
     await rateLimiter.waitForSlot();
@@ -448,7 +288,4 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error("Fatal:", err);
-  process.exit(1);
-});
+main().catch((err) => { console.error("Fatal:", err); process.exit(1); });
