@@ -360,24 +360,25 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
         );
       })()}
 
-      {/* Live fees from hook.getFee */}
-      {state.hookLiveFee0In !== undefined && (
-        <Row label="Current fee">
-          {fmtFeeBps(state.hookLiveFee0In)} ({state.asset0Symbol} in) / {fmtFeeBps(state.hookLiveFee1In!)} ({state.asset1Symbol} in)
+      {/* Fee display: hook-managed vs pool-level */}
+      {state.hookBaseFee !== undefined ? (
+        <>
+          <Row label="Current fee">
+            {state.hookLiveFee0In !== undefined
+              ? <>{fmtFeeBps(state.hookLiveFee0In)} ({state.asset0Symbol} in) / {fmtFeeBps(state.hookLiveFee1In!)} ({state.asset1Symbol} in)</>
+              : <>{fmtFeeBps(state.hookBaseFee)} base</>}
+          </Row>
+          <Row label="Fee config">
+            {fmtFeeBps(state.hookBaseFee)} base, {fmtFeeBps(state.hookMaxFee!)} max
+            {state.hookCaptureRate !== undefined && `, ${(Number(state.hookCaptureRate) / 1e16).toFixed(0)}% capture`}
+            {state.hookAttractRate !== undefined && Number(state.hookAttractRate) > 0 && `, ${(Number(state.hookAttractRate) / 1e16).toFixed(0)}% attract`}
+          </Row>
+        </>
+      ) : (
+        <Row label="Fee">
+          {fmtFeeBps(state.fee0)} / {fmtFeeBps(state.fee1)}
         </Row>
       )}
-
-      {/* Pool base fees + hook config */}
-      <Row label="Fee config">
-        {fmtFeeBps(state.fee0)} / {fmtFeeBps(state.fee1)}
-        {state.hookBaseFee !== undefined && (
-          <span className="text-gray-500 ml-1">
-            (hook: {fmtFeeBps(state.hookBaseFee)} base, {fmtFeeBps(state.hookMaxFee!)} max
-            {state.hookCaptureRate !== undefined && `, ${(Number(state.hookCaptureRate) / 1e16).toFixed(0)}% capture`}
-            {state.hookAttractRate !== undefined && Number(state.hookAttractRate) > 0 && `, ${(Number(state.hookAttractRate) / 1e16).toFixed(0)}% attract`})
-          </span>
-        )}
-      </Row>
 
       {/* Vault deposits */}
       {(state.vaultDeposit0 > 0n || state.vaultDeposit1 > 0n) && (
