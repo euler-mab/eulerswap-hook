@@ -48,6 +48,9 @@ export async function submitBundle(
   if (result.error) {
     throw new Error(`Flashbots relay: ${result.error.message}`);
   }
+  if (!result.result?.bundleHash) {
+    throw new Error(`Flashbots relay: unexpected response — missing bundleHash`);
+  }
   return result.result as BundleResult;
 }
 

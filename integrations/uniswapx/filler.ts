@@ -36,7 +36,7 @@ try {
     const eqIdx = trimmed.indexOf("=");
     if (eqIdx === -1) continue;
     const key = trimmed.slice(0, eqIdx);
-    const val = trimmed.slice(eqIdx + 1);
+    const val = trimmed.slice(eqIdx + 1).replace(/^["']|["']$/g, "");
     if (!process.env[key]) process.env[key] = val;
   }
 } catch {}
@@ -51,7 +51,7 @@ import {
 } from "viem";
 import * as viemChains from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
-import { fetchOpenOrders, filterForPools, tokenSymbol } from "./api";
+import { fetchOpenOrders, filterForPools } from "./api";
 import type { PoolMatch } from "./api";
 import { eulerSwapAbi } from "../../src/lib/pools/abi";
 import {
@@ -443,6 +443,8 @@ async function executeFills(
             fillerAddress,
           )
         : await simulateBatchFill(
+            // Note: combined pool limits for batched orders are NOT checked here —
+            // simulateBatchFill catches this via on-chain revert if combined size exceeds limits.
             client,
             orders,
             EXECUTOR_ADDRESS,
@@ -474,7 +476,6 @@ async function executeFills(
         orders.length === 1
           ? await buildSignedFillTx(
               walletClient,
-              client,
               orders[0],
               EXECUTOR_ADDRESS,
               poolAddress,
@@ -482,7 +483,6 @@ async function executeFills(
             )
           : await buildSignedBatchFillTx(
               walletClient,
-              client,
               orders,
               EXECUTOR_ADDRESS,
               poolAddress,
@@ -504,7 +504,6 @@ async function executeFills(
         orders.length === 1
           ? await callbackFill(
               walletClient,
-              client,
               orders[0],
               EXECUTOR_ADDRESS,
               poolAddress,
@@ -512,7 +511,6 @@ async function executeFills(
             )
           : await batchCallbackFill(
               walletClient,
-              client,
               orders,
               EXECUTOR_ADDRESS,
               poolAddress,
@@ -700,7 +698,8 @@ async function main() {
         const now = Math.floor(Date.now() / 1000);
         const freshMatches = matches.filter(({ order: o }) => {
           if (seenOrders.has(o.orderHash)) return false;
-          seenOrders.set(o.orderHash, now + 300);
+          const evictAt = (o.createdAt > 0 ? o.createdAt : now) + 600;
+          seenOrders.set(o.orderHash, evictAt);
           return true;
         });
         if (freshMatches.length > 0) {

@@ -200,7 +200,7 @@ export async function evaluateOrder(
         functionName: "computeQuote",
         args: [wethToken.address, outputToken, 10n ** 18n, true],
       })
-      .catch(() => 2000_000_000n) as bigint; // fallback ~$2000
+      .catch(() => 2000_000_000n) as bigint; // fallback ~$2000 USDC/ETH — only triggers when pool can't quote WETH→output (pool broken, order won't be profitable anyway)
     gasCost = (gasCostWei * ethPrice) / 10n ** 18n;
   } else {
     // No WETH token found — use raw wei as rough estimate

@@ -1,7 +1,7 @@
 // UniswapX fill transaction construction
 // Supports direct fill (from wallet inventory) and callback fill (via executor contract)
 
-import type { Address, Hex, WalletClient, PublicClient } from "viem";
+import type { Address, Hex, PublicClient, WalletClient } from "viem";
 import { encodeAbiParameters, encodeFunctionData } from "viem";
 import type { UniswapXApiOrder } from "./types";
 
@@ -120,7 +120,6 @@ export function encodeCallbackData(
  */
 export async function directFill(
   walletClient: WalletClient,
-  _publicClient: PublicClient,
   apiOrder: UniswapXApiOrder,
   reactorAddress: Address,
 ): Promise<Hex> {
@@ -143,7 +142,6 @@ export async function directFill(
  */
 export async function callbackFill(
   walletClient: WalletClient,
-  _publicClient: PublicClient,
   apiOrder: UniswapXApiOrder,
   executorAddress: Address,
   poolAddress: Address,
@@ -171,7 +169,6 @@ export async function callbackFill(
  */
 export async function batchCallbackFill(
   walletClient: WalletClient,
-  _publicClient: PublicClient,
   apiOrders: UniswapXApiOrder[],
   executorAddress: Address,
   poolAddress: Address,
@@ -264,7 +261,6 @@ export async function simulateBatchFill(
  */
 export async function buildSignedFillTx(
   walletClient: WalletClient,
-  _publicClient: PublicClient,
   apiOrder: UniswapXApiOrder,
   executorAddress: Address,
   poolAddress: Address,
@@ -300,7 +296,6 @@ export async function buildSignedFillTx(
  */
 export async function buildSignedBatchFillTx(
   walletClient: WalletClient,
-  _publicClient: PublicClient,
   apiOrders: UniswapXApiOrder[],
   executorAddress: Address,
   poolAddress: Address,
