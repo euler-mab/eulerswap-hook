@@ -16,6 +16,8 @@ interface IUniswapV3Pool {
         external
         view
         returns (uint160 sqrtPriceX96, int24, uint16, uint16, uint16, uint8, bool);
+
+    function token0() external view returns (address);
 }
 
 interface IERC20 {
@@ -102,7 +104,11 @@ contract LPAgentHookV7ForkTest is Test {
         hook = new LPAgentHookV7(
             address(pool),
             EULER_ACCOUNT,
-            UNI_USDC_WETH,
+            LPAgentHookV7.OracleConfig({
+                target: UNI_USDC_WETH,
+                v4PoolId: bytes32(0),
+                token0: IUniswapV3Pool(UNI_USDC_WETH).token0()
+            }),
             LPAgentHookV7.FeeConfig({
                 baseFee: BASE_FEE,
                 maxFee: MAX_FEE,

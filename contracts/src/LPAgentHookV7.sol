@@ -25,6 +25,10 @@ interface IUniswapV3Pool {
     function token0() external view returns (address);
 }
 
+interface IExtsload {
+    function extsload(bytes32 slot) external view returns (bytes32);
+}
+
 /// @title LPAgentHookV7 — Clean exposure tracking + curvature-aware surcharge
 /// @notice Two mechanisms:
 ///   1. Continuous recenter: on every swap that reduces exposure, recenter immediately.
@@ -60,8 +64,9 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     address public immutable eulerAccount;
     address public immutable asset0;
     address public immutable asset1;
-    address public immutable uniswapPool;
-    bool public immutable uniswapToken0IsAsset0;
+    address public immutable oracleTarget; // V3: pool address, V4: PoolManager address
+    bytes32 public immutable oracleV4PoolId; // non-zero = V4 mode
+    bool public immutable oracleToken0IsAsset0;
 
     // --- Fee parameters (owner-updatable) ---
     uint64 public baseFee;
@@ -119,6 +124,12 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     event Recentered(uint64 blockNumber);
 
     // --- Constructor param structs ---
+    struct OracleConfig {
+        address target; // V3: pool address, V4: PoolManager address
+        bytes32 v4PoolId; // set to 0 for V3 oracle
+        address token0; // which token is token0 in the oracle pool
+    }
+
     struct FeeConfig {
         uint64 baseFee;
         uint64 maxFee;
@@ -158,13 +169,15 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     constructor(
         address _pool,
         address _owner,
-        address _uniswapPool,
+        OracleConfig memory _oracleConfig,
         FeeConfig memory _feeConfig,
         AuctionConfig memory _auctionConfig
     ) {
         pool = _pool;
         owner = _owner;
-        uniswapPool = _uniswapPool;
+        oracleTarget = _oracleConfig.target;
+        oracleV4PoolId = _oracleConfig.v4PoolId;
+        oracleToken0IsAsset0 = _oracleConfig.token0 == IEVault(IEulerSwap(_pool).getStaticParams().supplyVault0).asset();
 
         baseFee = _feeConfig.baseFee;
         maxFee = _feeConfig.maxFee;
@@ -195,7 +208,6 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         eulerAccount = sParams.eulerAccount;
         asset0 = IEVault(sParams.supplyVault0).asset();
         asset1 = IEVault(sParams.supplyVault1).asset();
-        uniswapToken0IsAsset0 = IUniswapV3Pool(_uniswapPool).token0() == asset0;
 
         // Init vault state
         _cacheVaultState(_getUniswapPrice());
@@ -812,25 +824,48 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
     }
 
     function _getUniswapPrice() internal view returns (uint256) {
-        try IUniswapV3Pool(uniswapPool).slot0() returns (
+        uint160 sqrtPriceX96;
+
+        if (oracleV4PoolId != bytes32(0)) {
+            sqrtPriceX96 = _readV4SqrtPrice();
+        } else {
+            sqrtPriceX96 = _readV3SqrtPrice();
+        }
+
+        if (sqrtPriceX96 == 0) return 0;
+
+        uint256 sqrtPrice = uint256(sqrtPriceX96);
+        uint256 priceWad;
+        if (sqrtPrice <= type(uint128).max) {
+            priceWad = (sqrtPrice * sqrtPrice).mulDiv(WAD, Q192);
+        } else {
+            priceWad = sqrtPrice.mulDiv(sqrtPrice, Q64).mulDiv(WAD, Q128);
+        }
+
+        if (!oracleToken0IsAsset0) {
+            if (priceWad == 0) return 0;
+            priceWad = WAD.mulDiv(WAD, priceWad);
+        }
+
+        return priceWad;
+    }
+
+    function _readV3SqrtPrice() internal view returns (uint160) {
+        try IUniswapV3Pool(oracleTarget).slot0() returns (
             uint160 sqrtPriceX96, int24, uint16, uint16, uint16, uint8, bool
         ) {
-            if (sqrtPriceX96 == 0) return 0;
+            return sqrtPriceX96;
+        } catch {
+            return 0;
+        }
+    }
 
-            uint256 sqrtPrice = uint256(sqrtPriceX96);
-            uint256 priceWad;
-            if (sqrtPrice <= type(uint128).max) {
-                priceWad = (sqrtPrice * sqrtPrice).mulDiv(WAD, Q192);
-            } else {
-                priceWad = sqrtPrice.mulDiv(sqrtPrice, Q64).mulDiv(WAD, Q128);
-            }
-
-            if (!uniswapToken0IsAsset0) {
-                if (priceWad == 0) return 0;
-                priceWad = WAD.mulDiv(WAD, priceWad);
-            }
-
-            return priceWad;
+    function _readV4SqrtPrice() internal view returns (uint160) {
+        // V4 StateLibrary: slot0 is at keccak256(abi.encode(poolId, POOLS_SLOT))
+        // POOLS_SLOT = bytes32(uint256(6)) in PoolManager
+        bytes32 stateSlot = keccak256(abi.encode(oracleV4PoolId, bytes32(uint256(6))));
+        try IExtsload(oracleTarget).extsload(stateSlot) returns (bytes32 packed) {
+            return uint160(uint256(packed));
         } catch {
             return 0;
         }

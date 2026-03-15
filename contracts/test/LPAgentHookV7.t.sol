@@ -102,7 +102,11 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         hook = new LPAgentHookV7(
             address(pool),
             address(this),
-            address(mockUniPool),
+            LPAgentHookV7.OracleConfig({
+                target: address(mockUniPool),
+                v4PoolId: bytes32(0),
+                token0: asset0Addr
+            }),
             LPAgentHookV7.FeeConfig({
                 baseFee: BASE_FEE,
                 maxFee: MAX_FEE,
@@ -805,7 +809,11 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         testHook = new LPAgentHookV7(
             address(testPool),
             address(this),
-            address(testUniPool),
+            LPAgentHookV7.OracleConfig({
+                target: address(testUniPool),
+                v4PoolId: bytes32(0),
+                token0: a0
+            }),
             LPAgentHookV7.FeeConfig({
                 baseFee: BASE_FEE,
                 maxFee: MAX_FEE,

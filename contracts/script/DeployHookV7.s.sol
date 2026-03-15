@@ -24,6 +24,8 @@ interface IUniswapV3Pool {
             uint8 feeProtocol,
             bool unlocked
         );
+
+    function token0() external view returns (address);
 }
 
 /// @title DeployHookV7 — Deploy LPAgentHookV7 and install on existing EulerSwap pool
@@ -106,7 +108,11 @@ contract DeployHookV7 is Script {
         LPAgentHookV7 hook = new LPAgentHookV7(
             POOL,
             deployer,
-            UNI_USDC_WETH,
+            LPAgentHookV7.OracleConfig({
+                target: UNI_USDC_WETH,
+                v4PoolId: bytes32(0),
+                token0: IUniswapV3Pool(UNI_USDC_WETH).token0()
+            }),
             LPAgentHookV7.FeeConfig({
                 baseFee: BASE_FEE,
                 maxFee: MAX_FEE,
