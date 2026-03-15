@@ -35,13 +35,26 @@ Canonical addresses for all chains: [euler-xyz/euler-interfaces](https://github.
 
 ## Integration Approach
 
-### Phase 1: eth_call MVP
+### Phase 1: eth_call (current)
 
-Use `computeQuote()` via `eth_call` for pricing. No Rust math port needed. Adds ~50ms latency per quote but works immediately.
+All quoting delegates to the on-chain `computeQuote()` view function via `eth_call`.
+No Rust curve math port is needed. This approach:
 
-### Phase 2: Native Rust Curve Math
+- Guarantees quote parity with the contract (no reimplementation bugs)
+- Automatically handles dynamic fees from hooks (`getFee()` is called internally)
+- Adds one RPC round-trip per quote (~10-50 ms depending on node)
 
-Port the concentrated constant-product curve math to Rust for zero-latency offline quoting. Required for production performance where solvers compute many quotes per auction round.
+In practice, this latency has not been a bottleneck — the solver batches quotes and
+EulerSwap is one venue among many, so per-quote cost doesn't dominate auction timing.
+
+### Phase 2: Native Rust Curve Math (deferred)
+
+A specification exists in `spec/curve-math.md` with test vectors for porting the curve
+math to Rust for sub-ms offline quoting. This is **not currently needed** — Phase 1
+performance is sufficient. The spec and test vectors are maintained so this can be built
+if latency requirements change, but implementing it now would create maintenance burden
+(tracking upstream CurveLib rounding changes, dynamic fee interactions) for a performance
+problem that doesn't exist.
 
 ## Directory Structure
 

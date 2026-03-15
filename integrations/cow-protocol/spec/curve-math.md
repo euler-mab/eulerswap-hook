@@ -1,6 +1,10 @@
 # EulerSwap Curve Math Specification
 
-Mathematical specification for porting EulerSwap's concentrated constant-product curve to Rust.
+Mathematical specification for EulerSwap's concentrated constant-product curve. Originally
+written as a porting guide for a native Rust implementation (Phase 2), which has been
+**deferred** — Phase 1 `eth_call` quoting is sufficient in practice. This spec remains
+the canonical reference for the curve math and is maintained alongside 31 test vectors
+in `test-vectors.json`. See the Rust README's "Phase 2 Roadmap" section for rationale.
 
 ## Source Files
 
@@ -334,7 +338,37 @@ Returns `min(a + b, uint256_max)`.
 ### `saturating_sub(a, b)` → uint256
 Returns `max(a - b, 0)`.
 
-## Rust Implementation Notes
+## Implementation Notes
+
+### Cross-language parity
+
+The Solidity (`CurveLib.sol`) is the **source of truth**. The TypeScript (`math.ts`)
+is a design/visualization tool that uses IEEE 754 floats and **does not produce
+identical results**. Key differences:
+
+1. **Arithmetic model.** Solidity uses 256-bit integers with 1e18 fixed-point scaling
+   and 512-bit intermediates (`FullMath.mulDiv`). TypeScript uses 64-bit floats (~15-16
+   significant digits). The Solidity form accumulates terms into one big fraction
+   `a*b/d` before dividing; TypeScript divides early (`px/py` first), losing precision
+   at each step.
+
+2. **Rounding direction.** Solidity `f()` always rounds UP (`saturatingMulDivUp`).
+   Solidity `fInverse()` uses direction-dependent rounding (up when B < 0, mixed when
+   B ≥ 0). TypeScript rounds to nearest (IEEE 754 default) with no directional guarantees.
+
+3. **Overflow handling.** Solidity saturates to `uint256_max` and clamps to `uint112_max`.
+   TypeScript uses `Infinity`/`NaN`.
+
+4. **Inverse function.** Solidity uses dynamic bit-shifting to prevent overflow in the
+   discriminant, with conditional standard/citardauq quadratic formula and ~8 carefully
+   directed rounding operations. TypeScript uses `Math.sqrt()` with no overflow prevention
+   or rounding control.
+
+Any native reimplementation (Rust or otherwise) **must replicate the Solidity's integer
+arithmetic and rounding directions exactly** to produce matching results. Test against
+`computeQuote()` on a mainnet fork — see `test-vectors.json` for 31 pinned vectors.
+
+### Rust-specific notes
 
 1. **Use `U256` from `ruint` or `ethnum`** for 256-bit arithmetic. Both support the operations needed.
 
@@ -346,4 +380,67 @@ Returns `max(a - b, 0)`.
 
 5. **Rounding direction matters.** `f()` rounds UP (conservative — overestimates y). `fInverse` uses direction-dependent rounding based on the sign of B.
 
-6. **Test against `computeQuote()`** on a mainnet fork to validate. See `spec/test-vectors.json`.
+6. **Dynamic fees are not captured by curve math alone.** The V7 hook reads a Uniswap
+   oracle to set fees dynamically. A pure curve port would still need `eth_call` for
+   `getFee()`, or a separate reimplementation of the hook's fee logic — which is complex
+   and changes frequently.
+
+## Curve Derivative (Marginal Price)
+
+The derivative of the EulerSwap curve has a clean closed form:
+
+```
+X-side (x ≤ x0):  f'(x) = -(px/py) × [cx + (1 - cx) × (x0/x)²]
+Y-side (y ≤ y0):  g'(y) = -(py/px) × [cy + (1 - cy) × (y0/y)²]
+```
+
+The marginal price (Y per X) is `-f'(x)` on the X-side, or `1/(-g'(y))` on the Y-side.
+
+### Second derivative and convexity
+
+```
+f''(x) = +2(px/py)(1 - cx)(x0²/x³)  > 0  (convex in reserve space)
+```
+
+The curve f(x) is convex (f'' > 0), meaning the slope flattens toward equilibrium.
+The **output function** g(a) = f(currentX) - f(currentX + a) is concave (g'' < 0) —
+standard diminishing-returns AMM behavior.
+
+### Existing implementations
+
+- **Hook internal**: `_getMarginalPrice()` in `LPAgentHookV7.sol` — used for auction
+  clearing and dynamic fee calculation. Compares against oracle with a threshold;
+  does not need to be a tight bound on `computeQuote`.
+- **Test utility**: `CurveExtrasLib.df_dx()` — mixed rounding directions, test-only.
+- **TypeScript**: `fXd()`, `gYd()`, `pXxy()` etc. in `src/lib/math.ts`.
+
+### Why we decided against a production onchain derivative
+
+Investigated March 2026. A production Solidity implementation would be straightforward
+(~10 lines using `FullMath.mulDiv`, achieving ~2-3 wei error in 1e18 scale), but was
+determined not worth implementing for the following reasons:
+
+1. **Integer rounding breaks safety guarantees in concentrated regions.** With high
+   concentration (c near 1e18), the curve is nearly linear and f'' ≈ 0. In this regime,
+   integer rounding dominates the concavity: a correctly-rounded derivative can report a
+   marginal price that exceeds what `computeQuote(1 wei)` actually delivers, because
+   `computeQuote` rounds conservatively (less output via `saturatingMulDivUp`). Making
+   the derivative a provably tight lower bound on `computeQuote(δ)/δ` for all valid
+   states and all δ would require matching every rounding decision in `f()` and
+   `fInverse()` — fragile and hard to maintain across upstream CurveLib changes.
+
+2. **Dynamic fees make a pure curve derivative insufficient.** The V7 hook reads the
+   Uniswap oracle to set fees dynamically. A curve derivative doesn't capture fee
+   effects. Solvers need the fee-inclusive price, which only `computeQuote` provides.
+   This is why the Tycho adapter's `trade.price` returns `Fraction(0, 1)`.
+
+3. **No external consumer needs it.** The Tycho adapter already returns average
+   execution price (`computeQuote(amt)/amt`) for non-zero amounts, which is what
+   solvers actually need for routing. CoW, UniswapX, and 1inch use `computeQuote`
+   directly for settlement. The hook's internal `_getMarginalPrice()` already serves
+   its purpose for auction clearing and fee calculation.
+
+4. **The Tycho adapter documents the concentrated-curve issue.** See
+   `EulerSwapAdapter.sol:_priceAt()` — the adapter explicitly switched from numerical
+   differentiation to average execution price because the numerical derivative violated
+   the Tycho spec's `executedPrice >= marginalPrice` invariant in concentrated regions.

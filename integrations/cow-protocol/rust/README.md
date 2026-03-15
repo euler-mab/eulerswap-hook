@@ -188,12 +188,19 @@ for retry-safe async initialization.
 registry = "0x5FcCB84363F020c0cADE052C9c654aABF932814A"
 ```
 
-## Phase 2 Roadmap
+## Phase 2 Roadmap (deferred)
 
-Phase 2 replaces `eth_call` quoting with native Rust curve math for sub-ms
-quote latency. This eliminates the RPC round-trip and enables the solver to
-evaluate EulerSwap pools at the same speed as Uniswap V2/V3 sources. The
-curve math specification is documented in `../spec/curve-math.md`.
+Phase 2 would replace `eth_call` quoting with native Rust curve math for
+sub-ms quote latency. The curve math specification is in `../spec/curve-math.md`
+with 31 test vectors in `../spec/test-vectors.json`.
+
+**Status: not needed.** Phase 1 `eth_call` latency (~10-50ms) has not been a
+bottleneck in practice. Building a native Rust port would create ongoing
+maintenance burden — the Solidity `CurveLib` has careful rounding (direction-
+dependent `mulDivUp`, citardauq formula, dynamic bit-shifting) that would need
+exact replication, and dynamic fees from hooks (`getFee()`) would still require
+an `eth_call` or separate reimplementation. The spec and test vectors are
+maintained as a starting point if this changes.
 
 ## Specification
 
