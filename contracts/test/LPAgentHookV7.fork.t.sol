@@ -57,6 +57,7 @@ contract LPAgentHookV7ForkTest is Test {
     uint64 constant MAX_RECENTER_DRIFT = 0.03e18;
     uint64 constant SURCHARGE_DECAY = 10e14;
     uint64 constant SURCHARGE_MULTIPLIER = 1.25e18; // safety margin on exact formula
+    uint64 constant DEPLOY_SURCHARGE = 500e14;
 
     LPAgentHookV7 hook;
     address asset0;
@@ -120,7 +121,8 @@ contract LPAgentHookV7ForkTest is Test {
                 maxRecenterDrift: MAX_RECENTER_DRIFT,
                 minRecenterDelta: 0,
                 surchargeDecayPerBlock: SURCHARGE_DECAY,
-                surchargeMultiplier: SURCHARGE_MULTIPLIER
+                surchargeMultiplier: SURCHARGE_MULTIPLIER,
+                deploySurcharge: DEPLOY_SURCHARGE
             })
         );
         console.log("V7 hook deployed:", address(hook));

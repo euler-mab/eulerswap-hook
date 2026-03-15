@@ -139,6 +139,7 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         uint64 minRecenterDelta;
         uint64 surchargeDecayPerBlock;
         uint64 surchargeMultiplier;
+        uint64 deploySurcharge;
     }
 
     error Unauthorized();
@@ -199,11 +200,10 @@ contract LPAgentHookV7 is IEulerSwapHookTarget {
         // Init vault state
         _cacheVaultState(_getUniswapPrice());
 
-        // Deployment protection surcharge — start high so mispriced deploys are expensive
+        // Deployment protection surcharge — starts high so mispriced deploys are expensive
         // to arb, giving the deployer time to detect and correct.
-        // 500 bps at 10 bps/block decays in ~50 blocks (~10 minutes).
         surchargeStartBlock = uint64(block.number);
-        surchargeInitialAmount = 500e14; // 500 bps
+        surchargeInitialAmount = _auctionConfig.deploySurcharge;
     }
 
     // =========================================================================

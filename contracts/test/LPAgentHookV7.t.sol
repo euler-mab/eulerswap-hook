@@ -67,6 +67,23 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
     // Surcharge params
     uint64 constant SURCHARGE_DECAY = 10e14;
     uint64 constant SURCHARGE_MULTIPLIER = 2.5e18; // 2x curvature factor + 25% margin
+    uint64 constant DEPLOY_SURCHARGE = 500e14; // 500 bps
+
+    function _defaultAuctionConfig() internal pure returns (LPAgentHookV7.AuctionConfig memory) {
+        return LPAgentHookV7.AuctionConfig({
+            decayPerBlock: DECAY_PER_BLOCK,
+            auctionTriggerThreshold: AUCTION_TRIGGER,
+            clearThreshold: CLEAR_THRESHOLD,
+            maxShiftMagnitude: MAX_SHIFT_MAGNITUDE,
+            minAuctionBlocks: MIN_AUCTION_BLOCKS,
+            recenterRange: RECENTER_RANGE,
+            maxRecenterDrift: MAX_RECENTER_DRIFT,
+            minRecenterDelta: MIN_RECENTER_DELTA,
+            surchargeDecayPerBlock: SURCHARGE_DECAY,
+            surchargeMultiplier: SURCHARGE_MULTIPLIER,
+            deploySurcharge: DEPLOY_SURCHARGE
+        });
+    }
 
     function setUp() public override {
         super.setUp();
@@ -94,18 +111,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
                 captureRate: CAPTURE_RATE,
                 attractRate: ATTRACT_RATE
             }),
-            LPAgentHookV7.AuctionConfig({
-                decayPerBlock: DECAY_PER_BLOCK,
-                auctionTriggerThreshold: AUCTION_TRIGGER,
-                clearThreshold: CLEAR_THRESHOLD,
-                maxShiftMagnitude: MAX_SHIFT_MAGNITUDE,
-                minAuctionBlocks: MIN_AUCTION_BLOCKS,
-                recenterRange: RECENTER_RANGE,
-                maxRecenterDrift: MAX_RECENTER_DRIFT,
-                minRecenterDelta: MIN_RECENTER_DELTA,
-                surchargeDecayPerBlock: SURCHARGE_DECAY,
-                surchargeMultiplier: SURCHARGE_MULTIPLIER
-            })
+            _defaultAuctionConfig()
         );
 
         // Install hook on pool
@@ -787,15 +793,8 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         }
     }
 
-    /// @notice Fuzz: surcharge covers the curvature bonus for any round-trip through a recenter.
-    /// The curvature bonus per unit is (1-cx) × [(x₀/(x₀-δ))² - 1] in WAD fee terms.
-    /// The surcharge should exceed this.
-    function test_fuzz_surchargeCoversRoundTrip(uint256 swapAmount, uint256 concentration) public {
-        // Bound concentration to reasonable range (0.1 to 0.9)
-        uint64 cx = uint64(bound(concentration, 0.1e18, 0.9e18));
-
-        // Create pool with specific concentration
-        EulerSwap testPool = createEulerSwap(10e18, 10e18, 0, 1e18, 1e18, cx, cx);
+    function _deployHookWithConcentration(uint64 cx) internal returns (EulerSwap testPool, LPAgentHookV7 testHook) {
+        testPool = createEulerSwap(10e18, 10e18, 0, 1e18, 1e18, cx, cx);
 
         IEulerSwap.StaticParams memory sParams = testPool.getStaticParams();
         address a0 = IEVault(sParams.supplyVault0).asset();
@@ -803,7 +802,7 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
 
         MockUniswapV3Pool testUniPool = new MockUniswapV3Pool(a0, a1, uint160(1 << 96));
 
-        LPAgentHookV7 testHook = new LPAgentHookV7(
+        testHook = new LPAgentHookV7(
             address(testPool),
             address(this),
             address(testUniPool),
@@ -815,21 +814,9 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
                 captureRate: CAPTURE_RATE,
                 attractRate: ATTRACT_RATE
             }),
-            LPAgentHookV7.AuctionConfig({
-                decayPerBlock: DECAY_PER_BLOCK,
-                auctionTriggerThreshold: AUCTION_TRIGGER,
-                clearThreshold: CLEAR_THRESHOLD,
-                maxShiftMagnitude: MAX_SHIFT_MAGNITUDE,
-                minAuctionBlocks: MIN_AUCTION_BLOCKS,
-                recenterRange: RECENTER_RANGE,
-                maxRecenterDrift: MAX_RECENTER_DRIFT,
-                minRecenterDelta: MIN_RECENTER_DELTA,
-                surchargeDecayPerBlock: SURCHARGE_DECAY,
-                surchargeMultiplier: SURCHARGE_MULTIPLIER
-            })
+            _defaultAuctionConfig()
         );
 
-        // Install hook
         IEulerSwap.DynamicParams memory dParams = testPool.getDynamicParams();
         dParams.swapHook = address(testHook);
         dParams.swapHookedOperations = EULER_SWAP_HOOK_GET_FEE | EULER_SWAP_HOOK_AFTER_SWAP;
@@ -841,8 +828,22 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
         IEVC(evc).call(address(testPool), holder, 0, abi.encodeCall(IEulerSwap.reconfigure, (dParams, is0)));
 
         _advanceBlocks(60);
+    }
 
-        // Swap to create exposure
+    /// @notice Fuzz: surcharge covers the curvature bonus for any round-trip through a recenter.
+    /// The curvature bonus per unit is (1-cx) × [(x₀/(x₀-δ))² - 1] in WAD fee terms.
+    /// The surcharge should exceed this.
+    function test_fuzz_surchargeCoversRoundTrip(uint256 swapAmount, uint256 concentration) public {
+        uint64 cx = uint64(bound(concentration, 0.1e18, 0.9e18));
+        (EulerSwap testPool, LPAgentHookV7 testHook) = _deployHookWithConcentration(cx);
+        _fuzz_surchargeCoversRoundTrip_inner(testPool, testHook, swapAmount, cx);
+    }
+
+    function _fuzz_surchargeCoversRoundTrip_inner(
+        EulerSwap testPool, LPAgentHookV7 testHook, uint256 swapAmount, uint64 cx
+    ) internal {
+        _advanceBlocks(60);
+
         uint256 amt = bound(swapAmount, 0.1e18, 3e18);
         address swapper = makeAddr("fuzzSwapper");
 
@@ -854,13 +855,11 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
             vm.prank(swapper);
             testPool.swap(0, quote, swapper, "");
         } catch {
-            return; // Pool rejected swap
+            return;
         }
 
         if (testHook.auctionActive()) return;
-
-        uint64 exposureBefore = testHook.lastExposure();
-        if (exposureBefore == 0) return;
+        if (testHook.lastExposure() == 0) return;
 
         // Get pre-recenter state for curvature bonus calculation
         IEulerSwap.DynamicParams memory dpPre = testPool.getDynamicParams();
@@ -878,24 +877,20 @@ contract LPAgentHookV7Test is EulerSwapTestBase {
             vm.prank(swapper);
             testPool.swap(quote2, 0, swapper, "");
         } catch {
-            return; // Pool rejected swap
+            return;
         }
 
         if (testHook.auctionActive()) return;
 
-        // Check that surcharge covers the curvature bonus
         (, uint256 surcharge) = testHook.getSurchargeState();
 
-        // Theoretical curvature bonus per unit (in WAD fee terms):
-        // bonus = (1 - cx) × [(x₀/(x₀-δ))² - 1]
         if (displacement > 0 && eq0Pre > displacement) {
             uint256 ratio = eq0Pre * 1e18 / (eq0Pre - displacement);
             uint256 ratioSquared = ratio * ratio / 1e18;
             uint256 theoreticalBonus = (1e18 - uint256(cx)) * (ratioSquared - 1e18) / 1e18;
 
-            // Surcharge (first block, no decay) should cover the curvature bonus
             assertTrue(
-                surcharge >= theoreticalBonus / 2, // Allow 2x tolerance for the approximation
+                surcharge >= theoreticalBonus / 2,
                 "INVARIANT: surcharge must cover curvature bonus"
             );
         }

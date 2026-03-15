@@ -71,6 +71,7 @@ contract DeployHookV7 is Script {
     // --- Surcharge parameters ---
     uint64 constant SURCHARGE_DECAY = 10e14;               // 10 bps/block
     uint64 constant SURCHARGE_MULTIPLIER = uint64(1.25e18); // 1.25× safety margin
+    uint64 constant DEPLOY_SURCHARGE = 500e14;              // 500 bps
 
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");
@@ -124,7 +125,8 @@ contract DeployHookV7 is Script {
                 maxRecenterDrift: MAX_RECENTER_DRIFT,
                 minRecenterDelta: MIN_RECENTER_DELTA,
                 surchargeDecayPerBlock: SURCHARGE_DECAY,
-                surchargeMultiplier: SURCHARGE_MULTIPLIER
+                surchargeMultiplier: SURCHARGE_MULTIPLIER,
+                deploySurcharge: DEPLOY_SURCHARGE
             })
         );
         console.log("V7 hook deployed:", address(hook));
