@@ -413,6 +413,37 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
         </Row>
       )}
 
+      {/* V7 Hook: WETH Exposure */}
+      {state.v7ExposureRel !== undefined && state.v7ExposureAbsWeth !== undefined && (
+        <Row label="WETH exposure">
+          <span className="text-xs space-x-2">
+            {/* Absolute: WETH amount */}
+            <span className="text-gray-900 font-medium">
+              {state.v7ExposureAbsWeth.toFixed(4)} WETH
+              {state.v7NetLongWeth !== undefined && (
+                <span className="text-gray-400 ml-0.5">({state.v7NetLongWeth ? "long" : "short"})</span>
+              )}
+            </span>
+            {/* USD value */}
+            {pnl && pnl.currentPrices.asset1 > 0 && (
+              <span className="text-gray-500">
+                (~{fmtUsd(state.v7ExposureAbsWeth * pnl.currentPrices.asset1)})
+              </span>
+            )}
+            {/* Relative exposure vs trigger */}
+            <span className={state.v7AuctionTrigger !== undefined && state.v7ExposureRel >= state.v7AuctionTrigger
+              ? "text-red-700 font-medium" : "text-gray-700"}>
+              {(state.v7ExposureRel * 100).toFixed(1)}% of NAV
+            </span>
+            {state.v7AuctionTrigger !== undefined && (
+              <span className="text-gray-400">
+                (trigger: {(state.v7AuctionTrigger * 100).toFixed(0)}%)
+              </span>
+            )}
+          </span>
+        </Row>
+      )}
+
       {/* Agent wallet */}
       <Row label="Agent wallet">
         {agentEth.toFixed(4)} ETH

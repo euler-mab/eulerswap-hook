@@ -123,6 +123,16 @@ export async function fetchPoolState(
     hasHook
       ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "auctionDecayPerSecond" })
       : Promise.resolve(null),
+    // 21-23: V7 hook exposure state (fails silently on older hooks)
+    hasHook
+      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "computeCurrentVaultExposure" })
+      : Promise.resolve(null),
+    hasHook
+      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getAuctionParams" })
+      : Promise.resolve(null),
+    hasHook
+      ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getExposureState" })
+      : Promise.resolve(null),
   ]);
 
   const val = <T,>(r: PromiseSettledResult<T>, fallback: T): T =>
@@ -158,6 +168,12 @@ export async function fetchPoolState(
   const auctionDeltaVal = val(results[18], null) as bigint | null;
   const auctionStartFeeVal = val(results[19], null) as bigint | null;
   const auctionDecayVal = val(results[20], null) as bigint | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const v7Exposure = val(results[21], null) as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const v7AuctionParams = val(results[22], null) as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const v7ExposureState = val(results[23], null) as any;
 
   // Compute marginal price using EulerSwap curve.
   // On-chain priceX/priceY are (USD_price / 10^decimals) * 1e18, so normalise to
@@ -371,6 +387,12 @@ export async function fetchPoolState(
     auctionDelta: auctionDeltaVal ?? undefined,
     auctionStartFee: auctionStartFeeVal ?? undefined,
     auctionDecayPerSecond: auctionDecayVal ?? undefined,
+    // V7 exposure
+    v7ExposureRel: v7Exposure ? Number(v7Exposure[0] as bigint) / 1e18 : undefined,
+    v7ExposureAbsWeth: v7Exposure ? Number(formatUnits(v7Exposure[1] as bigint, meta1.decimals)) : undefined,
+    v7NetLongWeth: v7Exposure ? (v7Exposure[2] as boolean) : undefined,
+    v7CachedNav: v7ExposureState ? (v7ExposureState[2] as bigint) : undefined,
+    v7AuctionTrigger: v7AuctionParams ? Number(v7AuctionParams[1] as bigint) / 1e18 : undefined,
     // Wallet
     agentEthBalance, agentToken0Balance, agentToken1Balance,
     // Vault positions

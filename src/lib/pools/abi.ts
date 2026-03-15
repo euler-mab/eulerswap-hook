@@ -289,6 +289,44 @@ export const hookAbi = [
     inputs: [],
     outputs: [{ name: "", type: "uint64" }],
   },
+  // V7 hook: exposure state
+  {
+    name: "getExposureState",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "_lastExposure", type: "uint64" },
+      { name: "_baseNetAsset1", type: "int128" },
+      { name: "_cachedNav", type: "uint128" },
+    ],
+  },
+  // V7 hook: live vault exposure (reads current reserves + oracle)
+  {
+    name: "computeCurrentVaultExposure",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "relExposure", type: "uint256" },
+      { name: "absExposureWeth", type: "uint256" },
+      { name: "netLongWeth", type: "bool" },
+    ],
+  },
+  // V7 hook: auction params
+  {
+    name: "getAuctionParams",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "_decayPerBlock", type: "uint64" },
+      { name: "_auctionTriggerThreshold", type: "uint64" },
+      { name: "_clearThreshold", type: "uint64" },
+      { name: "_maxShiftMagnitude", type: "uint64" },
+      { name: "_minAuctionBlocks", type: "uint64" },
+    ],
+  },
 ] as const;
 
 export const uniswapV3PoolAbi = [

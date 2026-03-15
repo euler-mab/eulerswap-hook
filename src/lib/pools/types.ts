@@ -71,6 +71,13 @@ export interface PoolState {
   auctionStartFee?: bigint;      // WAD: starting fee for decay
   auctionDecayPerSecond?: bigint; // WAD: fee decay per second
 
+  // V7 hook: exposure state
+  v7ExposureRel?: number;        // relative exposure (0-1+, WAD-scaled on-chain)
+  v7ExposureAbsWeth?: number;    // absolute exposure in WETH (human units)
+  v7NetLongWeth?: boolean;       // true = pool is net long WETH
+  v7CachedNav?: bigint;          // cached NAV in asset0 raw units
+  v7AuctionTrigger?: number;     // trigger threshold (0-1, WAD-scaled on-chain)
+
   // Agent wallet balances
   agentEthBalance: bigint;
   agentToken0Balance: bigint;
