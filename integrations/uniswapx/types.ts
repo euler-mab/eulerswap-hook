@@ -123,21 +123,6 @@ export interface ChainConfig {
   webhookAllowedIps: string[];
 }
 
-// ---- Filler config ----
-
-export interface FillerConfig {
-  chainId: number;
-  rpcUrl: string;
-  privateKey?: Hex;
-  reactorAddress: Address;
-  executorAddress?: Address;
-  pollIntervalMs: number;
-  minProfitBps: number;
-  maxGasGwei: number;
-  flashbotsRpcUrl?: string;
-  live: boolean;
-}
-
 // ---- Chain config registry ----
 
 export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
@@ -201,18 +186,6 @@ export function getTokens(config: ChainConfig): TokenInfo[] {
   }
   return tokens;
 }
-
-// ---- Backward-compatible ADDRESSES (computed from mainnet config) ----
-
-const _mainnet = CHAIN_CONFIGS[1];
-export const ADDRESSES = {
-  pool: _mainnet.pools[0].address,
-  reactorV2: _mainnet.reactorV2,
-  permit2: _mainnet.permit2,
-  usdc: _mainnet.pools[0].asset0.address,
-  weth: _mainnet.pools[0].asset1.address,
-  executor: "0x2126177546c135a0Ef310005090A833a75586C67" as Address,
-} as const;
 
 // V2DutchOrder ABI tuple for decoding encodedOrder bytes
 export const V2_DUTCH_ORDER_ABI = [

@@ -1,9 +1,6 @@
 [submodule "contracts/eulerswap"]
 	path = contracts/eulerswap
 	url = https://github.com/euler-xyz/euler-swap
-[submodule "contracts/amm-challenge"]
-	path = contracts/amm-challenge
-	url = https://github.com/benedictbrady/amm-challenge
 [submodule "contracts/evk-periphery"]
 	path = contracts/evk-periphery
 	url = https://github.com/euler-xyz/evk-periphery.git

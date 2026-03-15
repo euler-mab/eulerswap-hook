@@ -10,8 +10,8 @@
 >   manipulation costs, recentering design options (afterSwap drift, permissionless
 >   keeper, hybrid), and an independent dutch auction analysis that reaches the same
 >   conclusions we validate in simulation below.
-> - [`scripts/sim-recenter.ts`](../scripts/sim-recenter.ts) — Simulation code with
->   bidirectional dutch auction implementation. Run with `npx tsx scripts/sim-recenter.ts`.
+> - `scripts/sim-recenter.ts` (removed) — Original simulation code with
+>   bidirectional dutch auction implementation. Superseded by `scripts/sim-v9-v7hook.ts`.
 >
 > **Status (2026-03-07):** Dutch auction abandoned at current scale. Agent-triggered
 > direct swap is the near-term debt repayment mechanism. See [Simulation Findings](#simulation-findings-2026-03-07)

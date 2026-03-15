@@ -6,8 +6,8 @@
 >   two-mode hook design (Mode 1 auction + Mode 2 dynamic fee), edge cases, and
 >   simulation findings showing dutch auction is 5-6x more expensive than direct
 >   swap at current scale.
-> - [`scripts/sim-recenter.ts`](../../scripts/sim-recenter.ts) — Full simulation
->   with additive boost, bidirectional dutch auction, and recenter logic.
+> - `scripts/sim-recenter.ts` (removed) — Original simulation
+>   with additive boost, bidirectional dutch auction, and recenter logic. Superseded by `scripts/sim-v9-v7hook.ts`.
 >
 > **Status (2026-03-07):** This doc covers two independent problems:
 > 1. **General recentering** (§Recentering Design Space) — not yet implemented.
@@ -234,7 +234,7 @@ TWAP resists this because it can't be moved within a single transaction.
 
 ### Simulation Results (2026-03-07)
 
-The dutch auction was fully simulated in [`scripts/sim-recenter.ts`](../../scripts/sim-recenter.ts)
+The dutch auction was fully simulated in `scripts/sim-recenter.ts` (removed, superseded by `scripts/sim-v9-v7hook.ts`)
 with bidirectional support (WETH and USDC debt). Key finding:
 
 **The auction's LP cost is quadratic in delta** (`x0 * delta² / 4`) because the
