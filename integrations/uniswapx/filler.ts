@@ -2,21 +2,23 @@
 /**
  * UniswapX Filler Bot for EulerSwap
  *
- * Monitors UniswapX open orders for USDC/WETH, evaluates profitability
- * against our EulerSwap pool, and optionally fills profitable orders.
+ * Monitors UniswapX open orders, evaluates profitability against EulerSwap
+ * pool(s), and optionally fills profitable orders. Supports multichain
+ * (one instance per chain) and multi-pool routing.
  *
  * Usage:
  *   npx tsx integrations/uniswapx/filler.ts              # monitoring mode (default)
  *   npx tsx integrations/uniswapx/filler.ts --live        # live fill mode
  *
  * Env vars:
- *   NEXT_PUBLIC_RPC_URL   - Ethereum RPC endpoint (required)
+ *   NEXT_PUBLIC_RPC_URL   - RPC endpoint (required)
+ *   CHAIN_ID              - Target chain (default: 1 = Ethereum mainnet)
  *   PRIVATE_KEY           - Filler wallet private key (required for --live)
  *   EXECUTOR_ADDRESS      - Deployed UniswapXFiller contract (required for --live)
  *   FLASHBOTS_AUTH_KEY    - Throwaway key for bundle mode (zero gas on failure)
- *   FLASHBOTS_RPC_URL    - Flashbots Protect RPC URL (fallback, reverts cost gas)
+ *   FLASHBOTS_RPC_URL     - Flashbots Protect RPC URL (fallback, reverts cost gas)
  *   MIN_PROFIT_BPS        - Minimum profit threshold in bps (default: 5)
- *   MAX_GAS_GWEI          - Skip fills above this base fee (default: 50)
+ *   MAX_GAS_GWEI          - Skip fills above this base fee (default: from chain config)
  *   POLL_INTERVAL_MS      - Polling interval in ms (default: 200)
  *   WEBHOOK_PORT          - If set, start webhook server for push-based order sourcing
  */
@@ -45,12 +47,20 @@ import {
   http,
   type Address,
   type Hex,
+  type Chain,
 } from "viem";
-import { mainnet } from "viem/chains";
+import * as viemChains from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
-import { fetchOpenOrders, filterForPool } from "./api";
+import { fetchOpenOrders, filterForPools, tokenSymbol } from "./api";
+import type { PoolMatch } from "./api";
 import { eulerSwapAbi } from "../../src/lib/pools/abi";
-import { evaluateOrder, formatQuote, type QuoteResult, GasEstimator } from "./quote";
+import {
+  evaluateOrder,
+  evaluateOrderAcrossPools,
+  formatQuote,
+  type QuoteResult,
+  GasEstimator,
+} from "./quote";
 import {
   callbackFill,
   batchCallbackFill,
@@ -64,7 +74,31 @@ import {
   getCurrentBlock,
 } from "./flashbots";
 import { startWebhookServer } from "./webhook";
-import { ADDRESSES, type UniswapXApiOrder } from "./types";
+import {
+  loadChainConfig,
+  getTokens,
+  type ChainConfig,
+  type PoolConfig,
+  type TokenInfo,
+  type UniswapXApiOrder,
+} from "./types";
+
+// ---- Chain config ----
+
+const chainConfig = loadChainConfig();
+const tokens = getTokens(chainConfig);
+
+function getViemChain(key: string): Chain {
+  const chain = (viemChains as Record<string, Chain>)[key];
+  if (!chain) {
+    throw new Error(
+      `Unknown viem chain key: "${key}". Check ChainConfig.viemChainKey.`,
+    );
+  }
+  return chain;
+}
+
+const viemChain = getViemChain(chainConfig.viemChainKey);
 
 // ---- Config ----
 
@@ -76,10 +110,13 @@ if (!RPC_URL) {
 
 const LIVE = process.argv.includes("--live");
 const MIN_PROFIT_BPS = parseInt(process.env.MIN_PROFIT_BPS ?? "5");
-const MAX_GAS_GWEI = parseInt(process.env.MAX_GAS_GWEI ?? "50");
+const MAX_GAS_GWEI = parseInt(
+  process.env.MAX_GAS_GWEI ?? String(chainConfig.gas.maxGasGwei),
+);
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS ?? "200");
 const EXECUTOR_ADDRESS = process.env.EXECUTOR_ADDRESS as Address | undefined;
 const FLASHBOTS_AUTH_KEY = process.env.FLASHBOTS_AUTH_KEY as Hex | undefined;
+const FLASHBOTS_AVAILABLE = !!FLASHBOTS_AUTH_KEY && !!chainConfig.flashbotsRelay;
 const WEBHOOK_PORT = process.env.WEBHOOK_PORT
   ? parseInt(process.env.WEBHOOK_PORT)
   : undefined;
@@ -87,22 +124,19 @@ const WEBHOOK_PORT = process.env.WEBHOOK_PORT
 const TX_CONFIRMATION_TIMEOUT = 120_000; // 2 minutes
 
 const client = createPublicClient({
-  chain: mainnet,
+  chain: viemChain,
   transport: http(RPC_URL),
   batch: { multicall: true },
 });
 
 // Wallet client for live fills.
-// Always uses normal RPC for nonce/gas estimation.
-// For bundle mode (FLASHBOTS_AUTH_KEY), the signed tx goes directly to the relay.
-// For non-bundle mode, FLASHBOTS_RPC_URL provides Protect RPC (reverts still cost gas).
 const walletClient =
   LIVE && process.env.PRIVATE_KEY
     ? createWalletClient({
         account: privateKeyToAccount(process.env.PRIVATE_KEY as Hex),
-        chain: mainnet,
+        chain: viemChain,
         transport: http(
-          FLASHBOTS_AUTH_KEY
+          FLASHBOTS_AVAILABLE
             ? RPC_URL // Bundle mode: wallet uses normal RPC, signed tx → relay
             : (process.env.FLASHBOTS_RPC_URL ?? RPC_URL), // Protect RPC fallback
         ),
@@ -131,37 +165,30 @@ class RateLimiter {
 
 const rateLimiter = new RateLimiter(6, 1000); // UniswapX API: 6 req/s
 
-// ---- Fill serialization (Fix 4: nonce mutex) ----
+// ---- Fill serialization ----
 
-/**
- * Serializes fill submissions to prevent nonce collisions.
- * Without this, concurrent fills from poll + webhook could get the same nonce
- * from prepareTransactionRequest, causing one to fail.
- */
 let fillChain: Promise<void> = Promise.resolve();
 
 function serializeFill<T>(fn: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     fillChain = fillChain.then(
       () => fn().then(resolve, reject),
-      () => fn().then(resolve, reject), // continue chain even if prior fill failed
+      () => fn().then(resolve, reject),
     );
   });
 }
 
 // ---- State ----
 
-/** Tracks seen orders with their deadline for eviction */
 const seenOrders = new Map<string, number>(); // hash -> deadline (unix seconds)
 const pendingFills = new Set<string>();
-const gasEstimator = new GasEstimator(); // adaptive gas estimate from simulation feedback
+const gasEstimator = new GasEstimator(chainConfig.gas.defaultGasEstimate);
 let totalOrdersSeen = 0;
 let totalMatchingOrders = 0;
 let totalProfitable = 0;
 let cycleCount = 0;
-let consecutiveErrors = 0; // for exponential backoff
+let consecutiveErrors = 0;
 
-/** Evict expired entries from seenOrders to prevent unbounded growth */
 function evictStaleOrders() {
   const now = Math.floor(Date.now() / 1000);
   for (const [hash, deadline] of seenOrders) {
@@ -169,15 +196,32 @@ function evictStaleOrders() {
   }
 }
 
-// ---- Pool Status ----
+// ---- Pool Health Monitoring ----
 
-const WAD = 1_000_000_000_000_000_000n; // 1e18
+const WAD = 1_000_000_000_000_000_000n;
 
-/**
- * Check if the pool is available for swaps.
- * Mirrors the CoW driver's pool filtering: skip if expired, locked, fee >= 100%, or not installed.
- * Returns null if available, or a reason string if not.
- */
+interface PoolHealthState {
+  consecutiveFailures: number;
+  lastAvailable: number; // unix timestamp
+  expirationWarned: boolean;
+  runtimeDisabled: boolean;
+}
+
+const poolHealth = new Map<string, PoolHealthState>();
+
+function getPoolHealth(addr: Address): PoolHealthState {
+  const key = addr.toLowerCase();
+  if (!poolHealth.has(key)) {
+    poolHealth.set(key, {
+      consecutiveFailures: 0,
+      lastAvailable: Math.floor(Date.now() / 1000),
+      expirationWarned: false,
+      runtimeDisabled: false,
+    });
+  }
+  return poolHealth.get(key)!;
+}
+
 async function checkPoolAvailable(poolAddress: Address): Promise<string | null> {
   try {
     const [reserves, dynamicParams, installed] = await Promise.all([
@@ -205,7 +249,6 @@ async function checkPoolAvailable(poolAddress: Address): Promise<string | null> 
 
     const [, , status] = reserves;
     if (status !== 1) return `pool status ${status} (expected 1=unlocked)`;
-
     if (!installed) return "pool not installed in EVC";
 
     const now = Math.floor(Date.now() / 1000);
@@ -217,6 +260,18 @@ async function checkPoolAvailable(poolAddress: Address): Promise<string | null> 
       return "fee >= 100% (swap rejected)";
     }
 
+    // Expiration warning: log if pool expires within 24 hours
+    const health = getPoolHealth(poolAddress);
+    if (dynamicParams.expiration !== 0) {
+      const hoursUntilExpiry = (dynamicParams.expiration - now) / 3600;
+      if (hoursUntilExpiry > 0 && hoursUntilExpiry < 24 && !health.expirationWarned) {
+        console.log(
+          `  EXPIRY WARNING: pool ${poolAddress.slice(0, 10)} expires in ${hoursUntilExpiry.toFixed(1)} hours`,
+        );
+        health.expirationWarned = true;
+      }
+    }
+
     return null; // available
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -224,13 +279,63 @@ async function checkPoolAvailable(poolAddress: Address): Promise<string | null> 
   }
 }
 
+/** Get list of available pools, updating health state */
+async function getAvailablePools(): Promise<PoolConfig[]> {
+  const candidates = chainConfig.pools.filter((p) => {
+    if (!p.enabled) return false;
+    const health = getPoolHealth(p.address);
+    return !health.runtimeDisabled;
+  });
+
+  if (candidates.length === 0) return [];
+
+  // Check all pools in parallel
+  const results = await Promise.all(
+    candidates.map(async (pool) => ({
+      pool,
+      unavailable: await checkPoolAvailable(pool.address),
+    })),
+  );
+
+  const available: PoolConfig[] = [];
+  for (const { pool, unavailable } of results) {
+    const health = getPoolHealth(pool.address);
+    if (unavailable) {
+      health.consecutiveFailures++;
+      if (health.consecutiveFailures === 10) {
+        console.log(
+          `  WARN: pool ${pool.address.slice(0, 10)} unavailable for 10 cycles`,
+        );
+      }
+      if (health.consecutiveFailures >= 50) {
+        console.log(
+          `  CRITICAL: pool ${pool.address.slice(0, 10)} persistently unavailable — auto-disabling for this session`,
+        );
+        health.runtimeDisabled = true;
+      }
+      if (health.consecutiveFailures <= 3 || health.consecutiveFailures % 10 === 0) {
+        console.log(
+          `  pool ${pool.address.slice(0, 10)} unavailable: ${unavailable}`,
+        );
+      }
+    } else {
+      if (health.consecutiveFailures > 0) {
+        console.log(
+          `  pool ${pool.address.slice(0, 10)} recovered after ${health.consecutiveFailures} failures`,
+        );
+      }
+      health.consecutiveFailures = 0;
+      health.lastAvailable = Math.floor(Date.now() / 1000);
+      available.push(pool);
+    }
+  }
+
+  return available;
+}
+
 // ---- Evaluate & Fill ----
 
-/**
- * Evaluate orders and optionally fill profitable ones.
- * Shared by both poll loop and webhook handler.
- */
-async function evaluateAndFill(apiOrders: UniswapXApiOrder[]) {
+async function evaluateAndFill(matches: PoolMatch[]) {
   // Skip evaluation entirely when gas is too expensive
   if (LIVE) {
     try {
@@ -243,32 +348,51 @@ async function evaluateAndFill(apiOrders: UniswapXApiOrder[]) {
     } catch {}
   }
 
-  // Check pool status before evaluating (mirrors CoW driver pattern)
-  const unavailable = await checkPoolAvailable(ADDRESSES.pool);
-  if (unavailable) {
-    console.log(`  POOL UNAVAILABLE: ${unavailable}`);
+  // Check pool availability
+  const availablePools = await getAvailablePools();
+  if (availablePools.length === 0) {
+    console.log(`  ALL POOLS UNAVAILABLE`);
     return;
   }
 
-  const profitable: { order: UniswapXApiOrder; quote: QuoteResult }[] = [];
+  const profitable: { order: UniswapXApiOrder; quote: QuoteResult; pool: PoolConfig }[] = [];
 
-  for (const apiOrder of apiOrders) {
+  for (const { order: apiOrder, matchingPools } of matches) {
     if (pendingFills.has(apiOrder.orderHash)) continue;
+
+    // Only consider pools that are both matching AND available
+    const candidatePools = matchingPools.filter((mp) =>
+      availablePools.some((ap) => ap.address.toLowerCase() === mp.address.toLowerCase()),
+    );
+    if (candidatePools.length === 0) continue;
+
     try {
-      const quote = await evaluateOrder(
+      const best = await evaluateOrderAcrossPools(
         client,
         apiOrder,
         MIN_PROFIT_BPS,
-        ADDRESSES.pool,
+        candidatePools,
         gasEstimator.estimate,
+        chainConfig,
       );
 
-      const tag = quote.profitable ? ">>>" : "   ";
-      console.log(`  ${tag} ${formatQuote(quote)}`);
-
-      if (quote.profitable) {
+      if (best) {
+        const tag = ">>>";
+        console.log(`  ${tag} ${formatQuote(best.quote, tokens)} [${best.pool.address.slice(0, 10)}]`);
         totalProfitable++;
-        profitable.push({ order: apiOrder, quote });
+        profitable.push({ order: apiOrder, quote: best.quote, pool: best.pool });
+      } else {
+        // Log best non-profitable result for visibility
+        // Evaluate just the first candidate for logging
+        const quote = await evaluateOrder(
+          client,
+          apiOrder,
+          MIN_PROFIT_BPS,
+          candidatePools[0].address,
+          gasEstimator.estimate,
+          chainConfig,
+        );
+        console.log(`      ${formatQuote(quote, tokens)}`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -277,17 +401,23 @@ async function evaluateAndFill(apiOrders: UniswapXApiOrder[]) {
   }
 
   if (profitable.length > 0 && LIVE) {
-    // Serialize fills to prevent nonce collisions from concurrent poll + webhook
-    await serializeFill(() => executeFills(profitable));
+    // Group fills by pool for batching (same pool → batch, different pools → separate)
+    const byPool = new Map<string, { order: UniswapXApiOrder; quote: QuoteResult; pool: PoolConfig }[]>();
+    for (const fill of profitable) {
+      const key = fill.pool.address.toLowerCase();
+      if (!byPool.has(key)) byPool.set(key, []);
+      byPool.get(key)!.push(fill);
+    }
+
+    for (const fills of byPool.values()) {
+      await serializeFill(() => executeFills(fills, fills[0].pool.address));
+    }
   }
 }
 
-/**
- * Simulate then fill profitable orders.
- * Uses batch fill for 2+ orders, single fill for 1.
- */
 async function executeFills(
-  fills: { order: UniswapXApiOrder; quote: QuoteResult }[],
+  fills: { order: UniswapXApiOrder; quote: QuoteResult; pool: PoolConfig }[],
+  poolAddress: Address,
 ) {
   if (!walletClient || !EXECUTOR_ADDRESS) {
     console.log(
@@ -299,18 +429,16 @@ async function executeFills(
   const fillerAddress = walletClient.account.address;
   const orders = fills.map((f) => f.order);
 
-  // Mark as pending to avoid re-evaluation
   for (const f of fills) pendingFills.add(f.order.orderHash);
 
   try {
-    // Simulate first (targets executor contract, single RPC call)
     const sim =
       orders.length === 1
         ? await simulateFill(
             client,
             orders[0],
             EXECUTOR_ADDRESS,
-            ADDRESSES.pool,
+            poolAddress,
             0n,
             fillerAddress,
           )
@@ -318,7 +446,7 @@ async function executeFills(
             client,
             orders,
             EXECUTOR_ADDRESS,
-            ADDRESSES.pool,
+            poolAddress,
             0n,
             fillerAddress,
           );
@@ -328,11 +456,8 @@ async function executeFills(
       return;
     }
 
-    // Feed actual gas back into adaptive estimator (Fix 5: normalize for batch)
     if (sim.gasEstimate) {
       const prevEstimate = gasEstimator.estimate;
-      // For batch fills, normalize gas per order so the estimator
-      // tracks single-order gas cost (used for per-order profitability).
       const perOrderGas = orders.length > 1
         ? sim.gasEstimate / BigInt(orders.length)
         : sim.gasEstimate;
@@ -344,9 +469,7 @@ async function executeFills(
       console.log(`  SIM OK (gas: unknown) — submitting fill...`);
     }
 
-    if (FLASHBOTS_AUTH_KEY) {
-      // Bundle mode: build raw signed tx, submit to Flashbots relay.
-      // Failed bundles cost zero gas (vs Protect RPC where reverts still pay).
+    if (FLASHBOTS_AVAILABLE && FLASHBOTS_AUTH_KEY && chainConfig.flashbotsRelay) {
       const signedTx =
         orders.length === 1
           ? await buildSignedFillTx(
@@ -354,7 +477,7 @@ async function executeFills(
               client,
               orders[0],
               EXECUTOR_ADDRESS,
-              ADDRESSES.pool,
+              poolAddress,
               0n,
             )
           : await buildSignedBatchFillTx(
@@ -362,7 +485,7 @@ async function executeFills(
               client,
               orders,
               EXECUTOR_ADDRESS,
-              ADDRESSES.pool,
+              poolAddress,
               0n,
             );
 
@@ -371,14 +494,12 @@ async function executeFills(
         signedTx,
         currentBlock,
         FLASHBOTS_AUTH_KEY,
+        chainConfig.flashbotsRelay,
       );
       console.log(
         `  BUNDLE SUBMITTED: ${bundle.bundleHash} (target: ${currentBlock + 1n}+)`,
       );
-      // Bundle inclusion is best-effort — no on-chain confirmation available.
-      // The bundle either lands in block+1/+2 or expires silently (zero gas cost).
     } else {
-      // Non-bundle mode: submit via wallet client RPC (Protect or standard).
       const txHash =
         orders.length === 1
           ? await callbackFill(
@@ -386,7 +507,7 @@ async function executeFills(
               client,
               orders[0],
               EXECUTOR_ADDRESS,
-              ADDRESSES.pool,
+              poolAddress,
               0n,
             )
           : await batchCallbackFill(
@@ -394,13 +515,12 @@ async function executeFills(
               client,
               orders,
               EXECUTOR_ADDRESS,
-              ADDRESSES.pool,
+              poolAddress,
               0n,
             );
 
       console.log(`  TX SENT: ${txHash} — waiting for confirmation...`);
 
-      // Fix 6: Wait for confirmation to track success/failure
       try {
         const receipt = await client.waitForTransactionReceipt({
           hash: txHash,
@@ -431,46 +551,54 @@ async function executeFills(
 async function poll() {
   cycleCount++;
   try {
-    const allOrders = await fetchOpenOrders(1);
-    consecutiveErrors = 0; // reset backoff on success
+    const allOrders = await fetchOpenOrders(chainConfig.chainId, chainConfig.apiBase);
+    consecutiveErrors = 0;
 
-    const matching = filterForPool(allOrders);
+    const matches = filterForPools(allOrders, chainConfig.pools);
 
-    // Count new orders and track with expiry for eviction
     const now = Math.floor(Date.now() / 1000);
     let newOrders = 0;
-    for (const order of matching) {
+    for (const { order } of matches) {
       if (!seenOrders.has(order.orderHash)) {
-        // Orders typically expire within 2 minutes; evict after 5 minutes
-        seenOrders.set(order.orderHash, now + 300);
+        // Use createdAt + 10min as eviction deadline. UniswapX V2 Dutch orders
+        // typically expire within 2-5min; 10min covers edge cases. Orders are
+        // removed from the API when filled/expired, so this is a safety net
+        // against the API returning stale orders.
+        const evictAt = (order.createdAt > 0 ? order.createdAt : now) + 600;
+        seenOrders.set(order.orderHash, evictAt);
         newOrders++;
         totalMatchingOrders++;
       }
     }
     totalOrdersSeen += allOrders.length;
 
-    // Periodically evict expired orders to prevent unbounded memory growth
     if (cycleCount % 100 === 0) evictStaleOrders();
 
-    if (matching.length === 0) {
+    // Build pair label from configured pools
+    const pairLabels = chainConfig.pools
+      .filter((p) => p.enabled)
+      .map((p) => `${p.asset0.symbol}/${p.asset1.symbol}`)
+      .filter((v, i, a) => a.indexOf(v) === i) // unique
+      .join("+");
+
+    if (matches.length === 0) {
       if (cycleCount <= 3 || cycleCount % 30 === 0) {
         console.log(
-          `[${ts()}] ${allOrders.length} open orders, 0 USDC/WETH | total: ${totalMatchingOrders} matching, ${totalProfitable} profitable`,
+          `[${ts()}] ${allOrders.length} open orders, 0 ${pairLabels} | total: ${totalMatchingOrders} matching, ${totalProfitable} profitable`,
         );
       }
       return;
     }
 
     console.log(
-      `[${ts()}] ${allOrders.length} open orders, ${matching.length} USDC/WETH (${newOrders} new)`,
+      `[${ts()}] ${allOrders.length} open orders, ${matches.length} ${pairLabels} (${newOrders} new)`,
     );
 
-    await evaluateAndFill(matching);
+    await evaluateAndFill(matches);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[${ts()}] poll error: ${msg}`);
 
-    // Fix 7: Exponential backoff on consecutive errors (caps at ~30s)
     consecutiveErrors++;
     if (consecutiveErrors > 1) {
       const backoffMs = Math.min(1000 * 2 ** (consecutiveErrors - 1), 30_000);
@@ -487,20 +615,40 @@ function ts(): string {
 // ---- Entry point ----
 
 async function main() {
+  // Validate chain ID matches RPC
+  const rpcChainId = await client.getChainId();
+  if (rpcChainId !== chainConfig.chainId) {
+    console.error(
+      `CHAIN MISMATCH: config chainId=${chainConfig.chainId}, RPC chainId=${rpcChainId}`,
+    );
+    process.exit(1);
+  }
+
+  const enabledPools = chainConfig.pools.filter((p) => p.enabled);
+  const pairLabels = enabledPools
+    .map((p) => `${p.asset0.symbol}/${p.asset1.symbol}`)
+    .join(", ");
+
   console.log("UniswapX Filler Bot for EulerSwap");
   console.log("=================================");
   console.log(
+    `Chain:          ${chainConfig.viemChainKey} (${chainConfig.chainId})`,
+  );
+  console.log(
     `Mode:           ${LIVE ? "LIVE (fills enabled)" : "MONITOR (read-only)"}`,
   );
-  console.log(`Pool:           ${ADDRESSES.pool}`);
-  console.log(`Reactor:        ${ADDRESSES.reactorV2}`);
+  console.log(`Pools:          ${enabledPools.length} enabled (${pairLabels})`);
+  for (const pool of enabledPools) {
+    console.log(`                ${pool.address} ${pool.asset0.symbol}/${pool.asset1.symbol}`);
+  }
+  console.log(`Reactor:        ${chainConfig.reactorV2}`);
   console.log(`Executor:       ${EXECUTOR_ADDRESS ?? "(not set)"}`);
   console.log(`Min profit:     ${MIN_PROFIT_BPS} bps`);
   console.log(`Max gas:        ${MAX_GAS_GWEI} gwei`);
   console.log(`Gas estimate:   ${gasEstimator.estimate} (adaptive, 20% margin)`);
   console.log(`Poll interval:  ${POLL_INTERVAL_MS}ms`);
   console.log(
-    `Flashbots:      ${FLASHBOTS_AUTH_KEY ? "bundle mode (zero gas on failure)" : process.env.FLASHBOTS_RPC_URL ? "protect RPC (reverts still cost gas)" : "disabled"}`,
+    `Flashbots:      ${FLASHBOTS_AVAILABLE ? "bundle mode (zero gas on failure)" : process.env.FLASHBOTS_RPC_URL ? "protect RPC (reverts still cost gas)" : chainConfig.flashbotsRelay ? "disabled (no auth key)" : "not available on this chain"}`,
   );
   console.log(`Webhook:        ${WEBHOOK_PORT ? `port ${WEBHOOK_PORT}` : "disabled"}`);
 
@@ -515,53 +663,57 @@ async function main() {
 
   console.log("");
 
-  // Verify pool is accessible
-  try {
-    const [asset0, asset1] = (await client.readContract({
-      address: ADDRESSES.pool,
-      abi: [
-        {
-          name: "getAssets",
-          type: "function",
-          stateMutability: "view",
-          inputs: [],
-          outputs: [
-            { name: "asset0", type: "address" },
-            { name: "asset1", type: "address" },
-          ],
-        },
-      ],
-      functionName: "getAssets",
-    })) as [string, string];
-    console.log(`Pool assets: ${asset0} / ${asset1}`);
-  } catch {
-    console.error("Failed to read pool — check RPC_URL");
-    process.exit(1);
+  // Verify first pool is accessible
+  if (enabledPools.length > 0) {
+    try {
+      const [asset0, asset1] = (await client.readContract({
+        address: enabledPools[0].address,
+        abi: [
+          {
+            name: "getAssets",
+            type: "function",
+            stateMutability: "view",
+            inputs: [],
+            outputs: [
+              { name: "asset0", type: "address" },
+              { name: "asset1", type: "address" },
+            ],
+          },
+        ],
+        functionName: "getAssets",
+      })) as [string, string];
+      console.log(`Pool assets: ${asset0} / ${asset1}`);
+    } catch {
+      console.error("Failed to read pool — check RPC_URL and pool address");
+      process.exit(1);
+    }
   }
 
   // Start webhook server if configured
   if (WEBHOOK_PORT) {
-    startWebhookServer(WEBHOOK_PORT, async (orders) => {
-      const matching = filterForPool(orders);
-      if (matching.length === 0) return;
+    startWebhookServer(
+      WEBHOOK_PORT,
+      async (orders) => {
+        const matches = filterForPools(orders, chainConfig.pools);
+        if (matches.length === 0) return;
 
-      // Deduplicate webhook orders against poll-sourced seenOrders
-      const now = Math.floor(Date.now() / 1000);
-      const fresh = matching.filter((o) => {
-        if (seenOrders.has(o.orderHash)) return false;
-        seenOrders.set(o.orderHash, now + 300);
-        return true;
-      });
-      if (fresh.length > 0) {
-        console.log(`[${ts()}] webhook: ${fresh.length} new matching order(s)`);
-        await evaluateAndFill(fresh);
-      }
-    });
+        const now = Math.floor(Date.now() / 1000);
+        const freshMatches = matches.filter(({ order: o }) => {
+          if (seenOrders.has(o.orderHash)) return false;
+          seenOrders.set(o.orderHash, now + 300);
+          return true;
+        });
+        if (freshMatches.length > 0) {
+          console.log(`[${ts()}] webhook: ${freshMatches.length} new matching order(s)`);
+          await evaluateAndFill(freshMatches);
+        }
+      },
+      chainConfig.webhookAllowedIps,
+    );
   }
 
   console.log(`\nStarting poll loop...\n`);
 
-  // Continuous polling with rate limiting
   while (true) {
     await rateLimiter.waitForSlot();
     await poll();

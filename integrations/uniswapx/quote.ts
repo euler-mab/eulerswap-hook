@@ -2,8 +2,13 @@
 
 import type { PublicClient, Address } from "viem";
 import { eulerSwapAbi } from "../../src/lib/pools/abi";
-import type { UniswapXApiOrder, V2DutchOrder, ResolvedAmounts } from "./types";
-import { ADDRESSES } from "./types";
+import type {
+  UniswapXApiOrder,
+  ChainConfig,
+  PoolConfig,
+  TokenInfo,
+} from "./types";
+import { tokenSymbol } from "./api";
 import { decodeV2DutchOrder, resolveAmounts } from "./api";
 
 export interface QuoteResult {
@@ -33,27 +38,10 @@ export interface QuoteResult {
 }
 
 /**
- * Evaluate whether an order can be profitably filled via EulerSwap.
- * Reads computeQuote and getLimits from the pool.
- */
-/** Default gas estimate for callback fill path.
- * Starts at 250k (conservative). Updated at runtime via GasEstimator
- * which tracks actual simulation results with an EMA. */
-const DEFAULT_GAS_ESTIMATE = 250_000n;
-const DEFAULT_PRIORITY_FEE = 1_500_000_000n; // 1.5 gwei
-/** Buffer added to current time when resolving decay.
- * Accounts for the delay between evaluation and on-chain execution.
- * 2 blocks (24s) is conservative for Flashbots bundles targeting block+1/+2. */
-const DECAY_BUFFER_SECONDS = 24n;
-/** Minimum remaining lifetime for an order to be worth evaluating.
- * Orders expiring within this window will likely expire before our tx lands. */
-const MIN_REMAINING_SECONDS = 30n;
-
-/**
  * Adaptive gas estimator using exponential moving average (EMA).
  * Feeds simulation gas results back into profitability evaluation.
  *
- * - Starts with a conservative default (250k)
+ * - Starts with a conservative default (chain-specific)
  * - Updates after each successful simulation with the actual gas
  * - EMA smoothing factor α=0.3 — responsive but not noisy
  * - Adds a safety margin (20%) to avoid false positives from gas variance
@@ -65,7 +53,7 @@ export class GasEstimator {
   private readonly safetyMargin: number;
 
   constructor(
-    initialEstimate: bigint = DEFAULT_GAS_ESTIMATE,
+    initialEstimate: bigint = 250_000n,
     alpha = 0.3,
     safetyMargin = 0.2,
   ) {
@@ -103,34 +91,34 @@ export class GasEstimator {
   }
 }
 
+/** Find the WETH-equivalent token (18-decimal native wrapper) from the chain's pools */
+function findWethToken(config: ChainConfig): TokenInfo | undefined {
+  for (const pool of config.pools) {
+    if (pool.asset0.symbol === "WETH") return pool.asset0;
+    if (pool.asset1.symbol === "WETH") return pool.asset1;
+  }
+  return undefined;
+}
+
+/** Evaluate whether an order can be profitably filled via a specific EulerSwap pool */
 export async function evaluateOrder(
   client: PublicClient,
   apiOrder: UniswapXApiOrder,
   minProfitBps: number,
-  poolAddress: Address = ADDRESSES.pool,
-  gasEstimate: bigint = DEFAULT_GAS_ESTIMATE,
+  poolAddress: Address,
+  gasEstimate: bigint,
+  chainConfig: ChainConfig,
 ): Promise<QuoteResult> {
   const now = BigInt(Math.floor(Date.now() / 1000));
-  const decoded = decodeV2DutchOrder(apiOrder.encodedOrder);
+  const decoded = decodeV2DutchOrder(apiOrder.encodedOrder, chainConfig.reactorV2);
+
+  // Derive timing constants from chain's block time
+  const minRemainingSeconds = BigInt(chainConfig.gas.blockTimeSeconds * 3);
+  const decayBufferSeconds = BigInt(chainConfig.gas.blockTimeSeconds * 2);
 
   // Skip orders that will expire before our tx can land.
-  // Checked before RPC calls to avoid wasting gas estimation on doomed orders.
-  if (decoded.info.deadline <= now + MIN_REMAINING_SECONDS) {
-    return {
-      orderHash: apiOrder.orderHash,
-      inputToken: decoded.input.token,
-      outputToken: decoded.outputs[0]?.token ?? ("0x0000000000000000000000000000000000000000" as Address),
-      inputAmount: 0n,
-      requiredOutput: 0n,
-      eulerSwapOutput: 0n,
-      grossProfit: 0n,
-      gasCost: 0n,
-      netProfit: 0n,
-      profitBps: 0,
-      withinLimits: false,
-      exclusive: false,
-      profitable: false,
-    };
+  if (decoded.info.deadline <= now + minRemainingSeconds) {
+    return emptyResult(apiOrder, decoded.input.token, decoded.outputs[0]?.token);
   }
 
   // Decay is evaluated at `now`. Dutch decay favors the filler over time (outputs
@@ -144,66 +132,33 @@ export async function evaluateOrder(
 
   // Guard: malformed orders with no outputs
   if (!decoded.outputs.length) {
-    return {
-      orderHash: apiOrder.orderHash,
-      inputToken,
-      outputToken: "0x0000000000000000000000000000000000000000" as Address,
-      inputAmount,
-      requiredOutput: 0n,
-      eulerSwapOutput: 0n,
-      grossProfit: 0n,
-      gasCost: 0n,
-      netProfit: 0n,
-      profitBps: 0,
-      withinLimits: false,
-      exclusive: false,
-      profitable: false,
-    };
+    return emptyResult(apiOrder, inputToken);
   }
 
   // All outputs must be the same token (standard for UniswapX swaps).
-  // Sum all output amounts (covers fee-recipient splits).
   const outputToken = decoded.outputs[0].token;
   const allSameToken = decoded.outputs.every(
     (o) => o.token.toLowerCase() === outputToken.toLowerCase(),
   );
   if (!allSameToken) {
-    return {
-      orderHash: apiOrder.orderHash,
-      inputToken,
-      outputToken,
-      inputAmount,
-      requiredOutput: 0n,
-      eulerSwapOutput: 0n,
-      grossProfit: 0n,
-      gasCost: 0n,
-      netProfit: 0n,
-      profitBps: 0,
-      withinLimits: false,
-      exclusive: false,
-      profitable: false,
-    };
+    return emptyResult(apiOrder, inputToken, outputToken);
   }
   let requiredOutput = resolved.outputAmounts.reduce((a, b) => a + b, 0n);
 
   // Check exclusivity and override penalty.
-  // Use now + buffer for exclusivity: if the order exits exclusivity within the
-  // buffer window, we can still fill it (our tx lands after exclusivity ends).
   const { exclusiveFiller, decayStartTime, exclusivityOverrideBps } =
     decoded.cosignerData;
-  const executionTime = now + DECAY_BUFFER_SECONDS;
+  const executionTime = now + decayBufferSeconds;
   const inExclusivityWindow =
     exclusiveFiller !== "0x0000000000000000000000000000000000000000" &&
     executionTime <= decayStartTime;
-  // exclusivityOverrideBps = 0 means strict exclusivity (unfillable by non-exclusive)
   const strictExclusive = inExclusivityWindow && exclusivityOverrideBps === 0n;
   const exclusive = strictExclusive;
 
   // Apply exclusivity override penalty: outputs scale up by (10000 + overrideBps) / 10000
-  // This matches ExclusivityLib.sol: output.amount.mulDivUp(BPS + overrideBps, BPS)
   if (inExclusivityWindow && !strictExclusive && exclusivityOverrideBps > 0n) {
     requiredOutput =
-      (requiredOutput * (10000n + exclusivityOverrideBps) + 9999n) / 10000n; // round up
+      (requiredOutput * (10000n + exclusivityOverrideBps) + 9999n) / 10000n;
   }
 
   // Check pool limits + get quote + get gas price
@@ -229,22 +184,27 @@ export async function evaluateOrder(
   const withinLimits = inputAmount <= limitIn;
 
   // Compute gas cost in output token units
-  const effectiveGasPrice = gasPrice + DEFAULT_PRIORITY_FEE;
+  const effectiveGasPrice = gasPrice + chainConfig.gas.defaultPriorityFee;
   const gasCostWei = gasEstimate * effectiveGasPrice;
   let gasCost: bigint;
-  if (outputToken.toLowerCase() === ADDRESSES.weth.toLowerCase()) {
+
+  const wethToken = findWethToken(chainConfig);
+  if (wethToken && outputToken.toLowerCase() === wethToken.address.toLowerCase()) {
     gasCost = gasCostWei; // already in WETH wei
-  } else {
-    // Convert ETH gas cost to USDC using pool price
-    const ethPriceUsdc = await client
+  } else if (wethToken) {
+    // Convert ETH gas cost to output token using pool price
+    const ethPrice = await client
       .readContract({
         address: poolAddress,
         abi: eulerSwapAbi,
         functionName: "computeQuote",
-        args: [ADDRESSES.weth, ADDRESSES.usdc, 10n ** 18n, true],
+        args: [wethToken.address, outputToken, 10n ** 18n, true],
       })
       .catch(() => 2000_000_000n) as bigint; // fallback ~$2000
-    gasCost = (gasCostWei * ethPriceUsdc) / 10n ** 18n;
+    gasCost = (gasCostWei * ethPrice) / 10n ** 18n;
+  } else {
+    // No WETH token found — use raw wei as rough estimate
+    gasCost = gasCostWei;
   }
 
   const grossProfit = eulerSwapOutput - requiredOutput;
@@ -271,17 +231,53 @@ export async function evaluateOrder(
   };
 }
 
+/** Evaluate an order against multiple pools, return the best result */
+export async function evaluateOrderAcrossPools(
+  client: PublicClient,
+  apiOrder: UniswapXApiOrder,
+  minProfitBps: number,
+  pools: PoolConfig[],
+  gasEstimate: bigint,
+  chainConfig: ChainConfig,
+): Promise<{ quote: QuoteResult; pool: PoolConfig } | null> {
+  const results = await Promise.all(
+    pools.map(async (pool) => {
+      const quote = await evaluateOrder(
+        client,
+        apiOrder,
+        minProfitBps,
+        pool.address,
+        gasEstimate,
+        chainConfig,
+      );
+      return { quote, pool };
+    }),
+  );
+
+  // Pick the most profitable result
+  let best: { quote: QuoteResult; pool: PoolConfig } | null = null;
+  for (const r of results) {
+    if (!r.quote.profitable) continue;
+    if (!best || r.quote.netProfit > best.quote.netProfit) {
+      best = r;
+    }
+  }
+
+  return best;
+}
+
 /** Format amounts for human-readable logging */
-export function formatQuote(q: QuoteResult): string {
-  const inSym = tokenSymbol(q.inputToken);
-  const outSym = tokenSymbol(q.outputToken);
-  const inAmt = formatTokenAmount(q.inputAmount, q.inputToken);
-  const outReq = formatTokenAmount(q.requiredOutput, q.outputToken);
-  const esOut = formatTokenAmount(q.eulerSwapOutput, q.outputToken);
-  const gas = formatTokenAmount(q.gasCost, q.outputToken);
+export function formatQuote(q: QuoteResult, tokens: TokenInfo[]): string {
+  const inSym = tokenSymbol(q.inputToken, tokens);
+  const outSym = tokenSymbol(q.outputToken, tokens);
+  const inAmt = formatTokenAmount(q.inputAmount, q.inputToken, tokens);
+  const outReq = formatTokenAmount(q.requiredOutput, q.outputToken, tokens);
+  const esOut = formatTokenAmount(q.eulerSwapOutput, q.outputToken, tokens);
+  const gas = formatTokenAmount(q.gasCost, q.outputToken, tokens);
   const net = formatTokenAmount(
     q.netProfit > 0n ? q.netProfit : -q.netProfit,
     q.outputToken,
+    tokens,
   );
   const sign = q.netProfit >= 0n ? "+" : "-";
 
@@ -296,22 +292,36 @@ export function formatQuote(q: QuoteResult): string {
   return `${inSym}->${outSym} in=${inAmt} need=${outReq} es=${esOut} gas=${gas} ${sign}${net} (${q.profitBps}bps) [${flags || "skip"}]`;
 }
 
-function tokenSymbol(addr: Address): string {
-  const lower = addr.toLowerCase();
-  if (lower === ADDRESSES.usdc.toLowerCase()) return "USDC";
-  if (lower === ADDRESSES.weth.toLowerCase()) return "WETH";
-  return addr.slice(0, 8);
+function formatTokenAmount(
+  amount: bigint,
+  token: Address,
+  tokens: TokenInfo[],
+): string {
+  const lower = token.toLowerCase();
+  const info = tokens.find((t) => t.address.toLowerCase() === lower);
+  const decimals = info?.decimals ?? 18;
+  const value = Number(amount) / 10 ** decimals;
+  return decimals <= 8 ? value.toFixed(2) : value.toFixed(6);
 }
 
-function formatTokenAmount(amount: bigint, token: Address): string {
-  const lower = token.toLowerCase();
-  if (lower === ADDRESSES.usdc.toLowerCase()) {
-    // 6 decimals
-    return `${(Number(amount) / 1e6).toFixed(2)}`;
-  }
-  if (lower === ADDRESSES.weth.toLowerCase()) {
-    // 18 decimals
-    return `${(Number(amount) / 1e18).toFixed(6)}`;
-  }
-  return amount.toString();
+function emptyResult(
+  apiOrder: UniswapXApiOrder,
+  inputToken: Address,
+  outputToken?: Address,
+): QuoteResult {
+  return {
+    orderHash: apiOrder.orderHash,
+    inputToken,
+    outputToken: outputToken ?? ("0x0000000000000000000000000000000000000000" as Address),
+    inputAmount: 0n,
+    requiredOutput: 0n,
+    eulerSwapOutput: 0n,
+    grossProfit: 0n,
+    gasCost: 0n,
+    netProfit: 0n,
+    profitBps: 0,
+    withinLimits: false,
+    exclusive: false,
+    profitable: false,
+  };
 }

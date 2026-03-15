@@ -1,4 +1,4 @@
-// UniswapX API polling, order parsing, and filtering for USDC/WETH pair
+// UniswapX API polling, order parsing, and multi-pool filtering
 
 import { decodeAbiParameters } from "viem";
 import type { Address, Hex } from "viem";
@@ -7,17 +7,19 @@ import {
   type UniswapXApiResponse,
   type V2DutchOrder,
   type ResolvedAmounts,
+  type PoolConfig,
+  type TokenInfo,
   V2_DUTCH_ORDER_ABI,
-  ADDRESSES,
 } from "./types";
-
-const API_BASE = "https://api.uniswap.org/v2";
 
 /** Fetch open V2 Dutch orders from UniswapX API.
  * Explicitly requests orderType=Dutch_V2 to avoid receiving V1, Priority,
  * or other order types that use different reactors and encoding. */
-export async function fetchOpenOrders(chainId = 1): Promise<UniswapXApiOrder[]> {
-  const url = `${API_BASE}/orders?orderStatus=open&chainId=${chainId}&orderType=Dutch_V2&limit=100`;
+export async function fetchOpenOrders(
+  chainId: number,
+  apiBase: string,
+): Promise<UniswapXApiOrder[]> {
+  const url = `${apiBase}/orders?orderStatus=open&chainId=${chainId}&orderType=Dutch_V2&limit=100`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`UniswapX API ${res.status}: ${res.statusText}`);
   const data = (await res.json()) as UniswapXApiResponse;
@@ -27,26 +29,42 @@ export async function fetchOpenOrders(chainId = 1): Promise<UniswapXApiOrder[]> 
   return data.orders;
 }
 
-/** Filter orders to only USDC/WETH pair (either direction) */
-export function filterForPool(
-  orders: UniswapXApiOrder[],
-  asset0: Address = ADDRESSES.usdc,
-  asset1: Address = ADDRESSES.weth,
-): UniswapXApiOrder[] {
-  const a0 = asset0.toLowerCase();
-  const a1 = asset1.toLowerCase();
+/** Match result: an order paired with the pools that can fill it */
+export interface PoolMatch {
+  order: UniswapXApiOrder;
+  matchingPools: PoolConfig[];
+}
 
-  return orders.filter((order) => {
+/** Filter orders to those matching any configured pool's token pair (either direction) */
+export function filterForPools(
+  orders: UniswapXApiOrder[],
+  pools: PoolConfig[],
+): PoolMatch[] {
+  const enabledPools = pools.filter((p) => p.enabled);
+  if (enabledPools.length === 0) return [];
+
+  const results: PoolMatch[] = [];
+
+  for (const order of orders) {
     const inputToken = order.input.token.toLowerCase();
     const outputToken = order.outputs[0]?.token.toLowerCase();
-    if (!outputToken) return false;
+    if (!outputToken) continue;
 
-    // USDC -> WETH or WETH -> USDC
-    return (
-      (inputToken === a0 && outputToken === a1) ||
-      (inputToken === a1 && outputToken === a0)
-    );
-  });
+    const matching = enabledPools.filter((pool) => {
+      const a0 = pool.asset0.address.toLowerCase();
+      const a1 = pool.asset1.address.toLowerCase();
+      return (
+        (inputToken === a0 && outputToken === a1) ||
+        (inputToken === a1 && outputToken === a0)
+      );
+    });
+
+    if (matching.length > 0) {
+      results.push({ order, matchingPools: matching });
+    }
+  }
+
+  return results;
 }
 
 /** Decode V2DutchOrder from API encodedOrder bytes.
@@ -54,7 +72,7 @@ export function filterForPool(
  * to catch silent ABI mismatches (wrong struct layout → garbage addresses). */
 export function decodeV2DutchOrder(
   encodedOrder: Hex,
-  expectedReactor: Address = ADDRESSES.reactorV2,
+  expectedReactor: Address,
 ): V2DutchOrder {
   const [decoded] = decodeAbiParameters(V2_DUTCH_ORDER_ABI, encodedOrder);
   const d = decoded as {
@@ -176,20 +194,23 @@ export function isExclusive(order: V2DutchOrder, timestamp: bigint): boolean {
 }
 
 /** Format order for logging */
-export function formatOrder(apiOrder: UniswapXApiOrder): string {
+export function formatOrder(
+  apiOrder: UniswapXApiOrder,
+  tokens: TokenInfo[],
+): string {
   const input = apiOrder.input;
   const output = apiOrder.outputs[0];
   if (!output) return `[no outputs]`;
 
-  const inputSymbol = tokenSymbol(input.token);
-  const outputSymbol = tokenSymbol(output.token);
+  const inputSymbol = tokenSymbol(input.token, tokens);
+  const outputSymbol = tokenSymbol(output.token, tokens);
 
   return `${inputSymbol}->${outputSymbol} in=${input.startAmount} out=${output.startAmount} hash=${apiOrder.orderHash.slice(0, 10)}`;
 }
 
-function tokenSymbol(addr: Address): string {
+/** Resolve a token address to its symbol using the chain's token list */
+export function tokenSymbol(addr: Address, tokens: TokenInfo[]): string {
   const lower = addr.toLowerCase();
-  if (lower === ADDRESSES.usdc.toLowerCase()) return "USDC";
-  if (lower === ADDRESSES.weth.toLowerCase()) return "WETH";
-  return addr.slice(0, 8);
+  const match = tokens.find((t) => t.address.toLowerCase() === lower);
+  return match?.symbol ?? addr.slice(0, 8);
 }

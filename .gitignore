@@ -46,5 +46,9 @@ next-env.d.ts
 # foundry
 /contracts/out/
 /contracts/cache/
+/contracts/broadcast/
 /integrations/tycho/out/
 /integrations/tycho/cache/
+
+# rust
+**/target/

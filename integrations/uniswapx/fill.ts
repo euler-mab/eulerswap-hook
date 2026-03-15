@@ -4,7 +4,6 @@
 import type { Address, Hex, WalletClient, PublicClient } from "viem";
 import { encodeAbiParameters, encodeFunctionData } from "viem";
 import type { UniswapXApiOrder } from "./types";
-import { ADDRESSES } from "./types";
 
 // Reactor ABI — direct execute (for inventory-based fills)
 const reactorAbi = [
@@ -123,7 +122,7 @@ export async function directFill(
   walletClient: WalletClient,
   _publicClient: PublicClient,
   apiOrder: UniswapXApiOrder,
-  reactorAddress: Address = ADDRESSES.reactorV2,
+  reactorAddress: Address,
 ): Promise<Hex> {
   const account = walletClient.account;
   if (!account) throw new Error("WalletClient has no account");
@@ -147,7 +146,7 @@ export async function callbackFill(
   _publicClient: PublicClient,
   apiOrder: UniswapXApiOrder,
   executorAddress: Address,
-  poolAddress: Address = ADDRESSES.pool,
+  poolAddress: Address,
   minProfit: bigint = 0n,
 ): Promise<Hex> {
   const account = walletClient.account;
@@ -175,7 +174,7 @@ export async function batchCallbackFill(
   _publicClient: PublicClient,
   apiOrders: UniswapXApiOrder[],
   executorAddress: Address,
-  poolAddress: Address = ADDRESSES.pool,
+  poolAddress: Address,
   minProfit: bigint = 0n,
 ): Promise<Hex> {
   const account = walletClient.account;
@@ -204,7 +203,7 @@ export async function simulateFill(
   publicClient: PublicClient,
   apiOrder: UniswapXApiOrder,
   executorAddress: Address,
-  poolAddress: Address = ADDRESSES.pool,
+  poolAddress: Address,
   minProfit: bigint = 0n,
   fromAddress: Address,
 ): Promise<{ success: boolean; error?: string; gasEstimate?: bigint }> {
@@ -234,7 +233,7 @@ export async function simulateBatchFill(
   publicClient: PublicClient,
   apiOrders: UniswapXApiOrder[],
   executorAddress: Address,
-  poolAddress: Address = ADDRESSES.pool,
+  poolAddress: Address,
   minProfit: bigint = 0n,
   fromAddress: Address,
 ): Promise<{ success: boolean; error?: string; gasEstimate?: bigint }> {
@@ -268,7 +267,7 @@ export async function buildSignedFillTx(
   _publicClient: PublicClient,
   apiOrder: UniswapXApiOrder,
   executorAddress: Address,
-  poolAddress: Address = ADDRESSES.pool,
+  poolAddress: Address,
   minProfit: bigint = 0n,
 ): Promise<Hex> {
   const account = walletClient.account;
@@ -304,7 +303,7 @@ export async function buildSignedBatchFillTx(
   _publicClient: PublicClient,
   apiOrders: UniswapXApiOrder[],
   executorAddress: Address,
-  poolAddress: Address = ADDRESSES.pool,
+  poolAddress: Address,
   minProfit: bigint = 0n,
 ): Promise<Hex> {
   const account = walletClient.account;

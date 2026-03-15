@@ -65,6 +65,16 @@ contract UniswapXFiller {
     address public immutable owner;
     address public immutable reactor;
 
+    event OrderFilled(
+        bytes32 indexed orderHash,
+        address indexed pool,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 amountOut,
+        uint256 profit
+    );
+
     error Unauthorized();
     error OnlyReactor();
     error MixedOutputTokens();
@@ -151,6 +161,8 @@ contract UniswapXFiller {
         // Prevents cross-subsidy between orders in batch fills
         uint256 received = IERC20(tokenOut).balanceOf(address(this)) - balBefore;
         if (received < totalRequired + minProfit) revert InsufficientProfit();
+
+        emit OrderFilled(order.hash, pool, tokenIn, tokenOut, amountIn, received, received - totalRequired);
 
         // Reactor will now pull outputs via transferFrom to each recipient.
         // Any excess output stays in this contract as profit.

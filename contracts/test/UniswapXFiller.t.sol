@@ -79,6 +79,10 @@ contract UniswapXFillerTest is Test {
         ResolvedOrder[] memory orders = new ResolvedOrder[](1);
         orders[0] = _buildOrder(USDC, usdcAmount, WETH, 0, address(this));
 
+        // Expect OrderFilled event
+        vm.expectEmit(false, true, false, false);
+        emit UniswapXFiller.OrderFilled(bytes32(0), POOL, USDC, WETH, usdcAmount, 0, 0);
+
         // Call as reactor
         vm.prank(REACTOR);
         filler.reactorCallback(orders, _callbackData());
@@ -96,6 +100,10 @@ contract UniswapXFillerTest is Test {
 
         ResolvedOrder[] memory orders = new ResolvedOrder[](1);
         orders[0] = _buildOrder(WETH, wethAmount, USDC, 0, address(this));
+
+        // Expect OrderFilled event (check indexed pool only)
+        vm.expectEmit(false, true, false, false);
+        emit UniswapXFiller.OrderFilled(bytes32(0), POOL, WETH, USDC, wethAmount, 0, 0);
 
         vm.prank(REACTOR);
         filler.reactorCallback(orders, _callbackData());

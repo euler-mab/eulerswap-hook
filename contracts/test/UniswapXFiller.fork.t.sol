@@ -57,6 +57,10 @@ contract UniswapXFillerForkTest is Test {
         ResolvedOrder[] memory orders = new ResolvedOrder[](1);
         orders[0] = _buildOrder(USDC, usdcAmount, WETH, requiredOutput, address(0xBEEF));
 
+        // Expect OrderFilled event with correct pool (indexed)
+        vm.expectEmit(false, true, false, false);
+        emit UniswapXFiller.OrderFilled(bytes32(0), POOL, USDC, WETH, usdcAmount, 0, 0);
+
         vm.prank(REACTOR);
         filler.reactorCallback(orders, _callbackData(0));
 
@@ -268,6 +272,50 @@ contract UniswapXFillerForkTest is Test {
         assertEq(IERC20(WETH).balanceOf(recipient), totalProfit, "recipient should have all profit");
         console.log("Profit cycle: fill1=%d, total=%d, withdrawn=%d",
             profit1, totalProfit, IERC20(WETH).balanceOf(recipient));
+    }
+
+    // ---- OrderFilled event ----
+
+    function test_orderFilled_event_data() public {
+        uint256 usdcAmount = 1000e6;
+        uint256 quote = pool.computeQuote(USDC, WETH, usdcAmount, true);
+        if (quote == 0) return;
+
+        uint256 requiredOutput = quote * 95 / 100; // 5% profit margin
+
+        deal(USDC, address(filler), usdcAmount);
+        ResolvedOrder[] memory orders = new ResolvedOrder[](1);
+        orders[0] = _buildOrder(USDC, usdcAmount, WETH, requiredOutput, address(0xBEEF));
+
+        vm.recordLogs();
+        vm.prank(REACTOR);
+        filler.reactorCallback(orders, _callbackData(0));
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        // Find the OrderFilled event
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == keccak256("OrderFilled(bytes32,address,address,address,uint256,uint256,uint256)")) {
+                found = true;
+                // topics[2] = indexed pool address
+                address eventPool = address(uint160(uint256(logs[i].topics[2])));
+                assertEq(eventPool, POOL, "event pool should match");
+
+                // Decode non-indexed data: tokenIn, tokenOut, amountIn, amountOut, profit
+                (address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut, uint256 profit) =
+                    abi.decode(logs[i].data, (address, address, uint256, uint256, uint256));
+
+                assertEq(tokenIn, USDC, "event tokenIn");
+                assertEq(tokenOut, WETH, "event tokenOut");
+                assertEq(amountIn, usdcAmount, "event amountIn");
+                assertTrue(amountOut >= requiredOutput, "event amountOut >= required");
+                assertEq(profit, amountOut - requiredOutput, "event profit = received - required");
+
+                console.log("OrderFilled: amountOut=%d, profit=%d", amountOut, profit);
+                break;
+            }
+        }
+        assertTrue(found, "OrderFilled event should be emitted");
     }
 
     // ---- Pool status check ----

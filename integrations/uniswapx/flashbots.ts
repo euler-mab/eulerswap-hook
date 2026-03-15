@@ -5,8 +5,6 @@ import type { Hex, PublicClient } from "viem";
 import { keccak256, toBytes } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-const FLASHBOTS_RELAY = "https://relay.flashbots.net";
-
 export interface BundleResult {
   bundleHash: string;
 }
@@ -19,6 +17,7 @@ export async function submitBundle(
   signedTx: Hex,
   targetBlock: bigint,
   authKey: Hex,
+  relayUrl: string,
 ): Promise<BundleResult> {
   const body = JSON.stringify({
     jsonrpc: "2.0",
@@ -36,7 +35,7 @@ export async function submitBundle(
   const bodyHash = keccak256(toBytes(body));
   const signature = await authSigner.signMessage({ message: { raw: bodyHash } });
 
-  const res = await fetch(FLASHBOTS_RELAY, {
+  const res = await fetch(relayUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -60,10 +59,11 @@ export async function submitBundleWithRedundancy(
   signedTx: Hex,
   currentBlock: bigint,
   authKey: Hex,
+  relayUrl: string,
 ): Promise<BundleResult> {
   const [result1, result2] = await Promise.allSettled([
-    submitBundle(signedTx, currentBlock + 1n, authKey),
-    submitBundle(signedTx, currentBlock + 2n, authKey),
+    submitBundle(signedTx, currentBlock + 1n, authKey, relayUrl),
+    submitBundle(signedTx, currentBlock + 2n, authKey, relayUrl),
   ]);
 
   if (result1.status === "fulfilled") return result1.value;
