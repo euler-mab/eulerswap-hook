@@ -2,9 +2,8 @@
 
 import type { PublicClient, Address } from "viem";
 import { eulerSwapAbi } from "../../src/lib/pools/abi";
-import type { FusionApiOrder } from "./types";
-import { ADDRESSES } from "./types";
-import { resolveAmounts } from "./api";
+import type { FusionApiOrder, ChainConfig } from "./types";
+import { resolveAmounts, tokenSymbol, formatTokenAmount } from "./api";
 
 export interface QuoteResult {
   orderHash: string;
@@ -45,9 +44,10 @@ export async function evaluateOrder(
   client: PublicClient,
   apiOrder: FusionApiOrder,
   minProfitBps: number,
-  poolAddress: Address = ADDRESSES.pool,
+  config: ChainConfig,
   gasEstimate: bigint = DEFAULT_GAS_ESTIMATE,
 ): Promise<QuoteResult> {
+  const poolAddress = config.pool;
   const now = Math.floor(Date.now() / 1000);
   const resolved = resolveAmounts(apiOrder, now);
 
@@ -81,19 +81,29 @@ export async function evaluateOrder(
   const effectiveGasPrice = gasPrice + DEFAULT_PRIORITY_FEE;
   const gasCostWei = gasEstimate * effectiveGasPrice;
   let gasCost: bigint;
-  if (takerAsset.toLowerCase() === ADDRESSES.weth.toLowerCase()) {
+  if (takerAsset.toLowerCase() === config.wrappedNative.toLowerCase()) {
     gasCost = gasCostWei;
   } else {
-    // Convert ETH gas cost to takerAsset (USDC) via pool price
+    // Convert ETH gas cost to takerAsset via pool price
+    // Use the pool's own quote as price source — no hardcoded fallback
     const ethPrice = await client
       .readContract({
         address: poolAddress,
         abi: eulerSwapAbi,
         functionName: "computeQuote",
-        args: [ADDRESSES.weth, ADDRESSES.usdc, 10n ** 18n, true],
+        args: [config.wrappedNative, takerAsset, 10n ** 18n, true],
       })
-      .catch(() => 2000_000_000n) as bigint;
-    gasCost = (gasCostWei * ethPrice) / 10n ** 18n;
+      .catch(() => {
+        // If pool quote fails, we can't accurately price gas — reject the order
+        // by returning a very high gas cost
+        return 0n;
+      }) as bigint;
+    if (ethPrice === 0n) {
+      // Pool can't quote — set gasCost high to reject
+      gasCost = takingAmount;
+    } else {
+      gasCost = (gasCostWei * ethPrice) / 10n ** 18n;
+    }
   }
 
   const grossProfit = eulerSwapOutput - takingAmount;
@@ -118,16 +128,17 @@ export async function evaluateOrder(
 }
 
 /** Format a quote result for human-readable logging */
-export function formatQuote(q: QuoteResult): string {
-  const makerSym = tokenSymbol(q.makerAsset);
-  const takerSym = tokenSymbol(q.takerAsset);
-  const makeAmt = formatTokenAmount(q.makingAmount, q.makerAsset);
-  const needAmt = formatTokenAmount(q.takingAmount, q.takerAsset);
-  const esOut = formatTokenAmount(q.eulerSwapOutput, q.takerAsset);
-  const gas = formatTokenAmount(q.gasCost, q.takerAsset);
+export function formatQuote(q: QuoteResult, config?: ChainConfig): string {
+  const makerSym = tokenSymbol(q.makerAsset, config);
+  const takerSym = tokenSymbol(q.takerAsset, config);
+  const makeAmt = formatTokenAmount(q.makingAmount, q.makerAsset, config);
+  const needAmt = formatTokenAmount(q.takingAmount, q.takerAsset, config);
+  const esOut = formatTokenAmount(q.eulerSwapOutput, q.takerAsset, config);
+  const gas = formatTokenAmount(q.gasCost, q.takerAsset, config);
   const net = formatTokenAmount(
     q.netProfit > 0n ? q.netProfit : -q.netProfit,
     q.takerAsset,
+    config,
   );
   const sign = q.netProfit >= 0n ? "+" : "-";
 
@@ -139,22 +150,4 @@ export function formatQuote(q: QuoteResult): string {
     .join(",");
 
   return `${makerSym}->${takerSym} make=${makeAmt} need=${needAmt} es=${esOut} gas=${gas} ${sign}${net} (${q.profitBps}bps) [${flags || "skip"}]`;
-}
-
-function tokenSymbol(addr: Address): string {
-  const lower = addr.toLowerCase();
-  if (lower === ADDRESSES.usdc.toLowerCase()) return "USDC";
-  if (lower === ADDRESSES.weth.toLowerCase()) return "WETH";
-  return addr.slice(0, 8);
-}
-
-function formatTokenAmount(amount: bigint, token: Address): string {
-  const lower = token.toLowerCase();
-  if (lower === ADDRESSES.usdc.toLowerCase()) {
-    return `${(Number(amount) / 1e6).toFixed(2)}`;
-  }
-  if (lower === ADDRESSES.weth.toLowerCase()) {
-    return `${(Number(amount) / 1e18).toFixed(6)}`;
-  }
-  return amount.toString();
 }

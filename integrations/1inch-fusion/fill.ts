@@ -9,7 +9,7 @@
 import type { Address, Hex, WalletClient, PublicClient } from "viem";
 import { encodeAbiParameters, encodeFunctionData, concat, toHex, toBytes } from "viem";
 import type { FusionApiOrder } from "./types";
-import { ADDRESSES, resolverAbi, lopFillOrderArgsAbi } from "./types";
+import { resolverAbi, lopFillOrderArgsAbi } from "./types";
 
 // ---- TakerTraits bit layout (from TakerTraitsLib.sol) ----
 
@@ -135,7 +135,7 @@ function splitSignature(sig: Hex): { r: Hex; vs: Hex } {
 export function buildFillCalldata(
   order: FusionApiOrder,
   resolverAddress: Address,
-  poolAddress: Address = ADDRESSES.pool,
+  poolAddress: Address,
   minProfit: bigint = 0n,
 ): Hex {
   const { r, vs } = splitSignature(order.signature);
@@ -170,7 +170,12 @@ export function buildFillCalldata(
   });
 
   // Amount to fill (remaining making amount)
-  const fillAmount = BigInt(order.remainingMakerAmount || order.order.makingAmount);
+  // Use ?? with explicit check — || would treat "0" as falsy and use full amount
+  const fillAmount = BigInt(
+    order.remainingMakerAmount != null && order.remainingMakerAmount !== ""
+      ? order.remainingMakerAmount
+      : order.order.makingAmount,
+  );
 
   // Encode the LOP fillOrderArgs call
   return encodeFunctionData({

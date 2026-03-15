@@ -6,30 +6,63 @@ import {
   type FusionApiOrder,
   type FusionApiResponse,
   type ResolvedFusionAmounts,
-  ADDRESSES,
+  type ChainConfig,
+  getApiBaseUrl,
 } from "./types";
 
-const API_BASE = "https://api.1inch.dev/fusion/orders/v2.0/1";
+const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
+const PAGE_LIMIT = 500;
+const MAX_PAGES = 10; // safety cap to avoid infinite loops
 
-/** Fetch active Fusion orders from 1inch API */
-export async function fetchActiveOrders(apiKey: string): Promise<FusionApiOrder[]> {
-  const url = `${API_BASE}/order/active?page=1&limit=100`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: "application/json",
-    },
-  });
-  if (!res.ok) throw new Error(`1inch Fusion API ${res.status}: ${res.statusText}`);
-  const data = (await res.json()) as FusionApiResponse;
-  return data.items ?? [];
+/** Fetch a single page of active Fusion orders */
+async function fetchPage(
+  apiKey: string,
+  chainId: number,
+  page: number,
+  timeoutMs: number,
+): Promise<FusionApiOrder[]> {
+  const url = `${getApiBaseUrl(chainId)}/order/active?page=${page}&limit=${PAGE_LIMIT}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`1inch Fusion API ${res.status}: ${res.statusText}${body ? ` — ${body.slice(0, 200)}` : ""}`);
+    }
+    const data = (await res.json()) as FusionApiResponse;
+    return data.items ?? [];
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-/** Filter orders to only USDC/WETH pair (either direction) */
+/** Fetch all active Fusion orders from 1inch API (paginated) */
+export async function fetchActiveOrders(
+  apiKey: string,
+  chainId: number = 1,
+  timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
+): Promise<FusionApiOrder[]> {
+  const allOrders: FusionApiOrder[] = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const items = await fetchPage(apiKey, chainId, page, timeoutMs);
+    allOrders.push(...items);
+    if (items.length < PAGE_LIMIT) break; // last page
+  }
+  return allOrders;
+}
+
+/** Filter orders to only the target pair (either direction) */
 export function filterForPool(
   orders: FusionApiOrder[],
-  asset0: Address = ADDRESSES.usdc,
-  asset1: Address = ADDRESSES.weth,
+  asset0: Address,
+  asset1: Address,
 ): FusionApiOrder[] {
   const a0 = asset0.toLowerCase();
   const a1 = asset1.toLowerCase();
@@ -123,7 +156,11 @@ export function resolveAmounts(
   timestamp: number,
 ): ResolvedFusionAmounts {
   const fullMakingAmount = BigInt(order.order.makingAmount);
-  const remainingMakingAmount = BigInt(order.remainingMakerAmount || order.order.makingAmount);
+  const remainingMakingAmount = BigInt(
+    order.remainingMakerAmount != null && order.remainingMakerAmount !== ""
+      ? order.remainingMakerAmount
+      : order.order.makingAmount,
+  );
 
   // If the API provides a pre-calculated taking amount, use it (already accounts for decay)
   if (order.calculatedTakingAmount) {
@@ -185,29 +222,31 @@ export function isExpired(order: FusionApiOrder, timestamp: number): boolean {
 }
 
 /** Format order for logging */
-export function formatOrder(order: FusionApiOrder): string {
-  const makerSym = tokenSymbol(order.order.makerAsset);
-  const takerSym = tokenSymbol(order.order.takerAsset);
-  const making = formatTokenAmount(BigInt(order.order.makingAmount), order.order.makerAsset);
-  const taking = formatTokenAmount(BigInt(order.order.takingAmount), order.order.takerAsset);
+export function formatOrder(order: FusionApiOrder, config?: ChainConfig): string {
+  const makerSym = tokenSymbol(order.order.makerAsset, config);
+  const takerSym = tokenSymbol(order.order.takerAsset, config);
+  const making = formatTokenAmount(BigInt(order.order.makingAmount), order.order.makerAsset, config);
+  const taking = formatTokenAmount(BigInt(order.order.takingAmount), order.order.takerAsset, config);
 
   return `${makerSym}->${takerSym} make=${making} take=${taking} hash=${order.orderHash.slice(0, 10)}`;
 }
 
-function tokenSymbol(addr: Address): string {
+export function tokenSymbol(addr: Address, config?: ChainConfig): string {
+  if (!config) return addr.slice(0, 8);
   const lower = addr.toLowerCase();
-  if (lower === ADDRESSES.usdc.toLowerCase()) return "USDC";
-  if (lower === ADDRESSES.weth.toLowerCase()) return "WETH";
+  if (lower === config.asset0.toLowerCase()) return config.asset0Symbol;
+  if (lower === config.asset1.toLowerCase()) return config.asset1Symbol;
   return addr.slice(0, 8);
 }
 
-function formatTokenAmount(amount: bigint, token: Address): string {
+export function formatTokenAmount(amount: bigint, token: Address, config?: ChainConfig): string {
+  if (!config) return amount.toString();
   const lower = token.toLowerCase();
-  if (lower === ADDRESSES.usdc.toLowerCase()) {
-    return `${(Number(amount) / 1e6).toFixed(2)}`;
+  if (lower === config.asset0.toLowerCase()) {
+    return `${(Number(amount) / 10 ** config.asset0Decimals).toFixed(2)}`;
   }
-  if (lower === ADDRESSES.weth.toLowerCase()) {
-    return `${(Number(amount) / 1e18).toFixed(6)}`;
+  if (lower === config.asset1.toLowerCase()) {
+    return `${(Number(amount) / 10 ** config.asset1Decimals).toFixed(6)}`;
   }
   return amount.toString();
 }

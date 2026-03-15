@@ -1,7 +1,8 @@
 // 1inch Fusion order types — parsed from API + used for fill construction
 // Reference: github.com/1inch/fusion-resolver-example
 
-import type { Address, Hex } from "viem";
+import type { Address, Hex, Chain } from "viem";
+import { mainnet } from "viem/chains";
 
 // ---- API response types ----
 
@@ -51,31 +52,68 @@ export interface ResolvedFusionAmounts {
   takingAmount: bigint;
 }
 
-// ---- Filler config ----
+// ---- Multichain config ----
 
-export interface FillerConfig {
-  rpcUrl: string;
-  apiKey: string; // 1inch Developer Portal API key
-  privateKey?: Hex;
-  poolAddress: Address;
-  resolverAddress?: Address;
-  asset0: Address; // USDC
-  asset1: Address; // WETH
-  pollIntervalMs: number;
-  minProfitBps: number;
-  maxGasGwei: number;
-  live: boolean;
+/** Per-chain deployment addresses and config */
+export interface ChainConfig {
+  chain: Chain;
+  chainId: number;
+  /** LOP V4 address (same on all EVM chains except zkSync) */
+  limitOrderProtocol: Address;
+  /** EulerSwap pool address for the target pair */
+  pool: Address;
+  /** Resolver contract address (deployed per chain) */
+  resolver?: Address;
+  /** Token pair: asset0 is quote (USDC), asset1 is base (WETH) */
+  asset0: Address;
+  asset1: Address;
+  /** Native wrapped token (WETH/WMATIC/etc.) for gas cost conversion */
+  wrappedNative: Address;
+  /** Token decimals for formatting */
+  asset0Decimals: number;
+  asset1Decimals: number;
+  /** Token symbols for logging */
+  asset0Symbol: string;
+  asset1Symbol: string;
 }
 
-// ---- Addresses ----
+// LOP V4 is deployed at the same address on all EVM chains (except zkSync)
+const LOP_V4: Address = "0x111111125421cA6dc452d289314280a0f8842A65";
 
-export const ADDRESSES = {
-  pool: "0x4311031739918Aba578C3C667DA3028A12Ce28A8" as Address,
-  limitOrderProtocol: "0x111111125421cA6dc452d289314280a0f8842A65" as Address,
-  settlement: "0xfb2809a5314473e1165f6b58018e20ed8f07b840" as Address,
-  usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Address,
-  weth: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as Address,
-} as const;
+/** Registry of supported chain configurations */
+export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
+  [mainnet.id]: {
+    chain: mainnet,
+    chainId: mainnet.id,
+    limitOrderProtocol: LOP_V4,
+    pool: "0x4311031739918Aba578C3C667DA3028A12Ce28A8" as Address,
+    asset0: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Address, // USDC
+    asset1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as Address, // WETH
+    wrappedNative: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as Address,
+    asset0Decimals: 6,
+    asset1Decimals: 18,
+    asset0Symbol: "USDC",
+    asset1Symbol: "WETH",
+  },
+  // Add new chains here as EulerSwap pools are deployed:
+  // [arbitrum.id]: { ... },
+  // [base.id]: { ... },
+};
+
+/** Get chain config or throw */
+export function getChainConfig(chainId: number): ChainConfig {
+  const config = CHAIN_CONFIGS[chainId];
+  if (!config) {
+    const supported = Object.keys(CHAIN_CONFIGS).join(", ");
+    throw new Error(`Unsupported chain ${chainId}. Supported: ${supported}`);
+  }
+  return config;
+}
+
+/** Build 1inch Fusion API base URL for a given chain */
+export function getApiBaseUrl(chainId: number): string {
+  return `https://api.1inch.dev/fusion/orders/v2.0/${chainId}`;
+}
 
 // ---- Resolver contract ABI ----
 

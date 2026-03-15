@@ -11,6 +11,7 @@ interface IEulerSwapPool {
         view
         returns (uint256);
     function getLimits() external view returns (uint256 limit0, uint256 limit1);
+    function getAssets() external view returns (address asset0, address asset1);
 }
 
 /// @dev Minimal Order struct matching 1inch Limit Order Protocol V4.
@@ -49,6 +50,8 @@ contract OneInchFusionResolver {
     error Unauthorized();
     error OnlyLOP();
     error NotTaker();
+    error AssetMismatch();
+    error ZeroOutput();
     error InsufficientProfit();
 
     modifier onlyOwner() {
@@ -107,9 +110,19 @@ contract OneInchFusionResolver {
         (address pool, address makerAsset, address takerAsset, uint256 minProfit) =
             abi.decode(extraData, (address, address, address, uint256));
 
+        // Validate that makerAsset and takerAsset match the pool's actual assets
+        // Prevents misconfigured bot from sending tokens to wrong pool
+        {
+            (address poolAsset0, address poolAsset1) = IEulerSwapPool(pool).getAssets();
+            bool validPair = (makerAsset == poolAsset0 && takerAsset == poolAsset1)
+                || (makerAsset == poolAsset1 && takerAsset == poolAsset0);
+            if (!validPair) revert AssetMismatch();
+        }
+
         // makerAsset = what we received (input to EulerSwap)
         // takerAsset = what we need to produce (output from EulerSwap)
         uint256 amountOut = IEulerSwapPool(pool).computeQuote(makerAsset, takerAsset, makingAmount, true);
+        if (amountOut == 0) revert ZeroOutput();
 
         // Track pre-swap balance for accurate profit check
         uint256 balBefore = IERC20(takerAsset).balanceOf(address(this));
