@@ -1,7 +1,8 @@
-# V7 Hook Auction: Step-by-Step Walkthrough
+# EulerSwap Hook: First-Principles Design Walkthrough
 
-A detailed walkthrough of the V7 hook's auction mechanism, grounded in the
-USDC/USDT pool as a concrete example.
+A detailed, first-principles walkthrough of the EulerSwap hook mechanism —
+continuous recentering, oracle-reactive fees, and clearing auctions — grounded
+in the USDC/USDT pool as a concrete example.
 
 ---
 
@@ -192,7 +193,51 @@ In the c=0.5 test with 100 swaps (2:1 directional bias):
 | Fees | 0.0248 |
 | Price impact retained | 0.0276 |
 
-### 0e. Leverage
+### 0e. Range and Min Reserves
+
+The equilibrium reserves (`eq0`, `eq1`) define the curve's center — the virtual
+depth. But the pool doesn't trade across the entire curve. The **min reserves**
+(`minReserve0`, `minReserve1`) set hard floors that constrain the actual trading
+range, analogous to how Uniswap V3 positions define a price range within which
+liquidity is active.
+
+The gap between eq and min reserves defines how far the pool can move in each
+direction before hitting a boundary:
+
+```
+tradingCapacity_i = eq_i − minReserve_i
+```
+
+For our USDC/USDT pool: `eq0 = 247,589,086`, `min0 = 247,576,708`, so the pool
+can absorb ~12,378 USDC of inflow before hitting the asset0 boundary. That's
+the pool's capacity for USDC-in flow.
+
+The **range parameter** `r` (a deploy-time setting) determines how tight the
+boundaries are. Min reserves are derived from the range and concentration:
+
+```
+minReserve = eq / √(1 + r / (1 − c))
+```
+
+For c = 0 (range-based curves): `minReserve = eq / √(1 + r)`. A range of 1 bps
+(r = 0.0001) gives `minReserve ≈ eq × 0.99995` — very tight, only 0.005% of eq
+is tradeable. This is what creates the extreme leverage: the pool has $490M of
+virtual depth but only ~$12k of actual trading capacity.
+
+For c = 1 (constant-sum): the denominator `(1 − c)` goes to zero, making the
+inner term infinite, so `minReserve = 0`. Constant-sum pools have no curvature
+to create boundaries — they trade at flat price until reserves are exhausted.
+
+The range is calibrated so that the pool's **health factor reaches 1** (the
+liquidation boundary) exactly at the min reserve boundary. This ensures the pool
+uses its full LTV capacity without risking liquidation from normal trading. The
+formula depends on the cross-LTV and the pool's debt structure at the boundary.
+
+At each recenter, min reserves are recomputed from the new eq (= current
+reserves) and the range parameter, keeping the trading range symmetric around
+the current position.
+
+### 0f. Leverage
 
 The ratio between virtual depth and real equity is the pool's leverage:
 
@@ -208,61 +253,123 @@ It means:
 
 ---
 
-## Step 1: Why Auction?
+## Step 1: Why Rebalance?
 
-The pool is a market maker. As it processes swaps, it accumulates directional
-exposure — it ends up holding more of one asset than it started with. For USDC/WETH,
-if the pool ends up net long WETH and ETH drops, the LP takes a loss. The pool's
-ideal state is delta-neutral: 100% in one asset (the "target asset"), 0% in the other.
+The pool is a market maker. As it processes swaps, its vault composition drifts
+from the LP's desired target — accumulating too much of one asset, taking on
+debt, or shifting the value ratio. The target is a strategy choice set at deploy
+time: it could be 100% in one asset (delta-neutral), 50:50 by value, constant
+leverage, or any other composition. There is nothing privileged about either
+asset — asset0 and asset1 are symmetric, and either can be the quote or base
+depending on the strategy.
 
-Exposure is a liability. The longer the pool holds it, the greater the risk that
-a price move turns it into a realised loss. The auction's objective is to **clear
-that accumulated exposure** — to get the pool back toward delta-neutral.
+Deviation from target is a liability. The longer the pool holds an unwanted
+composition, the greater the risk that a price move turns it into a realised
+loss (for directional deviation) or that interest costs erode NAV (for unwanted
+debt). The hook's objective is to **return the vault to its target composition**
+as cheaply as possible.
 
-The question is *how*. The alternative would be to go to Uniswap and swap directly,
-but that costs the oracle pool's fee plus slippage. Instead, the auction shifts the
-pool's own pricing to make it attractive for arbitrageurs to trade in the clearing
-direction. The pool essentially says "I'll offer a better price on the side that
-reduces my exposure" and lets external traders come to it.
+There are two mechanisms:
 
-The auction exists because exposure is a liability, and attracting flow through
-mispricing is cheaper than going out and trading externally.
+1. **Continuous recenter** (Step 3): on every swap that moves the vault closer
+   to target, lock in the improvement immediately. Free rebalancing from natural
+   flow. This handles most of the work.
+
+2. **Clearing auction** (Step 5): when deviation exceeds a threshold and natural
+   flow isn't correcting it, the hook creates a deliberate mispricing to attract
+   arbitrageurs in the clearing direction.
+
+The auction is the fallback. Its cost — the pricing shift and arber margin — is
+only incurred when natural flow fails to keep the vault on target. The question
+is *how* to run the auction cheaply. The alternative would be to swap externally
+(e.g., on Uniswap), but that costs the oracle pool's fee plus slippage. Instead,
+the auction attracts external traders to come to the pool, which is cheaper.
+
+**Variance drain: the fundamental cost floor.** No mechanism — auction, external
+swap, or continuous recenter — avoids the cost of rebalancing a leveraged pool in
+a volatile market. Each rebalancing cycle buys high and sells low by a small
+amount. Over time, the expected NAV loss from repeated rebalancing is
+(see `docs/rebalance-auction-design.md` §24):
+
+```
+NAV(T) = NAV(0) × exp(−L × σ² × T / 8)
+```
+
+where L = leverage ratio, σ = annualised volatility, T = time in years. The
+half-life — time to lose 50% of NAV — is `ln(2) × 8 / (L × σ²)`:
+
+| Pool | L | σ | Half-life |
+|------|---|---|-----------|
+| USDC/WETH (current) | 78x | 65% | ~167 days |
+| USDC/WETH (old, 427x) | 427x | 65% | ~30 days |
+| USDC/USDT | 495,000x | 0.1% | ~11,200 years |
+
+The mechanism's job is to get *close* to this theoretical minimum — not to beat
+it. Any cost above the variance drain formula is mechanism overhead (auction
+fees, surcharge leakage, suboptimal timing). The gap between actual and
+theoretical is what we're optimising.
+
+For volatile pairs, leverage is the dominant parameter. Halving leverage roughly
+doubles the half-life. For stablecoin pairs, volatility is so low that variance
+drain is negligible — the dominant costs are interest spread and gas.
 
 ---
 
-## Step 2: Measuring Exposure
+## Step 2: Measuring Deviation from Target
 
-### 2a. What is exposure?
+### 2a. What are we measuring?
 
-Exposure is the **price-sensitive position** held in the vaults. It lives entirely
-in the vault layer — deposits and debts — and has nothing to do with where reserves
-sit on the curve. Each asset has its own exposure:
+The hook manages a pool toward a **target vault composition** — a desired split of
+deposits and debts across the two assets. The metric that drives all decisions —
+recenter, trigger, auction — is the **deviation** of the current vault state from
+this target.
+
+"Exposure" is a useful shorthand for delta-neutral targets (where the deviation is
+simply the net position in the non-target asset), but it's not general enough.
+Different strategies create different kinds of deviation:
+
+| Strategy | Target state | What "deviation" means |
+|----------|-------------|----------------------|
+| Delta-neutral (100% asset0) | All equity in asset0, 0 debts | Net asset1 position (deposits1 − debts1) |
+| Delta-neutral (100% asset1) | All equity in asset1, 0 debts | Net asset0 position (deposits0 − debts0) |
+| 50:50 balanced | Equal value in both assets, 0 debts | Imbalance between the two sides |
+| No-debt | Current composition, but eliminate borrowing | Outstanding debt amount |
+| Constant leverage (2x long) | 2:1 value ratio, specific debt level | Distance from target ratio |
+
+For any strategy, the deviation has an **amount** (how far from target, in value
+terms) and a **direction** (which way to trade to get closer). The clearing swap
+is sized to the amount and executed in the direction.
+
+The per-asset vault positions are:
 
 ```
-exposure_i = deposits_i − debts_i    (in asset i units)
+position_i = deposits_i − debts_i    (in asset i units)
 ```
 
-Positive exposure = the pool is long that asset (net deposits). Negative = short
-(net debt). Both create price risk: if the asset moves, NAV changes.
-
-The two exposures are linked. When expressed in a **common numeraire** (using an
-oracle price to convert):
+Positive = long that asset (net deposits). Negative = short (net debt). The two
+positions are linked — when expressed in a common numeraire:
 
 ```
-value(exposure_0) + value(exposure_1) = NAV
+value(position_0) + value(position_1) = NAV
 ```
 
 So measuring one determines the other. For stablecoin pairs where both assets ≈ $1,
-this simplifies to `exposure_0 + exposure_1 ≈ NAV` in native units. For non-stablecoin
+this simplifies to `position_0 + position_1 ≈ NAV` in native units. For non-stablecoin
 pairs, the conversion requires a price — making NAV itself oracle-dependent (see 2e).
 
-The relevant exposure is in the **non-target asset**: the one the LP doesn't want to
-hold. For a delta-neutral pool targeting 100% asset0, the exposure that matters is
-`deposits1 − debts1`. For a pool targeting 100% asset1, it's `deposits0 − debts0`.
-The choice of which is "exposed" is symmetric.
+For the **delta-neutral** case (the most common), deviation reduces to the net
+position in the non-target asset:
 
-**Reserves don't tell you exposure.** Two pools at identical reserve positions —
-same point on the same curve — can have completely different vault exposures depending
+```
+deviation = |deposits_E − debts_E|    (in exposed asset units)
+relativeDeviation = deviation × oraclePrice / NAV    (fraction of equity)
+```
+
+where E is the non-target (exposed) asset. This is what the rest of the walkthrough
+calls "exposure" — the delta-neutral specialisation of the general concept.
+
+**Reserves don't tell you deviation.** Two pools at identical reserve positions —
+same point on the same curve — can have completely different vault states depending
 on their history (initial deposits, accumulated fees, prior recenters). The curve
 defines pricing and trade capacity; the vaults hold the real positions.
 
@@ -464,9 +571,169 @@ matters most.
 
 ---
 
-## Step 3: When to Trigger an Auction
+## Step 3: Normal Mode — Continuous Recenter and Fee Capture
 
-### 3a. The trigger trade-off
+The auction (Step 5) is the **fallback**. In normal operation, most deviation is
+corrected for free by natural retail flow — swaps that happen to move the vault
+closer to target. The hook's primary job is to recognise these swaps and
+capitalise on them immediately.
+
+### 3a. Continuous recenter on exposure-reducing swaps
+
+Every swap that reduces deviation is an opportunity to recenter. If a swap moves
+the pool's relative deviation from 40% toward 35%, the hook recenters immediately
+in `afterSwap`: set eq = current reserves, align priceY to oracle, recompute min
+reserves from the range parameter (see 0e). The pool is now centered at a state
+with lower deviation — for free.
+
+Why this works:
+
+- **No pricing distortion**: the pool doesn't need to shift its price to attract
+  flow. The flow came on its own (retail, rebalancers, other arbs). Recentering
+  simply locks in the improvement.
+- **No auction cost**: there's no starting fee, no decay, no arber margin. The LP
+  pays nothing beyond the normal swap fee.
+- **Cumulative**: each deviation-reducing swap ratchets the pool closer to target.
+  Over many small swaps, deviation converges toward zero without ever triggering
+  an auction.
+
+Two gates prevent wasteful recenters:
+
+1. **Minimum delta**: skip if the deviation decrease is smaller than
+   `minRecenterDelta` (a deploy-time parameter). Recentering has a gas cost
+   (the `reconfigure()` call), so it should only fire when the improvement is
+   worth the cost. For high-leverage pools with tiny natural shifts, this gate
+   prevents recentering on every swap.
+
+2. **Sign-flip guard**: if the deviation decreased by *crossing zero* (e.g.,
+   long 60% → short 10%), the pool didn't improve — it just crossed through
+   neutral and is building deviation in the new direction. The guard detects
+   direction change and skips the recenter.
+
+#### Hot-path deviation tracking
+
+Continuous recenter needs to know whether each swap reduced or increased
+deviation — on every swap, in `afterSwap`. This must be cheap.
+
+The approach: **snapshot + displacement**. At each recenter (and at deployment),
+the hook snapshots the true vault state — `baseNetAsset` (deposits − debts for
+the exposed asset) and `cachedNAV`. Between snapshots, deviation is estimated
+from reserve displacement:
+
+```
+currentNet = baseNetAsset + (reserve_E − eq_E)
+deviation  = |currentNet|
+relativeDeviation = deviation × oraclePrice / cachedNAV
+```
+
+The `(reserve_E − eq_E)` term is the swap-driven displacement since the last
+recenter — available directly from the swap context (reserves are passed to
+`afterSwap`). Combined with the snapshot baseline, this gives deviation without
+a vault read.
+
+The estimate drifts from reality due to vault interest (see 2f), but the drift
+is slow relative to swap-driven changes. Full vault reads at checkpoints
+(recenter, auction start/end) reset the baseline.
+
+For delta-neutral targets, "deviation" is just the net exposed-asset position.
+For other targets (50:50, constant leverage), the displacement-to-deviation
+mapping is different but the snapshot + displacement pattern still applies —
+the hook just needs a different formula for how reserve displacement translates
+to deviation from the specific target.
+
+The continuous recenter is what makes the hook autonomous for retail-dominated
+pools. In the WETH/USDC pool, over 4 days of operation V7 performed 103
+recenters versus only 47 auctions — most deviation was cleared by natural flow.
+The auction is needed only when flow is persistently directional and deviation
+grows faster than retail flow can absorb it.
+
+### 3b. Oracle-reactive fees
+
+Between auctions, the hook runs an oracle-reactive fee that serves two purposes:
+
+1. **Arb capture**: when the pool's marginal price diverges from the oracle,
+   arbers will trade to close the gap. The hook charges a fee proportional to
+   the mismatch, capturing value that would otherwise leak to MEV:
+
+   ```
+   if isArbDirection:
+     mismatch = |marginalPrice − oraclePrice| / oraclePrice
+     effectiveThreshold = gasCoeff × √(tx.gasprice) + baseFee + externalFee
+     if mismatch > effectiveThreshold:
+       fee = baseFee + captureRate × (mismatch − effectiveThreshold)
+   ```
+
+   The `gasCoeff × √(tx.gasprice)` term accounts for the arber's gas cost —
+   no point taxing away the gas component, since the arber wouldn't trade
+   without it. The `externalFee` is the oracle pool's fee tier (e.g., 5 bps
+   for Uniswap V3 USDC/WETH), ensuring the pool undercuts the external venue.
+
+   `captureRate` (e.g., 70%) determines what fraction of the excess mismatch
+   the LP captures. The remainder is the arber's margin — their incentive to
+   keep the pool aligned with the market.
+
+2. **Competitive routing fee**: when the trade goes in the non-arb direction
+   (the trader is pushing the pool *toward* the oracle price), the pool already
+   offers a better effective rate than the external venue. The hook can charge
+   a fraction of this advantage as additional fee revenue while remaining
+   competitive with external routing:
+
+   ```
+   if !isArbDirection:
+     headroom = mismatch + externalFee
+     fee = baseFee + routingFeeRate × headroom
+   ```
+
+   The `headroom` is how much better the pool's effective rate is than the
+   external venue. `routingFeeRate` (e.g., 0–30%) captures a fraction of this
+   advantage as LP revenue. At 0%, the pool charges only baseFee (maximally
+   competitive). At 30%, the pool captures 30% of its routing advantage while
+   still offering a 70% discount vs the external venue.
+
+The oracle-reactive fee is complementary to the auction mechanism:
+- **Arb capture** reduces the LVR (loss-vs-rebalancing) cost between auctions
+- **Competitive routing fee** brings the flow that enables continuous recentering (3a)
+- Both operate in `getFee` (a view function) — no state mutation, no gas cost
+  beyond the oracle read
+
+#### Parameters
+
+| Parameter | Description | Example (USDC/WETH) | Example (USDC/USDT) |
+|-----------|-------------|---------------------|---------------------|
+| `baseFee` | Minimum fee on all swaps | 1 bps | 0.05 bps |
+| `maxFee` | Cap on total fee | 100 bps | 10 bps |
+| `externalFee` | Oracle pool's fee tier | 5 bps | 0.08 bps |
+| `gasCoeff` | Gas cost scaling | 5e12 | 0 (stablecoins) |
+| `captureRate` | Fraction of excess arb captured | 70% | 70% |
+| `routingFeeRate` | Fraction of routing advantage captured | 0% | 0% |
+
+### 3c. Deploy protection surcharge
+
+At deployment, the pool may be slightly mispriced — the initial priceY might not
+exactly match the market, or the oracle might be stale at deploy time. Without
+protection, an arber can immediately extract value from this mispricing before
+the oracle-reactive fee has any history to work with.
+
+The **deploy surcharge** is a high initial fee that decays over ~100 blocks
+(~20 minutes), giving the deployer time to verify the pool is correctly priced:
+
+```
+deploySurcharge = baseSurcharge     (e.g., 50 bps for volatile, 5 bps for stables)
+decay = surchargeDecayPerBlock      (deploySurcharge / 100)
+```
+
+If the pool is correctly priced, the surcharge costs nothing — legitimate traders
+wait 20 minutes. If the pool is mispriced, the surcharge means arbers pay a
+premium that goes to the LP, limiting the damage.
+
+This is the same surcharge mechanism as the post-recenter surcharge (5h), just
+with a deploy-specific initial amount.
+
+---
+
+## Step 4: When to Trigger an Auction
+
+### 4a. The trigger trade-off
 
 Auctions have a cost: they shift the pool's pricing off-market to attract clearing
 flow, meaning the pool offers worse terms during the auction. The trigger decision
@@ -481,7 +748,7 @@ Clearing after every swap is maximally safe but prohibitively expensive. Never
 clearing is free until it isn't. The optimal frequency is somewhere in between,
 and it depends on asset volatility, pool leverage, and LP risk tolerance.
 
-### 3b. Trigger conditions
+### 4b. Trigger conditions
 
 The trigger fires when **either** of two conditions is met:
 
@@ -540,7 +807,7 @@ The trigger fires when **either** of two conditions is met:
    guardThreshold = g × D × √(blocksSinceSnapshot)
    ```
 
-   where `D` ≈ σ₁ (per-block volatility, a deploy-time parameter — see Step 4b),
+   where `D` ≈ σ₁ (per-block volatility, a deploy-time parameter — see Step 5b),
    `g` is a confidence multiplier (e.g., g = 3 for ~99.7% of normal price paths),
    and the √(blocks) term accounts for random-walk drift since the snapshot.
 
@@ -559,7 +826,7 @@ The trigger fires when **either** of two conditions is met:
    against the fresh coordinates.
 
    If the prices agree within the threshold: the auction proceeds. The marginal
-   price is used as the auction anchor (per Step 4e — manipulation-resistant
+   price is used as the auction anchor (per Step 5e — manipulation-resistant
    because manipulation = clearing).
 
    This scales correctly: tight for stablecoins (0.015 bps after 5 minutes),
@@ -606,7 +873,7 @@ a reconfigure if interest-driven exposure exceeds a threshold. The reserve-
 coordinate trigger is optimized for **swap-driven** exposure, which dominates
 in active pools.
 
-### 3c. Cooldown
+### 4c. Cooldown
 
 After an auction ends (whether by successful clearing or timeout), without a
 cooldown the very next swap could trigger another auction immediately. After
@@ -630,7 +897,7 @@ The min and max intervals define a frequency band:
 
 All three are deploy-time parameters, calibrated per pool.
 
-### 3d. Asymmetric thresholds (future exploration)
+### 4d. Asymmetric thresholds (future exploration)
 
 The cost of positive exposure (long the non-target asset via deposits) vs negative
 exposure (short via debt) may be asymmetric: debt accrues borrow interest, deposits
@@ -640,7 +907,7 @@ For now, a single symmetric threshold keeps things simple. Separate thresholds f
 positive and negative exposure deviation is a natural extension worth exploring —
 particularly for pools where the borrow/supply rate spread is large.
 
-### 3e. Gas price considerations
+### 4e. Gas price considerations
 
 Gas price at trigger time affects auction profitability. The auction attracts
 arbitrageurs who must pay gas to execute the clearing trade. If gas is high, the
@@ -663,9 +930,9 @@ but adds complexity and a new attack surface (gas price manipulation).
 
 ---
 
-## Step 4: The Auction Mechanism
+## Step 5: The Auction Mechanism
 
-### 4a. Core concept: a Dutch auction on a fixed-size order
+### 5a. Core concept: a Dutch auction on a fixed-size order
 
 The auction is conceptually simple — simpler than the curve it runs on top of:
 
@@ -674,7 +941,7 @@ The auction is conceptually simple — simpler than the curve it runs on top of:
 
 This is a Dutch auction on a fixed-size limit order. In practice, the auction is
 executed by reconfiguring the pool to constant-sum and routing through the existing
-swap infrastructure (see 4c).
+swap infrastructure (see 5c).
 
 The key parameters, all computed at auction start:
 
@@ -686,7 +953,7 @@ The key parameters, all computed at auction start:
 | **Starting fee** | Initial fee that makes the trade unprofitable | Set so `price − fee < marketPrice` |
 | **Fee decay** | Rate at which fee decreases per block | Deploy-time parameter |
 
-### 4b. How the Dutch auction works
+### 5b. How the Dutch auction works
 
 At auction start:
 
@@ -694,17 +961,17 @@ At auction start:
    operation deferred from the hot path) and computes the clearing amount and
    direction. For non-stablecoin pairs, computing NAV from vault positions requires
    a price to convert between assets — the same oracle used for the auction price
-   anchor (see 4e). This means the clearing amount is oracle-dependent: a stale or
+   anchor (see 5e). This means the clearing amount is oracle-dependent: a stale or
    manipulated oracle affects both the auction price and the size of the order.
 2. The auction price is set, grounded in the current price (marginal, oracle, or
-   other source — see 4e below).
+   other source — see 5e below).
 3. The starting fee is set high enough that `auctionPrice − startingFee` is
    unprofitable for arbitrageurs vs the external market.
 
 Each block, the fee decays (linearly):
 
 ```
-currentFee = max(0, startingFee − decayPerBlock × blocksSinceStart)
+currentFee = max(baseFee, startingFee − decayPerBlock × blocksSinceStart)
 ```
 
 At some block, the effective price crosses the profitability threshold:
@@ -716,15 +983,35 @@ effective = auctionPrice − currentFee
 When `effective` exceeds the external market rate (minus the arber's gas cost),
 the arber profits by buying from the auction and selling externally.
 
-**Worked example.** Pool is long WETH, wants to sell WETH for USDC. Auction price =
-2000 USDC/WETH (marginal price at trigger). External market = 2000 USDC/WETH.
+**Worked example 1 (volatile pair).** WETH/USDC pool is long WETH, wants to sell
+WETH for USDC. Auction price = 2000 USDC/WETH. External market = 2000 USDC/WETH.
+D = 4.3 bps/block (matched to ETH per-block vol).
 
 | Block | Fee (bps) | Effective (USDC/WETH) | Arber profit per WETH | Action |
 |-------|-----------|----------------------|----------------------|--------|
 | 0 | 50 bps | 2000 − 10 = 1990 | 1990 − 2000 = −$10 | No fill |
 | 5 | 28.5 bps | 2000 − 5.7 = 1994.3 | −$5.70 | No fill |
 | 10 | 7 bps | 2000 − 1.4 = 1998.6 | −$1.40 | No fill (< gas) |
-| 12 | 0 bps | 2000 | $0 − gas | Fill (if gas ≈ 0) |
+| 11 | 2.7 bps | 2000 − 0.54 = 1999.5 | −$0.54 | Fill (edge ≈ gas) |
+| 12+ | 1 bps (baseFee floor) | 2000 − 0.2 = 1999.8 | −$0.20 | Floor reached |
+
+**Worked example 2 (stablecoin pair).** USDC/USDT pool (50:50 target) has $250
+excess USDT exposure, wants to sell USDT for USDC. Auction price = 0.9998 USDC/USDT.
+External market = 0.9998 USDC/USDT. D = 0.001 bps/block (matched to stablecoin vol).
+
+| Block | Fee (bps) | Effective (USDC/USDT) | Arber profit per $1k USDT | Action |
+|-------|-----------|----------------------|--------------------------|--------|
+| 0 | 0.5 bps | 0.9998 − 0.00005 = 0.99975 | −$0.05 | No fill |
+| 200 | 0.3 bps | 0.9998 − 0.00003 = 0.99977 | −$0.03 | No fill |
+| 400 | 0.1 bps | 0.9998 − 0.00001 = 0.99979 | −$0.01 | No fill (< gas) |
+| 450 | 0.05 bps (baseFee floor) | 0.9998 − 0.000005 = 0.999795 | Fill | Fill |
+
+Stablecoin auctions run for more blocks (lower D) but at negligible price risk
+because per-block volatility is orders of magnitude lower.
+
+The fee decays to `baseFee`, not zero. Below `baseFee`, the pool still earns
+its minimum fee on every swap — including clearing trades. This prevents the
+V2-era bug where fees decaying to zero turned the auction into a free gift.
 
 The fee reduces the USDC the arber receives per WETH purchased. High fee = bad deal
 for arber = no fill. As the fee decays, the effective rate rises toward (and
@@ -806,7 +1093,7 @@ For stablecoins, σ₁ is orders of magnitude smaller (USDC/USDT vol ≈ 0.01–
 annualized), so the decay can be much finer and the auction can take many more
 blocks without material price risk.
 
-### 4c. Constant-sum reconfiguration
+### 5c. Constant-sum reconfiguration
 
 During auction mode, the hook reconfigures the pool to **constant-sum** (c = 1e18)
 and uses the existing swap infrastructure. This is a reconfiguration, not a separate
@@ -856,17 +1143,34 @@ reserve0 = current_reserve0               // no change
 reserve1 = current_reserve1
 ```
 
-Only the clearing direction is tradeable — the hook sets a prohibitive fee (or
-reverts) on the wrong direction. At auction end, the hook reconfigures back to
-normal curve parameters.
+The clearing direction uses the decaying auction fee. The wrong direction uses
+`max(normalFee, auctionFee)` — the pool still processes wrong-direction swaps
+and earns fee revenue, but at least the auction fee rate. This means the pool
+doesn't go dark during auctions: retail flow in either direction is still
+served. At auction end, the hook reconfigures back to normal curve parameters.
+
+**Wrong-direction capacity during auction.** The min reserves are set asymmetrically:
+the clearing side has a tight floor (e.g., `minReserve1 = reserve1 − clearingAmount`),
+but the opposite side may have `minReserve0 = 0` to allow unlimited input. This means
+a wrong-direction swap (sending asset1 in, receiving asset0 out) could drain asset0
+reserves well beyond the original clearing amount. On constant-sum, this happens at
+flat price — no slippage to discourage it.
+
+The mitigation is the fee: wrong-direction swaps during auction pay
+`max(normalFee, auctionFee)`. In the early blocks when the auction fee is high, this
+makes wrong-direction trades expensive. As the fee decays, the risk grows — but the
+auction is also approaching clearing, so wrong-direction flow that arrives late
+represents genuine retail demand (the pool is near its target). If this proves
+insufficient, the hook could set `minReserve0 = reserve0` (preventing asset0 output
+entirely), but this breaks the "pool stays live during auctions" property.
 
 The risk is parameter misconfiguration during reconfigure. Mitigations:
 - `reconfigure()` validates new params via `CurveLib.verify()`
 - The hook can validate the constant-sum params before calling reconfigure
-- Post-recenter surcharge (4h) protects against errors in the restore step
+- Post-recenter surcharge (5h) protects against errors in the restore step
 - The reconfigure is atomic within `afterSwap` — no window for external interference
 
-### 4d. Partial fills
+### 5d. Partial fills
 
 Arbers cannot be expected to fill the entire auction in one trade. In practice:
 
@@ -875,26 +1179,39 @@ Arbers cannot be expected to fill the entire auction in one trade. In practice:
 - The remaining 5% may not be worth a separate transaction given gas costs.
 - Arbers use heuristics and may not know the exact auction amount.
 
-The auction therefore supports **partial fills**: it tracks the remaining amount
-to clear, and any subsequent swap can chip away at it. The fee continues decaying,
+The auction therefore supports **partial fills** — and tracking the remaining
+amount is trivial on a constant-sum pool. Because eq = initial reserves at
+auction start, the cleared fraction is directly observable from the current
+reserve position:
+
+```
+clearedFraction = (reserve_out(now) − minReserve_out) / (eq_out − minReserve_out)
+remaining = 1 − clearedFraction
+```
+
+If `eq_out = 1000` and `minReserve_out = 750` (clearing amount = 250), then when
+`reserve_out = 800`, the pool has cleared `(1000 − 800) / 250 = 80%`. No separate
+counter needed — the AMM's own position IS the tracker.
+
+Each subsequent swap chips away at the remaining amount. The fee continues decaying,
 making the residual progressively more attractive.
 
 If the residual becomes too small to justify gas costs, it will be swept up in the
 next auction cycle (after timeout and re-trigger).
 
-**Partial fills and the atomic invariant.** Step 4e establishes that the price
+**Partial fills and the atomic invariant.** Step 5e establishes that the price
 snapshot and exposure measurement must be atomic — taken in the same operation. After
 a partial fill, the remaining auction amount was set at the original snapshot, but
 subsequent swaps (including the partial fill itself) have moved the marginal price.
 The residual amount and the current price are no longer from the same snapshot.
 
 This is acceptable because: (a) the residual is smaller than the original amount, so
-the manipulation surface shrinks with each fill; (b) the clearing threshold (4f)
+the manipulation surface shrinks with each fill; (b) the clearing threshold (5f)
 means we don't try to fill the last few percent; and (c) the auction price is fixed
 at snapshot time — it doesn't update with the marginal price during the auction. The
 fee decay provides the only moving part, which is deterministic and manipulation-free.
 
-### 4e. Auction price: grounding and manipulation resistance
+### 5e. Auction price: grounding and manipulation resistance
 
 The auction price determines the LP's cost. Setting it requires a reference for
 the current market price:
@@ -945,7 +1262,7 @@ Price depression ≈ 2×1000 / 247M ≈ 0.0008 bps. Original clearing = $250. Pr
 0.0008 bps × $250 ≈ $0.000002. Not worth the gas.
 
 For less-leveraged pools the attack surface is larger, which is why the **oracle
-guard** (3b) matters — it catches cases where the marginal price has been moved
+guard** (4b) matters — it catches cases where the marginal price has been moved
 significantly from the oracle price and aborts the auction.
 
 **Attack 2: inflate the price, then clear at the generous auction price.**
@@ -1008,26 +1325,45 @@ manipulate between the two snapshots.
   amount and the current marginal price may no longer be consistent if other swaps
   have occurred between fills
 
-### 4f. Clearing threshold
+### 5f. Clearing threshold
 
 The auction does not need to clear 100% of the exposure. A clearing threshold
-(e.g., 90% of the original amount) defines "good enough." Once the remaining
-amount drops below this threshold, the auction ends — the residual carries over
-and will be handled by the next auction cycle if it grows back above the trigger.
+(e.g., 90% of the original amount) defines "good enough." Since the remaining
+amount is inferred directly from reserves (see 5d), the check is:
+
+```
+remaining = (reserve_out − minReserve_out) / clearingAmount
+if remaining < clearingThreshold → auction ends (successful)
+```
+
+The residual carries over and will be handled by the next auction cycle if it
+grows back above the trigger.
 
 This avoids the tail problem where the last few percent are too small to justify
 gas costs and the auction stalls waiting for a fill that never comes.
 
-### 4g. Auction lifecycle
+### 5g. Auction lifecycle
 
 ```
 [normal mode]
     │
-    ├── afterSwap: reserve_E outside [triggerLow, triggerHigh]
-    │              OR (time > maxInterval AND reserve_E != eq_E)
-    │   (and cooldown elapsed: time > minInterval)
+    ├── afterSwap: compute deviation from target
     │
-    ▼
+    ├── If deviation DECREASED (exposure-reducing swap):
+    │   ├── Gate: delta > minRecenterDelta? direction unchanged?
+    │   │   If YES → continuous recenter (eq = reserves, priceY from oracle)
+    │   │            apply curvature-aware surcharge (5h)
+    │   │            snapshot vault state, recompute trigger coordinates
+    │   │            remain in normal mode
+    │   │   If NO  → update tracking, remain in normal mode
+    │   └── (see 3a)
+    │
+    ├── If deviation INCREASED:
+    │   ├── reserve_E outside [triggerLow, triggerHigh]
+    │   │   OR (time > maxInterval AND reserve_E != eq_E)
+    │   │   (and cooldown elapsed: time > minInterval)
+    │   │
+    │   ▼
 [auction start]
     ├── Oracle guard: |marginal − oracle| < g × D × √(blocksSinceSnapshot)?
     │   If NO → abort, re-snapshot, return to normal mode
@@ -1042,7 +1378,7 @@ gas costs and the auction stalls waiting for a fill that never comes.
 [auction active]
     ├── Each swap: routed through constant-sum pool via normal swap path
     │   ├── Clearing direction: fill (partial or full), fee decays per block
-    │   └── Wrong direction: blocked (prohibitive fee or revert)
+    │   └── Wrong direction: max(normalFee, auctionFee) — still earns revenue
     ├── Fee decays linearly (D per block)
     │
     ├── If sufficiently cleared (remaining < clearingThreshold):
@@ -1060,7 +1396,7 @@ gas costs and the auction stalls waiting for a fill that never comes.
     │   ├── Restore concentration (c) to normal curve shape
     │   ├── Recalculate range (min reserves) from new snapshot + range parameter
     ├── Recompute trigger coordinates from fresh snapshot
-    ├── Apply surcharge (see 4h)
+    ├── Apply surcharge (see 5h)
     ├── Resume normal mode
 
 [auction end: timeout → snapshot only]
@@ -1072,15 +1408,16 @@ gas costs and the auction stalls waiting for a fill that never comes.
     │
     ▼
 [normal mode]  (after successful clearing, includes surcharge)
-    ├── If post-recenter: surcharge decays exponentially (halves each block)
-    ├── Oracle-reactive fee handles ongoing price tracking
-    └── After ~5 blocks, surcharge is negligible → steady state
+    ├── Curvature-aware surcharge decays linearly (see 5h)
+    ├── Oracle-reactive fee captures arb value, attracts retail (see 3b)
+    ├── Continuous recenter on exposure-reducing swaps (see 3a)
+    └── After surcharge decays → steady state fee capture
 ```
 
 The timeout and clearing threshold are both checked in `afterSwap` — no keeper
 or external transaction required.
 
-### 4h. Post-recenter surcharge
+### 5h. Post-recenter surcharge
 
 Recentering sets the curve's eq price from an oracle (e.g., Uniswap slot0). But
 the oracle may be stale, or the market may have moved during the auction. If the
@@ -1089,49 +1426,191 @@ new eq price is wrong, the recenter itself creates a fresh arbitrage opportunity
 Worse, an attacker could try to profit atomically: manipulate the oracle, trigger
 an auction, wait for recenter, and arb the freshly mispriced pool.
 
-The **surcharge** is a blunt, fast-decaying fee added on top of the normal fee
-immediately after any recenter. It makes post-recenter arbs extremely expensive
-for the first few blocks, giving the oracle-reactive fee time to take over for
-ongoing price tracking.
+The **surcharge** is a fee added on top of the normal fee immediately after any
+recenter (including continuous recenters from Step 3a, not just post-auction).
+It makes post-recenter arbs expensive for the first blocks, giving the oracle-
+reactive fee time to take over for ongoing price tracking.
 
-**Exponential decay** is the right shape for the surcharge:
+#### Curvature-aware initial amount
+
+A fixed surcharge (e.g., "always 50 bps") doesn't adapt to the actual risk. A
+recenter from deep displacement on a curved pool unlocks much more extractable
+value than a recenter at near-equilibrium on a constant-sum pool. The surcharge
+should be sized to the actual value at risk.
+
+Before the recenter, the pool is displaced: reserve < eq on one side. The
+marginal price at this position reflects the displacement:
 
 ```
-surcharge = baseSurcharge × 2^(halvingBlocks − blocksSinceRecenter)
+marginalPrice = (px/py) × [c + (1-c) × (eq/reserve)²]
 ```
 
-For example, with `baseSurcharge = 1 bps` and `halvingBlocks = 5`:
+At equilibrium (reserve = eq), the bracket reduces to 1 and the price is just
+`px/py`. At displacement, the price is elevated by `(1-c) × [(eq/reserve)² − 1]`
+— the curvature premium.
 
-| Block after recenter | Surcharge |
-|---------------------|-----------|
-| 0 | 32 bps |
-| 1 | 16 bps |
-| 2 | 8 bps |
-| 3 | 4 bps |
-| 4 | 2 bps |
-| 5 | 1 bps |
-| 6+ | 0 (or baseFee takes over) |
+After the recenter, eq = reserve and the marginal price resets to `px/py` (plus
+any oracle price adjustment). The curvature premium vanishes. An arber who was
+about to trade in the clearing direction (toward the old eq) at the elevated
+marginal price can now trade *away* from the new eq at the flat price — getting
+a better deal per unit by exactly the curvature premium.
 
-Properties:
+The surcharge must cover this per-unit edge:
 
-- **Enormous initial deterrent**: 32× makes any immediate arb prohibitively
-  expensive. If someone pays it, the pool was catastrophically mispriced and the
-  surcharge saved the LP from something much worse.
-- **Fast decay**: back to normal in ~1 minute (5 blocks). The pool is competitive
-  again quickly.
-- **No precision needed**: unlike the auction fee (where granularity matters for
-  cost minimisation), the surcharge is a safety net. The jumps between blocks are
-  large, but that's fine — it's protecting against tail risk, not optimising cost.
-- **Complements the oracle-reactive fee**: the surcharge handles the first minute
-  post-recenter. The normal oracle-reactive fee handles ongoing small price
-  differences. They operate at different timescales.
+```
+curvatureComponent = (1 − c) × [(eq/reserve)² − 1]
+```
 
-The surcharge parameters (`baseSurcharge`, `halvingBlocks`) are deploy-time
-settings. `baseSurcharge` should reflect the maximum plausible recenter error —
-if the oracle could be off by 50 bps, the initial surcharge should be well above
-that.
+where `eq` and `reserve` are from the **pre-recenter** state, on whichever side
+is displaced (reserve < eq). For the undisplaced side (reserve = eq), the term
+is zero. This is the **marginal** extractable edge — the maximum per-unit profit
+an arber could capture at the first infinitesimal trade. For finite trades, the
+average edge is lower (the price rises as the arber trades away from eq), so
+using the marginal as the surcharge is conservative.
 
-### 4i. Auction cost analysis
+The second component is the oracle price change — if the recenter also moves
+priceY to match a new oracle reading, the price shift itself creates extractable
+value:
+
+```
+priceComponent = |newPrice − oldPrice| / max(newPrice, oldPrice)
+```
+
+The total surcharge initial amount:
+
+```
+surchargeInitial = (curvatureComponent + priceComponent) × multiplier
+```
+
+The `multiplier` (e.g., 1.25×) provides a safety margin over the exact formula,
+accounting for discretisation, oracle latency, and the possibility that the
+formula underestimates in edge cases.
+
+**Worked examples:**
+
+*Example 1: WETH/USDC (c=0), $1,000 displacement*
+
+```
+eq0 = 624,000 USDC,  reserve0 = 623,000 USDC
+eq/r = 1.00161,  (eq/r)² = 1.00322
+curvatureComponent = 1.0 × 0.00322 = 0.322% = 32 bps
+surchargeInitial = 32 × 1.25 = 40 bps
+```
+
+A $1,000 arb right after recenter pays $4 extra surcharge. Before recenter,
+the marginal price was 32 bps above equilibrium — that's the edge the arber
+loses. The 40 bps surcharge makes extraction unprofitable.
+
+*Example 2: WETH/USDC (c=0), $6,000 displacement*
+
+```
+eq0 = 624,000 USDC,  reserve0 = 618,000 USDC
+eq/r = 1.00971,  (eq/r)² = 1.01951
+curvatureComponent = 1.95% = 195 bps
+surchargeInitial = 195 × 1.25 = 244 bps
+```
+
+A 2.44% surcharge fee. High, but the marginal price was 1.95% off — a deep
+displacement on a curved pool. The total extractable value over the full $6k
+is roughly $6,000 × 1.95% / 2 ≈ $58 (average, not marginal). The surcharge
+on a $6k arb would be $146 — well above the extractable value. Conservative.
+
+*Example 3: USDC/USDT (c=0), $250 displacement (50% of NAV)*
+
+```
+eq0 = 247,589,086 USDC,  reserve0 = 247,588,836 USDC
+eq/r = 1.0000010,  (eq/r)² = 1.0000020
+curvatureComponent = 0.0002% = 0.002 bps
+surchargeInitial ≈ 0.003 bps
+```
+
+Essentially zero. At 495,000× leverage, a $250 displacement is invisible to
+the curve — the curvature premium is negligible. For this pool, the surcharge
+is dominated by the price component (oracle price change), not curvature.
+
+*Example 4: Constant-sum (c=1), any displacement*
+
+```
+curvatureComponent = (1 − 1) × anything = 0
+```
+
+Always zero. Constant-sum pools have no curvature bonus — the marginal price
+doesn't depend on reserve position. Recentering changes eq but not pricing.
+
+**Summary of curvature component:**
+
+| Pool type | eq/reserve | c | Component | Surcharge (×1.25) |
+|-----------|-----------|---|-----------|-------------------|
+| At equilibrium | 1.0 | any | 0 | 0 |
+| WETH/USDC, small move | 1.0016 | 0 | 32 bps | 40 bps |
+| WETH/USDC, large move | 1.0097 | 0 | 195 bps | 244 bps |
+| Same, c=0.5 | 1.0097 | 0.5 | 97 bps | 122 bps |
+| USDC/USDT, 50% NAV | 1.000001 | 0 | 0.002 bps | 0.003 bps |
+| Constant-sum | any | 1.0 | 0 | 0 |
+
+For constant-sum pools (c = 1), the curvature component is always zero — there
+is no curve bonus to extract, so the surcharge comes entirely from the price
+component. For curved pools, the curvature component dominates when the pool is
+significantly displaced from equilibrium. For high-leverage pools (stablecoins),
+displacement relative to virtual depth is negligible and the curvature component
+is effectively zero.
+
+#### Linear decay
+
+The surcharge decays linearly:
+
+```
+surcharge = max(0, surchargeInitial − surchargeDecayPerBlock × blocksSinceRecenter)
+```
+
+Why linear rather than exponential:
+
+- **Uniform per-block windfalls**: exponential decay (halving each block) creates
+  large jumps between early blocks (32 bps → 16 bps → 8 bps). An arber timing
+  their transaction to hit block N+1 instead of block N gets a 50% discount. With
+  linear decay, each block reduces the surcharge by the same fixed amount — the
+  per-block windfall is constant and small.
+
+- **Predictable duration**: `totalBlocks = surchargeInitial / decayPerBlock`.
+  For a 10 bps surcharge decaying at 0.1 bps/block, the surcharge reaches zero
+  in exactly 100 blocks (~20 minutes). With exponential decay, the surcharge
+  technically never reaches zero — it just becomes negligibly small.
+
+- **Correct sizing**: the curvature-aware initial amount already adapts to the
+  actual risk (large displacement → large surcharge, small displacement → small).
+  Exponential decay was needed when the initial amount was fixed and had to cover
+  worst-case scenarios with the multiplier. With adaptive sizing, linear decay is
+  sufficient.
+
+| Block | Linear (10 bps initial, 0.1/block) | Exponential (10 bps, halving=3) |
+|-------|-------------------------------------|--------------------------------|
+| 0 | 10 bps | 80 bps |
+| 1 | 9.9 bps | 40 bps |
+| 2 | 9.8 bps | 20 bps |
+| 3 | 9.7 bps | 10 bps |
+| 10 | 9 bps | 0.08 bps |
+| 50 | 5 bps | ≈0 |
+| 100 | 0 | ≈0 |
+
+The linear approach provides sustained protection (still 5 bps at block 50)
+rather than the exponential's aggressive early protection that vanishes quickly.
+This matches the threat model: oracle staleness and price uncertainty persist for
+minutes, not just the first few blocks.
+
+#### Parameters
+
+| Parameter | Description | Calibration |
+|-----------|-------------|-------------|
+| `surchargeMultiplier` | Safety margin on exact formula | 1.25× (25% above exact) |
+| `surchargeDecayPerBlock` | Linear decay rate | `surchargeInitial / targetBlocks` |
+| `deploySurcharge` | Initial surcharge at deployment (see 3c) | 50 bps volatile, 5 bps stable |
+
+The surcharge complements the oracle-reactive fee: the surcharge handles the
+first minutes post-recenter (large, fast-decaying protection). The oracle-
+reactive fee handles ongoing small price differences (precise, continuous
+adjustment). They operate at different timescales.
+
+### 5i. Auction cost analysis
 
 The LP's cost per auction has several components:
 
@@ -1153,9 +1632,102 @@ LP cost per unit = premium − feeAtFill
 ```
 
 Note: `premium > 0` in the normal case because the starting fee includes a `k × D`
-margin above break-even (see 4b), which means `auctionPrice > marketPrice` by the
+margin above break-even (see 5b), which means `auctionPrice > marketPrice` by the
 time the fee has decayed to the fill point. The premium is the LP's maximum cost;
 the fee recaptures part of it.
 
 In the ideal case, `feeAtFill ≈ premium − gasCost`, and the LP's cost approaches
 just the arber's gas cost — the minimum possible.
+
+---
+
+## Appendix A: Consolidated Parameters
+
+All hook parameters, grouped by function, with example values for two real pools.
+Values are derived from first principles using `scripts/calibrate-hook-params.ts`.
+
+### Pool profiles
+
+| Property | USDC/WETH (delta-neutral) | USDC/USDT (50:50) |
+|----------|--------------------------|-------------------|
+| **Strategy** | 100% USDC, 0% WETH | 50% USDC, 50% USDT |
+| **Equity (NAV)** | $8,000 | $500 |
+| **Virtual depth** | 624k USDC / 301 WETH | 247.6M USDC / 242.3M USDT |
+| **Leverage** | 466× | 495,000× |
+| **Concentration** | c = 0 | c = 0 |
+| **Range** | 30 bps | 1 bps (1 tick) |
+| **Oracle** | Uniswap V3 (0.05% pool) | Uniswap V4 (0.08 bps) |
+| **Pair volatility** | ~70% annualised | ~0.05% annualised |
+| **σ₁ (per-block vol)** | ~4.3 bps | ~0.001 bps |
+
+### Fee parameters
+
+| Parameter | Description | USDC/WETH | USDC/USDT | Section |
+|-----------|-------------|-----------|-----------|---------|
+| `baseFee` | Minimum fee on all swaps | 1 bps | 0.05 bps | 3b |
+| `maxFee` | Cap on total fee | 100 bps | 10 bps | 3b |
+| `externalFee` | Oracle pool's fee tier | 5 bps | 0.08 bps | 3b |
+| `captureRate` | Fraction of arb edge captured | 70% | 70% | 3b |
+| `routingFeeRate` | Fraction of fee headroom for routing | 50% | 50% | 3b |
+| `gasCoeff` | Gas-price scaling for arb detection | 5e12 | 0 | 3b |
+
+### Auction parameters
+
+| Parameter | Description | USDC/WETH | USDC/USDT | Section |
+|-----------|-------------|-----------|-----------|---------|
+| `decayPerBlock` (D) | Fee decay rate per block | 4.3 bps | 0.001 bps | 5b |
+| `triggerThreshold` | Deviation % of NAV to start auction | 50% | 50% | 4b |
+| `clearingThreshold` | Remaining fraction to end auction | 10% | 10% | 5f |
+| `minAuctionBlocks` | Minimum blocks before clearing | 25 | 25 | 4b |
+| `auctionTimeout` | Max blocks before forced end | 300 (~1hr) | 3000 (~10hr) | 5g |
+| `k` (starting fee margin) | Blocks of margin in starting fee | 15 | 250 | 5b |
+| `startingFee` | Initial fee = premium + k×D | ~65 bps | ~0.25 bps | 5b |
+| `minAuctionInterval` | Cooldown between auctions | 50 blocks | 100 blocks | 4c |
+
+### Trigger parameters
+
+| Parameter | Description | USDC/WETH | USDC/USDT | Section |
+|-----------|-------------|-----------|-----------|---------|
+| `triggerThreshold` | % NAV deviation to trigger | 50% | 50% | 4b |
+| `maxInterval` | Time-based trigger fallback | 300 blocks | 1000 blocks | 4b |
+| `oracleGuardMultiplier` (g) | Oracle divergence tolerance | 3 | 3 | 4b |
+
+### Surcharge parameters
+
+| Parameter | Description | USDC/WETH | USDC/USDT | Section |
+|-----------|-------------|-----------|-----------|---------|
+| `surchargeMultiplier` | Safety margin on curvature formula | 1.25× | 1.25× | 5h |
+| `surchargeDecayPerBlock` | Linear decay rate | ~0.5 bps | ~0.0001 bps | 5h |
+| `deploySurcharge` | Initial protection at deployment | 50 bps | 5 bps | 3c |
+| `deployDecayPerBlock` | Deploy surcharge decay rate | 0.5 bps | 0.05 bps | 3c |
+
+### Recenter parameters
+
+| Parameter | Description | USDC/WETH | USDC/USDT | Section |
+|-----------|-------------|-----------|-----------|---------|
+| `minRecenterDelta` | Minimum displacement to recenter | $10 | $0.50 | 3a |
+| `rangeParameter` (r) | Trading range width | 30 bps | 1 bps | 0e |
+
+### Derivation notes
+
+These values are not arbitrary — each is derived from the pool's characteristics:
+
+- **D ≈ σ₁**: per-block volatility of the pair. WETH/USDC at ~70% annual →
+  4.3 bps/block. USDC/USDT at ~0.05% annual → 0.001 bps/block.
+- **baseFee**: must be competitive with oracle pool fee but nonzero. WETH/USDC
+  at 1 bps undercuts the 5 bps V3 oracle pool. USDC/USDT at 0.05 bps undercuts
+  the 0.08 bps V4 pool.
+- **k**: controls auction duration budget. Higher for stablecoins (can afford to
+  wait, negligible price risk) and lower for volatile pairs (each block of
+  exposure costs σ₁ in expected adverse movement).
+- **triggerThreshold**: fraction of NAV that represents acceptable deviation.
+  50% for both pools — the LP tolerates half their equity in directional
+  exposure before forcing a clearing auction.
+- **minRecenterDelta**: prevents gas waste on dust-sized recenters. Scaled to
+  pool equity (~0.1% of NAV).
+- **rangeParameter**: calibrated so health factor = 1 at the boundary. Depends
+  on cross-LTV. USDC/USDT uses 1 bps (single tick) because cross-LTV = 96%
+  leaves only 4% margin. WETH/USDC uses 30 bps with lower cross-LTV.
+
+Always run `scripts/calibrate-hook-params.ts` before deployment to verify all
+parameters are consistent for the target pool.
