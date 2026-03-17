@@ -1133,9 +1133,9 @@ equilibriumReserve1 = reserve1
 priceX, priceY = auction price            // from marginal price at snapshot
 fee = controlled by hook (startingFee, decays per block)
 
-// Min reserves define clearing capacity:
-// Example: clearing direction is asset0 in → asset1 out
-minReserve0 = 0                           // asset0 can grow (input side)
+// Min reserves define clearing capacity AND block wrong-direction output:
+// Example: clearing direction is asset0 in → asset1 out (selling asset1 cheaply)
+minReserve0 = reserve0                    // LOCK: no asset0 output (wrong direction blocked)
 minReserve1 = reserve1 - clearingAmount   // asset1 can drain by clearingAmount
 
 // InitialState:
@@ -1143,26 +1143,23 @@ reserve0 = current_reserve0               // no change
 reserve1 = current_reserve1
 ```
 
-The clearing direction uses the decaying auction fee. The wrong direction uses
-`max(normalFee, auctionFee)` — the pool still processes wrong-direction swaps
-and earns fee revenue, but at least the auction fee rate. This means the pool
-doesn't go dark during auctions: retail flow in either direction is still
-served. At auction end, the hook reconfigures back to normal curve parameters.
+The clearing direction uses the decaying auction fee. At auction end, the hook
+reconfigures back to normal curve parameters.
 
-**Wrong-direction capacity during auction.** The min reserves are set asymmetrically:
-the clearing side has a tight floor (e.g., `minReserve1 = reserve1 − clearingAmount`),
-but the opposite side may have `minReserve0 = 0` to allow unlimited input. This means
-a wrong-direction swap (sending asset1 in, receiving asset0 out) could drain asset0
-reserves well beyond the original clearing amount. On constant-sum, this happens at
-flat price — no slippage to discourage it.
+**Wrong-direction blocked during auction.** The min reserves are set to make the pool
+truly one-directional: `minReserve0 = reserve0` locks the non-clearing side, preventing
+any asset0 output. Only the clearing direction (asset0 in, asset1 out) is active. This
+eliminates the risk of wrong-direction swaps draining the pool at flat constant-sum
+prices.
 
-The mitigation is the fee: wrong-direction swaps during auction pay
-`max(normalFee, auctionFee)`. In the early blocks when the auction fee is high, this
-makes wrong-direction trades expensive. As the fee decays, the risk grows — but the
-auction is also approaching clearing, so wrong-direction flow that arrives late
-represents genuine retail demand (the pool is near its target). If this proves
-insufficient, the hook could set `minReserve0 = reserve0` (preventing asset0 output
-entirely), but this breaks the "pool stays live during auctions" property.
+The pool is effectively "dark" for wrong-direction flow during auction. This is
+acceptable because auctions are short-lived (tens of blocks) and the clearing direction
+still serves flow. Retail demand in the wrong direction simply waits for the auction to
+end and normal mode to resume.
+
+The alternative — allowing wrong-direction flow with high fees — was considered but
+rejected. On constant-sum, there is no slippage to discourage wrong-direction trades,
+and the fee decays over time, creating a growing window of vulnerability.
 
 The risk is parameter misconfiguration during reconfigure. Mitigations:
 - `reconfigure()` validates new params via `CurveLib.verify()`
