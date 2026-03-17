@@ -110,7 +110,7 @@ where reserves sit on the curve.
 
 ### 0d. Accumulator Identities (verified by test)
 
-The following identities are verified by `test/AccumulatorInvariant.t.sol` over 100
+The following identities are verified by `test/EulerSwapAccumulator.t.sol` over 100
 swaps with varying sizes and directions.
 
 **1. Reserve accumulator (exact, zero rounding error):**
@@ -124,16 +124,33 @@ fee-absent accumulator.
 
 **2. Per-asset vault accumulator (exact at 1:1 share rate; ±1 wei/swap at non-unity rates):**
 
+The vault accumulator depends on where fees go:
+
+**When `feeRecipient == address(0)` (fees stay in vault):**
+
 ```
 vaultNet_i(final) = vaultNet_i(init) + Σ(grossIn_i − amountOut_i)
 ```
 
-where `grossIn = amountIn + fee` (reconstructed from the Swap event — this identity
-is exact by construction: `fee = amountInFull − amountIn`). `vaultNet = deposits − debts`
-for each asset independently. When `feeRecipient == address(0)`, the gross input
-(including fee) is deposited into the vault; when set, the fee is transferred out first.
+where `grossIn = amountIn + fee` (the full pre-fee input). The entire gross input is
+deposited into the vault, so the vault sees `grossIn` on the input side. `vaultNet =
+deposits − debts` for each asset independently.
+
+**When `feeRecipient != address(0)` (fees leave vault):**
+
+```
+vaultNet_i(final) = vaultNet_i(init) + Σ(amountIn_i − amountOut_i)
+```
+
+The fee is transferred to the recipient before the vault deposit, so the vault sees
+only the post-fee `amountIn`. In this case, the vault accumulator and the reserve
+accumulator have the same delta — they differ only by the initial snapshot.
+
+In both cases, `fee = amountInFull − amountIn` from the Swap event.
 
 **3. Fee identity (per-asset):**
+
+When `feeRecipient == address(0)`:
 
 ```
 vaultNetGrowth_i − reserveGrowth_i = totalFee_i
@@ -142,13 +159,21 @@ vaultNetGrowth_i − reserveGrowth_i = totalFee_i
 The vault accumulates gross flows; reserves accumulate post-fee flows. The difference
 is exactly the fees, per asset.
 
+When `feeRecipient != address(0)`, both vault and reserves accumulate post-fee flows,
+so `vaultNetGrowth = reserveGrowth` and fees are observable only in the recipient's
+balance.
+
 **4. NAV and price impact:**
 
 ```
 NAV_growth = Σ(fees) + Σ(price_impact)
 ```
 
-where `price_impact = postFeeIn − curveOut` per swap (valued at the same unit price).
+where `price_impact = postFeeIn − curveOut` per swap. This identity is exact only when
+both sides are valued in the same unit — either the assets are fungible (stablecoins),
+or all amounts are converted to a common numeraire at a consistent price. For non-
+stablecoin pairs, the "NAV growth" is path-dependent on the price used for conversion
+(see Step 2e on oracle dependency).
 
 For **constant-sum** curves (c = 1e18): `curveOut = postFeeIn` (no price impact), so
 `NAV_growth = Σ(fees)` exactly. Verified at zero difference in the test.
@@ -220,11 +245,21 @@ exposure_i = deposits_i − debts_i    (in asset i units)
 Positive exposure = the pool is long that asset (net deposits). Negative = short
 (net debt). Both create price risk: if the asset moves, NAV changes.
 
-The two exposures are linked — they always sum to NAV — so measuring one determines
-the other. The relevant exposure is in the **non-target asset**: the one the LP
-doesn't want to hold. For a delta-neutral pool targeting 100% asset0, the exposure
-that matters is `deposits1 − debts1`. For a pool targeting 100% asset1, it's
-`deposits0 − debts0`. The choice of which is "exposed" is symmetric.
+The two exposures are linked. When expressed in a **common numeraire** (using an
+oracle price to convert):
+
+```
+value(exposure_0) + value(exposure_1) = NAV
+```
+
+So measuring one determines the other. For stablecoin pairs where both assets ≈ $1,
+this simplifies to `exposure_0 + exposure_1 ≈ NAV` in native units. For non-stablecoin
+pairs, the conversion requires a price — making NAV itself oracle-dependent (see 2e).
+
+The relevant exposure is in the **non-target asset**: the one the LP doesn't want to
+hold. For a delta-neutral pool targeting 100% asset0, the exposure that matters is
+`deposits1 − debts1`. For a pool targeting 100% asset1, it's `deposits0 − debts0`.
+The choice of which is "exposed" is symmetric.
 
 **Reserves don't tell you exposure.** Two pools at identical reserve positions —
 same point on the same curve — can have completely different vault exposures depending
@@ -450,43 +485,134 @@ and it depends on asset volatility, pool leverage, and LP risk tolerance.
 
 The trigger fires when **either** of two conditions is met:
 
-1. **Exposure threshold**: the estimated relative exposure deviates from the target
-   by more than a configured threshold.
+1. **Reserve-coordinate threshold**: current reserves have crossed a precomputed
+   boundary that corresponds to the exposure threshold.
+
+   At each snapshot (post-recenter or initialization), the hook knows the full
+   state: vault positions, reserves (= eq after recenter), NAV, and oracle price.
+   From these, it precomputes the reserve coordinates at which exposure would cross
+   the threshold:
 
    ```
-   |relativeExposure − targetExposure| > threshold
+   // At snapshot time (reserves = eq, full vault state known):
+   thresholdAmount = threshold × NAV / oraclePrice    // in exposed asset units
+   triggerHigh = eq_E + thresholdAmount                // long exposure boundary
+   triggerLow  = eq_E − thresholdAmount                // short exposure boundary
    ```
 
-   The threshold is fixed at deploy time, calibrated per pool. A volatile pair
-   (USDC/WETH) needs a tighter threshold than a stablecoin pair (USDC/USDT)
-   because the cost of holding exposure scales with volatility. If volatility
-   changes significantly, the LP should adjust their pool configuration.
-
-   Exposure is measured in relative terms (fraction of NAV), not absolute. A pool
-   with $100k NAV and $50k exposure is in a very different situation than a pool
-   with $10M NAV and $50k exposure.
-
-2. **Time-based**: a maximum interval since the last auction has elapsed, regardless
-   of exposure level.
+   In `afterSwap`, the check is trivially cheap — two `uint256` comparisons:
 
    ```
-   blocksSinceLastAuction > maxAuctionInterval
+   if reserve_E > triggerHigh → long exposure → auction to sell asset E
+   if reserve_E < triggerLow  → short exposure → auction to buy asset E
+   ```
+
+   No oracle read, no vault read, no accumulator math in the hot path.
+
+   **Why this works**: reserves and vault positions move together via swap deltas.
+   A reserve displacement of Δ from equilibrium corresponds to approximately Δ of
+   vault position change.
+
+   **Fee-induced discrepancy**: when `feeRecipient == address(0)`, fees are deposited
+   into the vault but excluded from reserves (see Step 0d). On the input side, vault
+   exposure grows by `grossIn` while reserves grow by `postFeeIn`. This means the
+   trigger fires **late**: vault exposure already exceeds the threshold before reserve
+   displacement crosses the trigger coordinate. The error is proportional to
+   accumulated input fees since the last snapshot — small for low-fee pools, but
+   systematic.
+
+   When `feeRecipient != address(0)` (as in production pools where the hook is the
+   fee recipient), vault and reserve deltas match exactly. The trigger is exact
+   (within share-rate rounding). For pools with an external feeRecipient, this
+   discrepancy does not arise.
+
+   **For delta-neutral targets**, the threshold can be denominated directly in
+   native units of the exposed asset (a deploy-time parameter), eliminating the
+   oracle dependency at snapshot time entirely. The trigger becomes: "have reserves
+   moved more than X units from equilibrium?"
+
+   **Oracle guard at auction start**: when the trigger fires, the hook reads the
+   oracle and compares it to the pool's marginal price before committing to the
+   auction. The guard threshold scales with the pair's volatility and the time
+   elapsed since the last snapshot:
+
+   ```
+   guardThreshold = g × D × √(blocksSinceSnapshot)
+   ```
+
+   where `D` ≈ σ₁ (per-block volatility, a deploy-time parameter — see Step 4b),
+   `g` is a confidence multiplier (e.g., g = 3 for ~99.7% of normal price paths),
+   and the √(blocks) term accounts for random-walk drift since the snapshot.
+
+   | Pair | D (σ₁) | Blocks | g=3 threshold |
+   |------|--------|--------|---------------|
+   | USDC/WETH | 4.3 bps | 25 (~5 min) | 64.5 bps |
+   | USDC/WETH | 4.3 bps | 100 (~20 min) | 129 bps |
+   | USDC/USDT | 0.001 bps | 25 (~5 min) | 0.015 bps |
+   | USDC/USDT | 0.001 bps | 500 (~100 min) | 0.067 bps |
+
+   If `|marginalPrice − oraclePrice| > guardThreshold`: the prices have diverged
+   beyond what normal drift explains. The auction is **aborted** — instead of
+   proceeding with potentially stale or manipulated data, the hook takes a fresh
+   snapshot (full vault read, recompute trigger coordinates from current oracle
+   price) and returns to normal mode. The next swap re-evaluates the trigger
+   against the fresh coordinates.
+
+   If the prices agree within the threshold: the auction proceeds. The marginal
+   price is used as the auction anchor (per Step 4e — manipulation-resistant
+   because manipulation = clearing).
+
+   This scales correctly: tight for stablecoins (0.015 bps after 5 minutes),
+   generous for volatile pairs (64.5 bps), and widens over time as more drift is
+   expected. The multiplier `g` and the volatility parameter `D` are both set at
+   deploy time — no runtime oracle needed for the guard threshold itself.
+
+   The threshold is calibrated per pool at deploy time. A volatile pair (USDC/WETH)
+   needs a tighter threshold than a stablecoin pair (USDC/USDT) because the cost
+   of holding exposure scales with volatility.
+
+2. **Time-based** (with nonzero displacement): a maximum interval since the last
+   snapshot has elapsed **and** reserves are displaced from equilibrium.
+
+   ```
+   blocksSinceLastSnapshot > maxSnapshotInterval AND reserve_E != eq_E
    ```
 
    This ensures the accumulator baseline is periodically refreshed (absorbing
-   interest drift from Step 2f) and prevents the pool from sitting indefinitely
-   with stale state, even if exposure stays just below the threshold.
+   interest drift from Step 2f) when reserves indicate activity since the last
+   snapshot. If reserves are at equilibrium, the time trigger is skipped — there is
+   nothing to clear, and snapshotting would be wasted gas.
 
-Both conditions are checked in `afterSwap` using only cheap stored state — the
-accumulator estimate, the threshold parameter, and the last auction timestamp/block.
-No vault reads in the hot path.
+   This matters for pools that go idle (no swaps for extended periods). An idle
+   pool at equilibrium should not trigger pointless auctions. An idle pool with
+   displaced reserves should eventually trigger to correct stale state.
+
+Both conditions are checked in `afterSwap` using only cheap stored state — two
+stored `uint256` trigger coordinates, the current reserves (already available in
+the swap context), and the last snapshot block number. Zero external calls.
+
+**Limitation: interest-driven exposure is invisible to this trigger.** Vault
+interest (supply APY, borrow APY) changes deposits and debts without moving
+reserves. An idle pool accumulating interest-driven exposure will never cross
+the reserve-coordinate trigger, because reserves haven't moved. The time-based
+trigger also misses this — it checks `reserve_E != eq_E`, which fails for idle
+pools.
+
+For pools with significant carry (stablecoins with 5-15% APY), interest drift
+can be material over days or weeks (1-5% of NAV per week on stablecoin pools
+with $7-8k positions and $500 NAV). This exposure requires periodic external
+intervention — an agent or keeper that reads vault state directly and triggers
+a reconfigure if interest-driven exposure exceeds a threshold. The reserve-
+coordinate trigger is optimized for **swap-driven** exposure, which dominates
+in active pools.
 
 ### 3c. Cooldown
 
-After an auction clears, exposure is near the target. Without a cooldown, the very
-next swap could push exposure back over the threshold and trigger another auction
-immediately. This would effectively make every swap an auction — defeating the
-purpose of batching.
+After an auction ends (whether by successful clearing or timeout), without a
+cooldown the very next swap could trigger another auction immediately. After
+successful clearing, this would make every swap an auction — defeating the purpose
+of batching. After timeout, rapid-fire failed auctions would burn gas on repeated
+vault reads and reconfigurations with no progress.
 
 A **minimum interval** between auctions prevents this:
 
@@ -522,8 +648,18 @@ clearing trade needs a larger edge to be profitable, which means the auction mus
 offer a larger pricing shift — a cost ultimately borne by the LP.
 
 Gas price is observable in `afterSwap` (`tx.gasprice`). How it should influence
-the trigger decision or auction parameters is a design question we'll return to
-in Step 4 (the auction mechanism itself).
+the trigger decision or auction parameters is an **open design question**:
+
+- Should the starting fee increase when gas is high (to give arbers a larger
+  eventual edge, compensating for gas costs)?
+- Should the trigger defer when gas is extreme (delaying the auction until
+  conditions are more favourable)?
+- Or should gas price be left to the arber to price in, with no hook adjustment?
+
+The current design leaves gas to the arber: the fee decays at a fixed rate, and
+the arber fills when edge > gas cost. Higher gas means later fill (more fee
+decay), which costs the LP more. A gas-aware starting fee could reduce this cost
+but adds complexity and a new attack surface (gas price manipulation).
 
 ---
 
@@ -536,9 +672,9 @@ The auction is conceptually simple — simpler than the curve it runs on top of:
 > **"I will sell X units of asset A for asset B at price P. The fee starts high
 > and decays until someone takes the offer."**
 
-This is a Dutch auction on a fixed-size limit order. The curve is just one possible
-execution venue — the mechanism doesn't require curve math. It could be implemented
-as a standalone function that the hook intercepts swaps with.
+This is a Dutch auction on a fixed-size limit order. In practice, the auction is
+executed by reconfiguring the pool to constant-sum and routing through the existing
+swap infrastructure (see 4c).
 
 The key parameters, all computed at auction start:
 
@@ -554,9 +690,12 @@ The key parameters, all computed at auction start:
 
 At auction start:
 
-1. The hook computes the clearing amount and direction from the exposure estimate
-   (Step 2), then snapshots the true vault state (full vault read — the expensive
-   operation deferred from the hot path).
+1. The hook snapshots the true vault state (full vault read — the expensive
+   operation deferred from the hot path) and computes the clearing amount and
+   direction. For non-stablecoin pairs, computing NAV from vault positions requires
+   a price to convert between assets — the same oracle used for the auction price
+   anchor (see 4e). This means the clearing amount is oracle-dependent: a stale or
+   manipulated oracle affects both the auction price and the size of the order.
 2. The auction price is set, grounded in the current price (marginal, oracle, or
    other source — see 4e below).
 3. The starting fee is set high enough that `auctionPrice − startingFee` is
@@ -574,9 +713,22 @@ At some block, the effective price crosses the profitability threshold:
 effective = auctionPrice − currentFee
 ```
 
-When `effective` is better than the external market price (minus the arber's gas
-cost), an arbitrageur executes the clearing trade. They take the offer, hedge on
-the external market, and pocket the spread.
+When `effective` exceeds the external market rate (minus the arber's gas cost),
+the arber profits by buying from the auction and selling externally.
+
+**Worked example.** Pool is long WETH, wants to sell WETH for USDC. Auction price =
+2000 USDC/WETH (marginal price at trigger). External market = 2000 USDC/WETH.
+
+| Block | Fee (bps) | Effective (USDC/WETH) | Arber profit per WETH | Action |
+|-------|-----------|----------------------|----------------------|--------|
+| 0 | 50 bps | 2000 − 10 = 1990 | 1990 − 2000 = −$10 | No fill |
+| 5 | 28.5 bps | 2000 − 5.7 = 1994.3 | −$5.70 | No fill |
+| 10 | 7 bps | 2000 − 1.4 = 1998.6 | −$1.40 | No fill (< gas) |
+| 12 | 0 bps | 2000 | $0 − gas | Fill (if gas ≈ 0) |
+
+The fee reduces the USDC the arber receives per WETH purchased. High fee = bad deal
+for arber = no fill. As the fee decays, the effective rate rises toward (and
+eventually beyond) the external market rate.
 
 #### Starting fee
 
@@ -654,23 +806,65 @@ For stablecoins, σ₁ is orders of magnitude smaller (USDC/USDT vol ≈ 0.01–
 annualized), so the decay can be much finer and the auction can take many more
 blocks without material price risk.
 
-### 4c. Separate code path from normal swaps
+### 4c. Constant-sum reconfiguration
 
-During auction mode, the hook intercepts swaps and evaluates them against the
-**auction order** — not the curve. This is a separate code path:
+During auction mode, the hook reconfigures the pool to **constant-sum** (c = 1e18)
+and uses the existing swap infrastructure. This is a reconfiguration, not a separate
+code path:
 
-- **Normal mode**: swaps evaluated against the curve with oracle-reactive fees.
-- **Auction mode**: swaps evaluated against the auction order (remaining amount,
-  current decayed fee, auction price).
+- **Normal mode**: swaps evaluated against the curved pool with oracle-reactive fees.
+- **Auction mode**: pool reconfigured to constant-sum. Swaps routed through the
+  same `swap()` → `FundsLib` → vault path, but with constant-sum pricing and
+  hook-controlled decaying fee.
 
-One side of the auction has zero reserves / is blocked — only the clearing
-direction is tradeable. This keeps the logic clean and prevents flow in the wrong
-direction from building exposure during the auction.
+Why constant-sum reconfiguration rather than a separate code path:
 
-Offering retail trades in the non-auction direction is a possible future
-optimisation (the pool could still serve organic flow while auctioning), but it
-complicates the logic and such trades are unlikely to fill anyway since the pool
-is off-market.
+1. **FundsLib reuse**: the existing swap mechanism handles all vault operations —
+   deposit, withdraw, borrow, repay — correctly. Reimplementing this in a separate
+   auction path would be error-prone and duplicative.
+2. **Leveraged targets**: if the target state involves borrowing (e.g., 2x long),
+   the clearing swap must be able to borrow. FundsLib already handles this via
+   withdraw-before-borrow on the output side and repay-before-deposit on the input.
+3. **Predictable cost**: constant-sum has zero curve spread. The LP's cost is
+   entirely determined by the fee, which the hook controls precisely.
+4. **Battle-tested path**: the swap → FundsLib → vault pipeline has been tested
+   with 42k+ mainnet swaps. A new code path would be fresh attack surface.
+
+At auction start, the hook calls `reconfigure()` with new DynamicParams and
+InitialState. The pool must start ON the new curve (`CurveLib.verify` is called
+on the InitialState with the new params). For constant-sum, the curve is
+`reserve0 × px + reserve1 × py = eq0 × px + eq1 × py`. Setting eq = current
+reserves ensures the pool starts at equilibrium and verify passes.
+
+The clearing capacity comes from the gap between eq and min reserves:
+
+```
+// DynamicParams:
+concentrationX = concentrationY = 1e18    // constant-sum
+equilibriumReserve0 = reserve0            // pool starts at eq
+equilibriumReserve1 = reserve1
+priceX, priceY = auction price            // from marginal price at snapshot
+fee = controlled by hook (startingFee, decays per block)
+
+// Min reserves define clearing capacity:
+// Example: clearing direction is asset0 in → asset1 out
+minReserve0 = 0                           // asset0 can grow (input side)
+minReserve1 = reserve1 - clearingAmount   // asset1 can drain by clearingAmount
+
+// InitialState:
+reserve0 = current_reserve0               // no change
+reserve1 = current_reserve1
+```
+
+Only the clearing direction is tradeable — the hook sets a prohibitive fee (or
+reverts) on the wrong direction. At auction end, the hook reconfigures back to
+normal curve parameters.
+
+The risk is parameter misconfiguration during reconfigure. Mitigations:
+- `reconfigure()` validates new params via `CurveLib.verify()`
+- The hook can validate the constant-sum params before calling reconfigure
+- Post-recenter surcharge (4h) protects against errors in the restore step
+- The reconfigure is atomic within `afterSwap` — no window for external interference
 
 ### 4d. Partial fills
 
@@ -687,6 +881,18 @@ making the residual progressively more attractive.
 
 If the residual becomes too small to justify gas costs, it will be swept up in the
 next auction cycle (after timeout and re-trigger).
+
+**Partial fills and the atomic invariant.** Step 4e establishes that the price
+snapshot and exposure measurement must be atomic — taken in the same operation. After
+a partial fill, the remaining auction amount was set at the original snapshot, but
+subsequent swaps (including the partial fill itself) have moved the marginal price.
+The residual amount and the current price are no longer from the same snapshot.
+
+This is acceptable because: (a) the residual is smaller than the original amount, so
+the manipulation surface shrinks with each fill; (b) the clearing threshold (4f)
+means we don't try to fill the last few percent; and (c) the auction price is fixed
+at snapshot time — it doesn't update with the marginal price during the auction. The
+fee decay provides the only moving part, which is deterministic and manipulation-free.
 
 ### 4e. Auction price: grounding and manipulation resistance
 
@@ -710,33 +916,57 @@ purpose than an external oracle — precisely because it's endogenous.
 
 **Attack 1: depress the price to buy cheaply from the auction.**
 
-An attacker wants the auction to sell asset E (the exposed asset) cheaply. To lower
-the marginal price of E, they must sell E into the pool. But selling E into the pool
-is exactly the clearing direction — it reduces the pool's E exposure. If the amount
-sold to manipulate the price is comparable to the auction amount, the attacker has
-already cleared the exposure for us. The manipulation *is* the clearing.
+An attacker wants the auction to sell asset E cheaply. To lower E's marginal price,
+they sell E into the pool (send E in, receive T out). This increases reserve_E and
+decreases E's price. But it also **increases** the pool's E exposure — the vault
+receives more E deposits (or repays E debt). The attacker is pushing the pool further
+from its target, not closer.
 
-The attack is self-defeating: you can't depress the price without also reducing the
-exposure that the auction exists to clear.
+The manipulation has two effects:
+- The auction price drops (depressed marginal price)
+- The auction amount grows (more E exposure to clear)
+
+Is this profitable? The attacker sells X of E at the depressed price (bad for them),
+then buys from the auction at that same depressed price. On the round-trip of X units,
+they break even minus fees. On the original clearing amount, they buy at the depressed
+price — below the pre-manipulation market. The profit is:
+
+```
+profit ≈ priceDepression × originalClearingAmount
+cost   ≈ priceDepression × X + fees
+```
+
+where `priceDepression ≈ 2X / eq0` for a c=0 curve. For leveraged pools, eq0 is
+enormous relative to X, so the price depression is negligible per dollar of
+manipulation. The profit on the original amount is proportionally tiny.
+
+**Example**: USDC/USDT pool (eq0 = 247M). Attacker sells $1000 USDT into pool.
+Price depression ≈ 2×1000 / 247M ≈ 0.0008 bps. Original clearing = $250. Profit ≈
+0.0008 bps × $250 ≈ $0.000002. Not worth the gas.
+
+For less-leveraged pools the attack surface is larger, which is why the **oracle
+guard** (3b) matters — it catches cases where the marginal price has been moved
+significantly from the oracle price and aborts the auction.
 
 **Attack 2: inflate the price, then clear at the generous auction price.**
 
-An attacker buys E from the pool, pushing the marginal price of E up. The auction
-then triggers at this inflated price — seemingly generous for the arber who clears.
-But:
+An attacker buys E from the pool (sends T in, receives E out), pushing E's marginal
+price up. But buying E **decreases** the pool's E exposure — the vault withdraws E
+deposits (or borrows E). The attacker is actually performing the clearing trade.
 
-- Buying E *increases* the pool's E exposure (more debt or fewer deposits on the
-  target side). The auction is now larger, not cheaper.
-- The attacker paid the pre-manipulation (lower) price to buy E. The auction offers
-  to sell at the inflated (higher) price. For the attacker to profit, they'd need to
-  clear at the high price and keep the difference — but they already paid the low
-  price on the way in, so their round-trip cost is the spread between entry and exit.
-- The pool benefits: it sold E at a high price (to the attacker) and the auction
-  clears at that same high price. The LP is better off, not worse.
+- The pool's E exposure shrinks. The auction amount, if it triggers, is smaller.
+- The attacker paid the (rising) price during their purchase. The auction price is
+  set to the now-high marginal price. For the attacker to profit from filling the
+  (smaller) remaining auction, they'd need an edge beyond fees — but they already
+  moved the price up against themselves.
+- The LP benefits: the attacker's purchase cleared some exposure at an increasingly
+  favourable price (E sold at higher and higher rates as the price rose).
 
-**Why this works:**
+This attack is directly self-defeating: the attacker does the pool's job for it.
 
-The marginal price and the exposure are linked through the same reserves — they move
+**Why marginal price works as an anchor:**
+
+The marginal price and exposure are linked through the same reserves — they move
 together via the curve. Any trade that changes the price also changes the exposure in
 a correlated way. An external oracle, by contrast, can be manipulated independently
 (e.g., push the Uniswap price without touching the EulerSwap pool), creating a
@@ -793,42 +1023,56 @@ gas costs and the auction stalls waiting for a fill that never comes.
 ```
 [normal mode]
     │
-    ├── afterSwap: exposure > threshold OR time > maxInterval
+    ├── afterSwap: reserve_E outside [triggerLow, triggerHigh]
+    │              OR (time > maxInterval AND reserve_E != eq_E)
     │   (and cooldown elapsed: time > minInterval)
     │
     ▼
 [auction start]
+    ├── Oracle guard: |marginal − oracle| < g × D × √(blocksSinceSnapshot)?
+    │   If NO → abort, re-snapshot, return to normal mode
+    │   If YES → proceed:
     ├── Full vault read (snapshot true deposits/debts)
     ├── Compute clearing amount and direction
-    ├── Set auction price (from marginal price), starting fee (premium + k×D)
-    ├── Enter auction mode
+    ├── Reconfigure pool to constant-sum (c = 1e18)
+    │   eq = current reserves, min reserves allow clearing, price = marginal
+    ├── Set starting fee (premium + k×D), enter auction mode
     │
     ▼
 [auction active]
-    ├── Each swap: evaluate against auction order
-    │   ├── Clearing direction: fill (partial or full) at decayed fee
-    │   └── Wrong direction: blocked
+    ├── Each swap: routed through constant-sum pool via normal swap path
+    │   ├── Clearing direction: fill (partial or full), fee decays per block
+    │   └── Wrong direction: blocked (prohibitive fee or revert)
     ├── Fee decays linearly (D per block)
     │
     ├── If sufficiently cleared (remaining < clearingThreshold):
-    │   └── → [auction end + recenter]
+    │   └── → [auction end: successful clearing → recenter]
     │
     ├── If timed out (blocks > auctionTimeout):
-    │   └── → [auction end + recenter]  (in afterSwap, no separate tx)
+    │   └── → [auction end: timeout → snapshot only]
     │
     ▼
-[auction end + recenter]
+[auction end: successful clearing → recenter]
     ├── Full vault read (snapshot true deposits/debts)
-    ├── Reset accumulator baseline from snapshot
-    ├── Recenter curve: set eq = current reserves
-    ├── Set eq price from oracle (slot0 / TWAP)
-    ├── Recalculate range (min reserves) from new snapshot + range parameter
+    ├── Reconfigure back to curved pool:
+    │   ├── Recenter: set eq = current reserves
+    │   ├── Set eq price from oracle (slot0 / TWAP)
+    │   ├── Restore concentration (c) to normal curve shape
+    │   ├── Recalculate range (min reserves) from new snapshot + range parameter
+    ├── Recompute trigger coordinates from fresh snapshot
     ├── Apply surcharge (see 4h)
     ├── Resume normal mode
+
+[auction end: timeout → snapshot only]
+    ├── Full vault read (snapshot true deposits/debts)
+    ├── Reconfigure back to curved pool (restore pre-auction params)
+    ├── Recompute trigger coordinates from fresh snapshot
+    ├── Resume normal mode (no surcharge — no recenter occurred)
+    ├── Cooldown applies (minAuctionInterval before next auction)
     │
     ▼
-[normal mode + surcharge]
-    ├── Surcharge decays exponentially (halves each block)
+[normal mode]  (after successful clearing, includes surcharge)
+    ├── If post-recenter: surcharge decays exponentially (halves each block)
     ├── Oracle-reactive fee handles ongoing price tracking
     └── After ~5 blocks, surcharge is negligible → steady state
 ```
@@ -895,8 +1139,8 @@ The LP's cost per auction has several components:
   This is the maximum cost — only fully incurred if the fee decays to zero.
 - **Fee captured**: the decayed fee at the time of fill, which offsets the premium.
   The LP's net cost is `premium − fee_at_fill`.
-- **Curve spread**: if the auction uses the curve (constant-sum), there is zero
-  spread. If it uses a separate code path, there is no curve involvement at all.
+- **Curve spread**: zero. The pool is reconfigured to constant-sum (c = 1e18)
+  during auction, so there is no bid-ask spread from curvature.
 
 The Dutch auction mechanism naturally minimises cost: the first arber to find the
 trade profitable executes it, which means the fee at fill is the minimum discount
@@ -904,8 +1148,14 @@ the market requires. Competition among arbers pushes the fill toward the highest
 viable fee (lowest LP cost).
 
 ```
-LP cost per unit = auctionPrice − marketPrice − feeAtFill
+LP cost per unit = premium − feeAtFill
+                 = (auctionPrice − marketPrice) − feeAtFill
 ```
 
-In the ideal case, `feeAtFill ≈ auctionPrice − marketPrice − gasCost`, and the
-LP's cost approaches just the arber's gas cost — the minimum possible.
+Note: `premium > 0` in the normal case because the starting fee includes a `k × D`
+margin above break-even (see 4b), which means `auctionPrice > marketPrice` by the
+time the fee has decayed to the fill point. The premium is the LP's maximum cost;
+the fee recaptures part of it.
+
+In the ideal case, `feeAtFill ≈ premium − gasCost`, and the LP's cost approaches
+just the arber's gas cost — the minimum possible.
