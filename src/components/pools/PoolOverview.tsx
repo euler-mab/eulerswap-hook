@@ -326,6 +326,16 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
         </Row>
       )}
 
+      {/* Uniswap V4 oracle price */}
+      {state.v4Price !== undefined && state.v4Price > 0 && (
+        <Row label="Uniswap V4 price">
+          {inverted
+            ? `${fmtPrice(1 / state.v4Price)} ${state.asset0Symbol}/${state.asset1Symbol}`
+            : `${fmtPrice(state.v4Price)} ${state.asset1Symbol}/${state.asset0Symbol}`}
+          <PriceDiff marginal={state.marginalPrice} other={state.v4Price} inverted={inverted} />
+        </Row>
+      )}
+
       {/* DeFiLlama price cross-reference */}
       {pnl && pnl.currentPrices.asset0 > 0 && pnl.currentPrices.asset1 > 0 && (
         <Row label="DeFiLlama price">
@@ -379,6 +389,26 @@ export default function PoolOverview({ state, pool, pnl, pnlError }: OverviewPro
           {fmtFeeBps(state.fee0)} / {fmtFeeBps(state.fee1)}
         </Row>
       )}
+
+      {/* Gas cost */}
+      <Row label="Gas">
+        {(() => {
+          const gasGwei = Number(state.gasPrice) / 1e9;
+          const swapGas = 350_000;
+          const swapCostEth = (Number(state.gasPrice) * swapGas) / 1e18;
+          const ethPrice = pnl?.currentPrices.asset0 && pnl?.currentPrices.asset1
+            ? (state.asset0Symbol === "WETH" ? pnl.currentPrices.asset0
+              : state.asset1Symbol === "WETH" ? pnl.currentPrices.asset1 : undefined)
+            : undefined;
+          const swapCostUsd = ethPrice ? swapCostEth * ethPrice : undefined;
+          return <>
+            {gasGwei.toFixed(3)} gwei
+            <span className="text-gray-500 ml-1">
+              (~{swapCostEth.toFixed(6)} ETH per swap{swapCostUsd !== undefined && `, ${fmtUsd(swapCostUsd)}`})
+            </span>
+          </>;
+        })()}
+      </Row>
 
       {/* Vault deposits */}
       {(state.vaultDeposit0 > 0n || state.vaultDeposit1 > 0n) && (

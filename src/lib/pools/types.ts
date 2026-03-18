@@ -49,6 +49,8 @@ export interface PoolState {
   uniswapPrice2?: number;
   twapPrice5m2?: number;
   uniswapPool2Label?: string;
+  // Uniswap V4 oracle price (from extsload)
+  v4Price?: number;
 
   // Hook state
   hookBaseFee?: bigint;

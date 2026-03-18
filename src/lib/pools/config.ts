@@ -27,6 +27,12 @@ export interface PoolConfig {
   uniswapPool2Decimals?: [number, number];
   /** If true, invert the secondary pool's native price to match the primary convention */
   uniswapPool2Invert?: boolean;
+  /** Uniswap V4 PoolManager address for extsload oracle reads */
+  v4PoolManager?: Address;
+  /** V4 pool ID (bytes32) */
+  v4PoolId?: `0x${string}`;
+  /** Token decimals [token0, token1] in the V4 pool */
+  v4Decimals?: [number, number];
 }
 
 export const POOLS: PoolConfig[] = [
@@ -47,14 +53,17 @@ export const POOLS: PoolConfig[] = [
   },
   {
     address: "0x719529e99b7b272c5ef4CE07C30d15BC57CD68A8",
-    hook: "0xdC45Ee622320CD6466F0B9717818299606AE0E2c",
+    hook: "0x99b97FD05b4F943899358F90855C0BEE34584e41",
     agentEoa: "0x2909bCc87c17d8Be263621bF087bC806BA313BFE",
     eulerAccount: "0x2909BCc87c17D8be263621bf087Bc806ba313BFf",
     name: "USDC/USDT #1",
-    description: "One-sided USDC equity, ±1% range, dynamic fee hook",
+    description: "1-tick range, V7 hook, V4 oracle, 0.05 bps base fee",
     deployBlock: 24593397n,
     uniswapPool: "0x3416cF6C708Da44DB2624D63ea0AAef7113527C6",
     uniswapFeeBps: 1,
+    v4PoolManager: "0x000000000004444c5dc75cB358380D2e3dE08A90",
+    v4PoolId: "0x395f91b34aa34a477ce3bc6505639a821b286a62b1a164fc1887fa3a5ef713a5",
+    v4Decimals: [6, 6], // USDC, USDT
   },
 ];
 

@@ -1,4 +1,4 @@
-import { type Address, type PublicClient, formatUnits, parseAbiItem, encodeFunctionData, decodeFunctionResult, type Abi } from "viem";
+import { type Address, type PublicClient, formatUnits, parseAbiItem, encodeFunctionData, decodeFunctionResult, type Abi, keccak256, encodeAbiParameters } from "viem";
 import { eulerSwapAbi, evaultAbi, erc20Abi, hookAbi, uniswapV3PoolAbi } from "./abi";
 import { TOKEN_META, type PoolConfig } from "./config";
 import type { PoolState, SwapEvent, VaultFlow } from "./types";
@@ -133,6 +133,15 @@ export async function fetchPoolState(
     hasHook
       ? client.readContract({ address: hookAddr, abi: hookAbi, functionName: "getExposureState" })
       : Promise.resolve(null),
+    // 24: Uniswap V4 sqrtPriceX96 via extsload
+    pool.v4PoolManager && pool.v4PoolId
+      ? client.readContract({
+          address: pool.v4PoolManager,
+          abi: [{ name: "extsload", type: "function", stateMutability: "view", inputs: [{ name: "slot", type: "bytes32" }], outputs: [{ name: "", type: "bytes32" }] }],
+          functionName: "extsload",
+          args: [keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }], [pool.v4PoolId as `0x${string}`, "0x0000000000000000000000000000000000000000000000000000000000000006"]))],
+        })
+      : Promise.resolve(null),
   ]);
 
   const val = <T,>(r: PromiseSettledResult<T>, fallback: T): T =>
@@ -174,6 +183,7 @@ export async function fetchPoolState(
   const v7AuctionParams = val(results[22], null) as any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const v7ExposureState = val(results[23], null) as any;
+  const v4Packed = val(results[24], null) as `0x${string}` | null;
 
   // Compute marginal price using EulerSwap curve.
   // On-chain priceX/priceY are (USD_price / 10^decimals) * 1e18, so normalise to
@@ -257,6 +267,21 @@ export async function fetchPoolState(
       if (pool.uniswapPool2Invert) humanPrice = 1 / humanPrice;
       twapPrice5m2 = humanPrice;
     } catch { /* observe failed */ }
+  }
+
+  // Uniswap V4 oracle price (from extsload)
+  let v4Price: number | undefined;
+  if (v4Packed && pool.v4Decimals) {
+    const sqrtPriceX96 = BigInt(v4Packed) & ((1n << 160n) - 1n);
+    if (sqrtPriceX96 > 0n) {
+      const num = Number(sqrtPriceX96) / 2 ** 96;
+      const rawPrice = num * num; // token1_raw / token0_raw
+      const [dec0, dec1] = pool.v4Decimals;
+      // V4 token0 is USDC, token1 is USDT — same order as pool asset0/asset1
+      const token0IsAsset0 = asset0.toLowerCase() < asset1.toLowerCase();
+      const adjusted = token0IsAsset0 ? rawPrice : 1 / rawPrice;
+      v4Price = adjusted * Math.pow(10, dec0 - dec1);
+    }
   }
 
   // ─── Arb probe: use computeQuote for realistic arb estimate ───
@@ -369,6 +394,7 @@ export async function fetchPoolState(
     marginalPrice, equilibriumPrice, isInstalled: installed,
     uniswapPrice, twapPrice5m,
     uniswapPrice2, twapPrice5m2, uniswapPool2Label: pool.uniswapPool2Label,
+    v4Price,
     // Hook
     hookBaseFee: feeParams ? feeParams[0] : undefined,
     hookMaxFee: feeParams ? feeParams[1] : undefined,
