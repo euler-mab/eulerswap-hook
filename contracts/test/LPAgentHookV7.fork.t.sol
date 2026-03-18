@@ -373,12 +373,12 @@ contract LPAgentHookV7ForkTest is Test {
         bool auctionFired = hook.auctionActive();
         if (auctionFired) {
             // Auction started: verify eq was set to current reserves and min reserves relaxed
-            IEulerSwap.DynamicParams memory dAfter = pool.getDynamicParams();
+            IEulerSwap.DynamicParams memory dAuction = pool.getDynamicParams();
             (uint112 postR0, uint112 postR1,) = pool.getReserves();
-            assertEq(dAfter.equilibriumReserve0, postR0, "auction: eq0 == reserve0");
-            assertEq(dAfter.equilibriumReserve1, postR1, "auction: eq1 == reserve1");
-            assertEq(dAfter.minReserve0, 0, "auction: min0 relaxed");
-            assertEq(dAfter.minReserve1, 0, "auction: min1 relaxed");
+            assertEq(dAuction.equilibriumReserve0, postR0, "auction: eq0 == reserve0");
+            assertEq(dAuction.equilibriumReserve1, postR1, "auction: eq1 == reserve1");
+            assertEq(dAuction.minReserve0, 0, "auction: min0 relaxed");
+            assertEq(dAuction.minReserve1, 0, "auction: min1 relaxed");
             assertTrue(hook.auctionStartingFee() > 0, "auction: starting fee set");
             return;
         }
