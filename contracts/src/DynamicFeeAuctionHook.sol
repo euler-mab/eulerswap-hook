@@ -126,6 +126,8 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     event AuctionStarted(uint64 startingFee, uint64 blockNumber, bool clearAsset0);
     event AuctionEnded(uint64 blockNumber);
     event Recentered(uint64 blockNumber);
+    event ReconfigureFailed(uint64 blockNumber, string context);
+    event UnderwaterDetected(uint64 blockNumber);
 
     // --- Constructor param structs ---
     struct OracleConfig {
@@ -183,6 +185,8 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
         oracleV4PoolId = _oracleConfig.v4PoolId;
         oracleToken0IsAsset0 = _oracleConfig.token0 == IEVault(IEulerSwap(_pool).getStaticParams().supplyVault0).asset();
 
+        require(_feeConfig.baseFee <= _feeConfig.maxFee, "invalid fee ordering");
+        require(_feeConfig.maxFee < uint64(WAD), "max fee >= 100%");
         baseFee = _feeConfig.baseFee;
         maxFee = _feeConfig.maxFee;
         gasCoeff = _feeConfig.gasCoeff;
@@ -192,6 +196,7 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
         captureRate = _feeConfig.captureRate;
         attractRate = _feeConfig.attractRate;
 
+        require(_auctionConfig.clearThreshold < _auctionConfig.maxShiftMagnitude, "clear >= shift");
         decayPerBlock = _auctionConfig.decayPerBlock;
         auctionTriggerThreshold = _auctionConfig.auctionTriggerThreshold;
         clearThreshold = _auctionConfig.clearThreshold;
@@ -350,31 +355,38 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
 
     /// @notice Owner can force-end a stuck auction (emergency).
     /// Recenters at market, restores min reserves, refreshes vault state, sets surcharge.
+    /// State resets (auctionActive, surchargeStartBlock, surchargeInitialAmount, lastExposure)
+    /// are gated on reconfigure success — on failure the auction stays active so the owner
+    /// can retry, and no stale state is committed.
     function endAuction() external onlyOwner {
-        auctionActive = false;
-
-        // Try to recenter at market price
         (uint112 r0, uint112 r1,) = IEulerSwap(pool).getReserves();
         uint256 uniPrice = _getUniswapPrice();
-        if (uniPrice > 0) {
-            IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
-            uint256 newPriceY = uint256(d.priceX).mulDiv(WAD, uniPrice);
-            if (newPriceY > 0 && newPriceY <= type(uint80).max) {
-                d.priceY = uint80(newPriceY);
-            }
-            d.equilibriumReserve0 = r0;
-            d.equilibriumReserve1 = r1;
-            _setMinReservesFromRange(d, r0, r1);
-            try IEulerSwap(pool).reconfigure(d, IEulerSwap.InitialState(r0, r1)) {
-                emit Recentered(uint64(block.number));
-            } catch {}
+        if (uniPrice == 0) {
+            emit ReconfigureFailed(uint64(block.number), "endAuction");
+            return;
         }
 
-        _cacheVaultState(uniPrice);
-        surchargeStartBlock = uint64(block.number);
-        surchargeInitialAmount = baseFee;
-        lastExposure = 0;
-        emit AuctionEnded(uint64(block.number));
+        IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
+        uint256 newPriceY = uint256(d.priceX).mulDiv(WAD, uniPrice);
+        if (newPriceY > 0 && newPriceY <= type(uint80).max) {
+            d.priceY = uint80(newPriceY);
+        }
+        d.equilibriumReserve0 = r0;
+        d.equilibriumReserve1 = r1;
+        _setMinReservesFromRange(d, r0, r1);
+
+        try IEulerSwap(pool).reconfigure(d, IEulerSwap.InitialState(r0, r1)) {
+            auctionActive = false;
+            emit Recentered(uint64(block.number));
+            _cacheVaultState(uniPrice);
+            surchargeStartBlock = uint64(block.number);
+            surchargeInitialAmount = baseFee;
+            lastExposure = 0;
+            emit AuctionEnded(uint64(block.number));
+        } catch {
+            emit ReconfigureFailed(uint64(block.number), "endAuction");
+            // Leave auctionActive = true so the owner can retry.
+        }
     }
 
     /// @notice Owner can refresh vault state to correct for interest accrual drift
@@ -413,14 +425,21 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
             if (shouldRecenter) {
                 uint112 preEq0 = d.equilibriumReserve0;
                 uint112 preEq1 = d.equilibriumReserve1;
-                uint256 recenterMag = _recenterAtMarket(reserve0, reserve1, d, uniPrice);
-                _initSurcharge(recenterMag, reserve0, reserve1, preEq0, preEq1, d);
-                _cacheVaultState(uniPrice);
+                (uint256 recenterMag, bool ok) = _recenterAtMarket(reserve0, reserve1, d, uniPrice);
+                if (ok) {
+                    _initSurcharge(recenterMag, reserve0, reserve1, preEq0, preEq1, d);
+                    _cacheVaultState(uniPrice);
 
-                // Measure post-recenter vault exposure (d was mutated in-place by _recenterAtMarket)
-                (uint256 postExposure,, bool postDir) = _computeVaultExposure(reserve1, d, uniPrice);
-                lastExposure = uint64(postExposure > type(uint64).max ? type(uint64).max : postExposure);
-                lastNetLongWeth = postDir;
+                    // Measure post-recenter vault exposure (d was mutated in-place by _recenterAtMarket)
+                    (uint256 postExposure,, bool postDir) = _computeVaultExposure(reserve1, d, uniPrice);
+                    lastExposure = uint64(postExposure > type(uint64).max ? type(uint64).max : postExposure);
+                    lastNetLongWeth = postDir;
+                } else {
+                    // Recenter failed — `d` was mutated but never committed on-chain.
+                    // Track current (pre-recenter) state, not the hypothetical post-recenter state.
+                    lastExposure = uint64(relExposure > type(uint64).max ? type(uint64).max : relExposure);
+                    lastNetLongWeth = netLongWeth;
+                }
             } else {
                 // Just update tracking without recentering
                 lastExposure = uint64(relExposure > type(uint64).max ? type(uint64).max : relExposure);
@@ -442,15 +461,18 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
 
     /// @notice Recenter: set eq = current reserves, align priceY to oracle, set min reserves.
     /// @return recenterMagnitude WAD-scaled relative price change |newPrice - oldPrice| / max(new, old)
+    /// @return success True if reconfigure succeeded; caller must branch on this since `d` is
+    /// mutated in-place before reconfigure and would otherwise misrepresent on-chain state.
     function _recenterAtMarket(uint112 reserve0, uint112 reserve1, IEulerSwap.DynamicParams memory d, uint256 uniPrice)
         internal
-        returns (uint256 recenterMagnitude)
+        returns (uint256 recenterMagnitude, bool success)
     {
-        if (uniPrice == 0) return 0;
+        if (uniPrice == 0) return (0, false);
+        if (d.priceY == 0) return (0, false); // defensive: avoid divide-by-zero in oldPriceRatio
 
         uint256 oldPriceRatio = uint256(d.priceX) * WAD / uint256(d.priceY);
         uint256 newPriceY = uint256(d.priceX).mulDiv(WAD, uniPrice);
-        if (newPriceY == 0 || newPriceY > type(uint80).max) return 0;
+        if (newPriceY == 0 || newPriceY > type(uint80).max) return (0, false);
 
         // Magnitude = |newPrice - oldPrice| / max(newPrice, oldPrice)
         recenterMagnitude = uniPrice > oldPriceRatio
@@ -464,7 +486,9 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
 
         try IEulerSwap(pool).reconfigure(d, IEulerSwap.InitialState(reserve0, reserve1)) {
             emit Recentered(uint64(block.number));
+            success = true;
         } catch {
+            emit ReconfigureFailed(uint64(block.number), "recenterAtMarket");
             recenterMagnitude = 0;
         }
     }
@@ -545,11 +569,14 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
         preShiftPriceY = d.priceY;
 
         // Shift priceY past market to create deliberate mispricing
+        uint256 shifted;
         if (netLongWeth) {
-            d.priceY = uint80(uint256(d.priceY) * WAD / (WAD + shift));
+            shifted = uint256(d.priceY) * WAD / (WAD + shift);
         } else {
-            d.priceY = uint80(uint256(d.priceY) * (WAD + shift) / WAD);
+            shifted = uint256(d.priceY) * (WAD + shift) / WAD;
+            require(shifted <= type(uint80).max, "priceY shift overflow");
         }
+        d.priceY = uint80(shifted);
 
         // Relax boundaries during auction
         d.minReserve0 = 0;
@@ -567,7 +594,9 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
             auctionClearAsset0 = netLongWeth;
             lastExposure = 0;
             emit AuctionStarted(auctionStartingFee, uint64(block.number), netLongWeth);
-        } catch {}
+        } catch {
+            emit ReconfigureFailed(uint64(block.number), "startAuction");
+        }
     }
 
     /// @notice Compute auction shift sized to actual exposure, capped at maxShiftMagnitude.
@@ -604,18 +633,25 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
 
     /// @notice End auction and recenter at market with drift clamp.
     /// @param uniPrice Oracle price from _checkPriceConvergence (avoids redundant SLOAD).
+    /// Auction state (auctionActive, surcharge, lastExposure) is reset only on reconfigure
+    /// success. On failure we keep auctionActive = true so subsequent swaps can retry clearing
+    /// without compounding the priceY shift (next _startAuction would otherwise treat the
+    /// already-shifted priceY as preShiftPriceY and shift again).
     function _endAuctionAndRecenter(uint112 reserve0, uint112 reserve1, uint256 uniPrice) internal {
-        auctionActive = false;
+        if (uniPrice == 0) {
+            emit ReconfigureFailed(uint64(block.number), "endAuctionAndRecenter");
+            return;
+        }
 
         // Compute recenter magnitude from preShiftPriceY for surcharge
         uint256 _preShiftPY = uint256(preShiftPriceY);
         uint256 recenterMag;
 
-        if (uniPrice > 0) {
-            IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
-            uint256 newPriceY = uint256(d.priceX).mulDiv(WAD, uniPrice);
+        IEulerSwap.DynamicParams memory d = IEulerSwap(pool).getDynamicParams();
+        uint256 newPriceY = uint256(d.priceX).mulDiv(WAD, uniPrice);
 
-            // Clamp to within maxRecenterDrift of pre-shift priceY
+        // Clamp to within maxRecenterDrift of pre-shift priceY
+        {
             uint256 _maxDrift = uint256(maxRecenterDrift);
             if (_preShiftPY > 0 && _maxDrift > 0) {
                 uint256 maxPY = _preShiftPY * (WAD + _maxDrift) / WAD;
@@ -623,45 +659,49 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
                 if (newPriceY > maxPY) newPriceY = maxPY;
                 if (newPriceY < minPY) newPriceY = minPY;
             }
-
-            // Compute recenter magnitude from clamped price (not raw oracle)
-            if (_preShiftPY > 0 && newPriceY > 0) {
-                uint256 preShiftPrice = uint256(d.priceX) * WAD / _preShiftPY;
-                uint256 actualPrice = uint256(d.priceX) * WAD / newPriceY;
-                recenterMag = actualPrice > preShiftPrice
-                    ? (actualPrice - preShiftPrice) * WAD / actualPrice
-                    : (preShiftPrice - actualPrice) * WAD / preShiftPrice;
-            }
-
-            if (newPriceY > 0 && newPriceY <= type(uint80).max) {
-                d.priceY = uint80(newPriceY);
-            }
-
-            d.equilibriumReserve0 = reserve0;
-            d.equilibriumReserve1 = reserve1;
-            _setMinReservesFromRange(d, reserve0, reserve1);
-
-            try IEulerSwap(pool).reconfigure(d, IEulerSwap.InitialState(reserve0, reserve1)) {
-                emit Recentered(uint64(block.number));
-                _cacheVaultState(uniPrice);
-            } catch {}
         }
 
-        // Measure actual post-recenter vault exposure
-        {
-            IEulerSwap.DynamicParams memory dPost = IEulerSwap(pool).getDynamicParams();
-            (uint256 postExposure,, bool postDir) = _computeVaultExposure(reserve1, dPost, uniPrice);
-            lastExposure = uint64(postExposure > type(uint64).max ? type(uint64).max : postExposure);
-            lastNetLongWeth = postDir;
+        // Compute recenter magnitude from clamped price (not raw oracle)
+        if (_preShiftPY > 0 && newPriceY > 0) {
+            uint256 preShiftPrice = uint256(d.priceX) * WAD / _preShiftPY;
+            uint256 actualPrice = uint256(d.priceX) * WAD / newPriceY;
+            recenterMag = actualPrice > preShiftPrice
+                ? (actualPrice - preShiftPrice) * WAD / actualPrice
+                : (preShiftPrice - actualPrice) * WAD / preShiftPrice;
         }
 
-        // Post-auction surcharge: derived from actual price displacement
-        uint256 surchargeAmount = recenterMag * uint256(surchargeMultiplier) / WAD;
-        uint256 floor = uint256(baseFee);
-        if (surchargeAmount < floor) surchargeAmount = floor;
-        surchargeInitialAmount = uint64(surchargeAmount > type(uint64).max ? type(uint64).max : surchargeAmount);
-        surchargeStartBlock = uint64(block.number);
-        emit AuctionEnded(uint64(block.number));
+        if (newPriceY > 0 && newPriceY <= type(uint80).max) {
+            d.priceY = uint80(newPriceY);
+        }
+
+        d.equilibriumReserve0 = reserve0;
+        d.equilibriumReserve1 = reserve1;
+        _setMinReservesFromRange(d, reserve0, reserve1);
+
+        try IEulerSwap(pool).reconfigure(d, IEulerSwap.InitialState(reserve0, reserve1)) {
+            auctionActive = false;
+            emit Recentered(uint64(block.number));
+            _cacheVaultState(uniPrice);
+
+            // Measure actual post-recenter vault exposure
+            {
+                IEulerSwap.DynamicParams memory dPost = IEulerSwap(pool).getDynamicParams();
+                (uint256 postExposure,, bool postDir) = _computeVaultExposure(reserve1, dPost, uniPrice);
+                lastExposure = uint64(postExposure > type(uint64).max ? type(uint64).max : postExposure);
+                lastNetLongWeth = postDir;
+            }
+
+            // Post-auction surcharge: derived from actual price displacement
+            uint256 surchargeAmount = recenterMag * uint256(surchargeMultiplier) / WAD;
+            uint256 floor = uint256(baseFee);
+            if (surchargeAmount < floor) surchargeAmount = floor;
+            surchargeInitialAmount = uint64(surchargeAmount > type(uint64).max ? type(uint64).max : surchargeAmount);
+            surchargeStartBlock = uint64(block.number);
+            emit AuctionEnded(uint64(block.number));
+        } catch {
+            emit ReconfigureFailed(uint64(block.number), "endAuctionAndRecenter");
+            // Leave auctionActive = true so subsequent swaps can retry clearing.
+        }
     }
 
     // =========================================================================
@@ -768,9 +808,18 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
         require(net >= type(int128).min && net <= type(int128).max, "baseNetAsset1 overflow");
         baseNetAsset1 = int128(net);
 
-        // Cache NAV (deposits - debts in asset0 terms); preserve on oracle failure
+        // Cache NAV (deposits - debts in asset0 terms). Distinguish two failure modes:
+        // - uniPrice == 0 (oracle failure): preserve previous cachedNav.
+        // - _computeNav returns 0 (underwater): write 0 so _computeVaultExposure returns
+        //   type(uint256).max and the auction trigger fires. Suppressing this case would
+        //   hide insolvency exactly when the auction is most needed.
+        if (uniPrice == 0) return;
+
         uint128 newNav = _computeNav(uniPrice);
-        if (newNav > 0) cachedNav = newNav;
+        if (newNav == 0) {
+            emit UnderwaterDetected(uint64(block.number));
+        }
+        cachedNav = newNav;
     }
 
     /// @notice Compute NAV = total deposits - total debts, all in asset0 terms.

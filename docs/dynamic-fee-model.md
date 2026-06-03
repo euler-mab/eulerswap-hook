@@ -117,6 +117,10 @@ gasCoeff = 2e18 × √(swapGasUnits × 2 / eqReserveWei)
 
 The owner updates `gasCoeff` via `setFeeParams()` when pool depth changes materially. Gas price variations are handled automatically by the formula at quote time.
 
+**Caveat — `tx.gasprice` is the bid, not the cost (L-02):** the formula reads `tx.gasprice`, which is the transaction's bid gas price, not the gas the arber actually pays. In MEV-aware contexts (Flashbots bundles, private orderflow, builder side-payments), the bid can be set independently of true execution cost and is manipulable by sophisticated searchers — e.g. a low `tx.gasprice` paired with a coinbase tip can lower `effectiveThreshold` and raise the captured edge in their favour, or vice versa. This is working as designed for normal mempool flow, where `tx.gasprice` is a reasonable proxy for the marginal cost of inclusion; sophisticated arbers are expected to optimise around it.
+
+**Caveat — zero-gasprice contexts (I-04):** on L2s with sequencer-priced gas, or in account-abstraction / sponsored-transaction flows where `tx.gasprice` can be `0`, `effectiveThreshold` collapses to `0` and the arb-side fee formula reduces to capturing the full mismatch above `baseFee + externalFee`. This is generally the desired behaviour (gas isn't really a barrier in those contexts), but operators deploying on such venues should review `captureRate` accordingly.
+
 ### `captureRate` (uint256, WAD-scaled)
 
 Fraction of **net exploitable edge** to capture on the **arb side**. Default: 0.8e18 (80%).
