@@ -222,7 +222,10 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
         _cacheVaultState(_getUniswapPrice());
 
         // Deployment protection surcharge — starts high so mispriced deploys are expensive
-        // to arb, giving the deployer time to detect and correct.
+        // to arb, giving the deployer time to detect and correct. Bounded by maxFee
+        // because anything above it is silently clamped by getFee() but still decays
+        // against the inflated nominal value — easy footgun (multi-year lockout).
+        require(_auctionConfig.deploySurcharge <= _feeConfig.maxFee, "deploy surcharge > maxFee");
         surchargeStartBlock = uint64(block.number);
         surchargeInitialAmount = _auctionConfig.deploySurcharge;
     }
@@ -701,6 +704,10 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
         } catch {
             emit ReconfigureFailed(uint64(block.number), "endAuctionAndRecenter");
             // Leave auctionActive = true so subsequent swaps can retry clearing.
+            // Restart the fee-decay clock: the previous decay window has now run to baseFee
+            // floor without successfully reconfiguring. Bumping auctionStartBlock gives arbers
+            // a fresh decay window in which to clear.
+            auctionStartBlock = uint64(block.number);
         }
     }
 
@@ -816,7 +823,9 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
         if (uniPrice == 0) return;
 
         uint128 newNav = _computeNav(uniPrice);
-        if (newNav == 0) {
+        // Debounce: only emit on the transition from solvent (cachedNav > 0) to underwater
+        // (newNav == 0). Continuous-underwater state would otherwise emit on every swap.
+        if (newNav == 0 && cachedNav != 0) {
             emit UnderwaterDetected(uint64(block.number));
         }
         cachedNav = newNav;
