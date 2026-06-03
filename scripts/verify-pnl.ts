@@ -14,15 +14,17 @@ import { createPublicClient, http, formatUnits, parseAbiItem, type Address } fro
 import { mainnet } from "viem/chains";
 
 // ─── Config ─────────────────────────────────────────────────────────
-const POOL = "0x4311031739918Aba578C3C667DA3028A12Ce28A8" as Address;
-const EULER_ACCOUNT = "0x2909bCc87c17d8Be263621bF087bC806BA313BFE" as Address;
-const DEPLOY_BLOCK = 24591724n;
-const UNI_POOL = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640" as Address; // USDC/WETH 0.05%
-const DEC0 = 6;  // USDC
-const DEC1 = 18; // WETH
+// Defaults to the live USDC/WETH pool the author runs. Override via env vars
+// to analyze a different pool.
+const POOL = (process.env.POOL_ADDRESS ?? "0x4311031739918Aba578C3C667DA3028A12Ce28A8") as Address;
+const EULER_ACCOUNT = (process.env.EULER_ACCOUNT ?? "0x2909bCc87c17d8Be263621bF087bC806BA313BFE") as Address;
+const DEPLOY_BLOCK = BigInt(process.env.POOL_DEPLOY_BLOCK ?? "24591724");
+const UNI_POOL = (process.env.UNI_POOL_ADDRESS ?? "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640") as Address;
+const DEC0 = Number(process.env.DECIMALS_0 ?? 6);
+const DEC1 = Number(process.env.DECIMALS_1 ?? 18);
 
-const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL ?? process.env.RPC_URL;
-if (!RPC_URL) { console.error("Set NEXT_PUBLIC_RPC_URL or RPC_URL"); process.exit(1); }
+const RPC_URL = process.env.RPC_URL;
+if (!RPC_URL) { console.error("Set RPC_URL"); process.exit(1); }
 
 const client = createPublicClient({
   chain: mainnet,

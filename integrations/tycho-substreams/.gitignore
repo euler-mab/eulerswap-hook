@@ -1,4 +1,0 @@
-target/
-src/abi/euler_swap_registry.rs
-src/abi/euler_swap_pool.rs
-src/pb/tycho.evm.v1.rs

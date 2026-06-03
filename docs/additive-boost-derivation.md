@@ -632,9 +632,9 @@ the correct general formula uses R throughout (as presented in this version).
 
 ## Implementation notes
 
-### For the agent recentering use case
+### For recentering a boosted pool
 
-When the agent needs to recenter a boosted pool at a new price:
+When the hook recenters a boosted pool at a new price (from inside `afterSwap`, or via a deploy script for the initial deploy):
 
 1. Read current vault state: `(xr, yr, xd, yd)` from vault `balanceOf`,
    `convertToAssets`, and `debtOf`.
@@ -658,10 +658,7 @@ the new equilibrium IS the current vault state.
 
 ---
 
-## TODO
+## Future work
 
-- [ ] Derive additive formula for Z-debt cases (bZL01, bZL11)
-- [ ] Add transition-point calibration for Z-debt (quadratic constraint)
-- [ ] Implement in math.ts alongside existing multiplicative functions
-- [ ] Add unit tests comparing additive vs multiplicative for known cases
-- [ ] Integrate into agent's recentering logic
+- Derive additive formula for Z-debt cases (bZL01, bZL11)
+- Add transition-point calibration for Z-debt (quadratic constraint)

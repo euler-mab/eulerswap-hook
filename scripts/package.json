@@ -1,0 +1,19 @@
+{
+  "name": "eulerswap-hook-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "On-chain analysis and calibration scripts for the EulerSwap propAMM hook",
+  "scripts": {
+    "calibrate": "tsx calibrate-hook-params.ts",
+    "analyze": "tsx analyze-v7.ts",
+    "verify-pnl": "tsx verify-pnl.ts"
+  },
+  "dependencies": {
+    "viem": "^2.46.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "@types/node": "^22.10.1"
+  }
+}

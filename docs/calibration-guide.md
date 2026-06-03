@@ -1,6 +1,6 @@
 # Hook Parameter Calibration Guide
 
-Every parameter in LPAgentHookV8 is derived from first principles — equity, LTV, volatility, oracle source, and gas cost. Never copy parameters from another pool.
+Every parameter in [DynamicFeeAuctionHook](../contracts/src/DynamicFeeAuctionHook.sol) is derived from first principles — equity, LTV, volatility, oracle source, and gas cost. Never copy parameters from another pool.
 
 Run `scripts/calibrate-hook-params.ts` before every deployment or parameter update.
 
@@ -74,7 +74,7 @@ eq0 = xr + BX
 
 where `sx = sqrt(1 + r/(1-c))`, `R = 1 + r/(1-c)`, `v = cross-LTV`.
 
-See `DeployHookV8UsdcUsdt.s.sol:_computeEquilibrium()` for the full implementation.
+See [`DeployHookUSDCUSDT.s.sol:_computeEquilibrium()`](../contracts/script/DeployHookUSDCUSDT.s.sol) for the full implementation.
 
 ### 2.3 Variance Drain Viability
 
@@ -408,7 +408,7 @@ Target: equal value in both assets.
 
 ## 10. Parameter Quick Reference
 
-### AuctionConfig Struct (V8)
+### AuctionConfig Struct
 
 | Field | Type | Derivation | Volatile | Stable |
 |-------|------|-----------|----------|--------|

@@ -1,6 +1,8 @@
 # Rebalance Auction Design Notes
 
-Working document capturing the analysis and design reasoning for the next-generation rebalancing mechanism. Intended as a reference for developers and agents implementing the design.
+Working document capturing the analysis and design reasoning for the autonomous rebalancing mechanism shipped in [`DynamicFeeAuctionHook.sol`](../contracts/src/DynamicFeeAuctionHook.sol).
+
+> **Historical note:** earlier sections (≤21) discuss an "off-chain agent" that tunes parameters in real time. In the final V7 design (section 22), the full rebalance cycle — fee modulation, shift, auction, recenter, surcharge decay — runs **autonomously on-chain** from inside `afterSwap`. The pool owner can still update fee/auction/recenter/surcharge parameters at any time via `setFeeParams()` / `setAuctionParams()` / `setRecenterParams()` / `setSurchargeParams()`, but no off-chain loop is required for the core mechanism.
 
 ### Document structure
 
@@ -1052,7 +1054,7 @@ Pool's static params (vaults, assets, euler account) stay the same.
 
 Clean rebuild with three key improvements over V4: (1) continuous recentering on every exposure-reducing swap, (2) curvature-aware smart surcharge that provably prevents round-trip extraction through recenters, (3) exposure-sized auction shifts instead of fixed magnitudes. The NAV (deposits − debts) replaces gross deposits as the exposure denominator, fixing V6's ratio invariance problem.
 
-Contract: `contracts/src/LPAgentHookV7.sol`. Tests: `contracts/test/LPAgentHookV7.t.sol` (40 tests, 256-run fuzz tests).
+Contract: `contracts/src/DynamicFeeAuctionHook.sol`. Tests: `contracts/test/DynamicFeeAuctionHook.t.sol` (40 tests, 256-run fuzz tests).
 
 Pool sets `swapHookedOperations = GET_FEE | AFTER_SWAP` (0x06).
 

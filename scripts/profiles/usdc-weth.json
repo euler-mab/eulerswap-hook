@@ -1,0 +1,14 @@
+{
+  "name": "USDC/WETH",
+  "equity": 8000,
+  "eq0": 624000,
+  "eq1": 301,
+  "cx": 0,
+  "cy": 0,
+  "oracle": "v3",
+  "oracleFeeBps": 5,
+  "volatility": "moderate",
+  "annualVol": 0.70,
+  "auctionTriggerThreshold": 0.5,
+  "recenterRange": 0.05
+}

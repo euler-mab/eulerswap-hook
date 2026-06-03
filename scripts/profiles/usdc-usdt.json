@@ -1,0 +1,14 @@
+{
+  "name": "USDC/USDT",
+  "equity": 500,
+  "eq0": 247596387,
+  "eq1": 242338099,
+  "cx": 0,
+  "cy": 0,
+  "oracle": "v4",
+  "oracleFeeBps": 0.08,
+  "volatility": "stablecoin",
+  "annualVol": 0.0005,
+  "auctionTriggerThreshold": 0.5,
+  "recenterRange": 0.0001
+}

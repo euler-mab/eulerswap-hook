@@ -642,7 +642,7 @@ the hook just needs a different formula for how reserve displacement translates
 to deviation from the specific target.
 
 The continuous recenter is what makes the hook autonomous for retail-dominated
-pools. In the WETH/USDC pool, over 4 days of operation V7 performed 103
+pools. In the WETH/USDC pool, over 4 days of operation the hook performed 103
 recenters versus only 47 auctions — most deviation was cleared by natural flow.
 The auction is needed only when flow is persistently directional and deviation
 grows faster than retail flow can absorb it.
@@ -867,11 +867,10 @@ pools.
 
 For pools with significant carry (stablecoins with 5-15% APY), interest drift
 can be material over days or weeks (1-5% of NAV per week on stablecoin pools
-with $7-8k positions and $500 NAV). This exposure requires periodic external
-intervention — an agent or keeper that reads vault state directly and triggers
-a reconfigure if interest-driven exposure exceeds a threshold. The reserve-
-coordinate trigger is optimized for **swap-driven** exposure, which dominates
-in active pools.
+with $7-8k positions and $500 NAV). The reserve-coordinate trigger handles
+swap-driven exposure, which dominates in active pools; interest-driven drift
+in dormant pools would require an external keeper to call `reconfigure()`
+directly via the EVC. the hook's autonomous loop does not handle this case.
 
 ### 4c. Cooldown
 

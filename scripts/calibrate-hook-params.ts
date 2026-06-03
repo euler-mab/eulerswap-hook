@@ -1,28 +1,34 @@
 /**
- * Hook parameter calibration script (V8).
+ * Hook parameter calibration script.
  *
  * Derives auction, fee, surcharge, trigger, and timing parameters from first
  * principles for a specific pool's equity, virtual depth, and oracle source.
  *
- * V8 changes from V7:
- *   - σ₁ explicit derivation from annual vol (D ≈ σ₁)
- *   - k parameter computation (startingFee = premium + k × D)
- *   - Reserve-based clearThreshold (fraction, not price bps)
- *   - auctionTimeout, minAuctionInterval, maxSnapshotInterval
- *   - Oracle guard multiplier (g)
- *   - Prints V8-ready AuctionConfig struct output
+ * Output matches DynamicFeeAuctionHook's FeeConfig and AuctionConfig structs so the
+ * printed values can be pasted directly into a deploy script.
  *
  * Usage:
+ *   # Run all profiles in scripts/profiles/
  *   npx tsx scripts/calibrate-hook-params.ts
  *
- * This script should be run BEFORE every hook deployment or parameter update
- * to verify all values are appropriate for the target pool.
+ *   # Run a single profile
+ *   npx tsx scripts/calibrate-hook-params.ts profiles/my-pool.json
+ *
+ *   # Single profile + emit env vars ready to paste into a shell before
+ *   # running contracts/script/DeployHook.s.sol
+ *   npx tsx scripts/calibrate-hook-params.ts profiles/my-pool.json --env
+ *
+ * Run BEFORE every hook deployment or parameter update to verify all values
+ * are appropriate for the target pool.
  */
+
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 const WAD = 10n ** 18n;
 const BLOCKS_PER_YEAR = 2_628_000; // ~12s blocks
 
-// ─── Pool configurations ───────────────────────────────────────────────
+// ─── Pool profile ──────────────────────────────────────────────────────
 
 interface PoolProfile {
   name: string;
@@ -50,36 +56,82 @@ interface PoolProfile {
   recenterRange: number;
 }
 
-const pools: PoolProfile[] = [
-  {
-    name: "USDC/WETH",
-    equity: 8_000,
-    eq0: 624_000,
-    eq1: 301,
-    cx: 0,
-    cy: 0,
-    oracle: "v3",
-    oracleFeeBps: 5,
-    volatility: "moderate",
-    annualVol: 0.70, // 70%
-    auctionTriggerThreshold: 0.5, // 50%
-    recenterRange: 0.05, // 5% = 500 bps
-  },
-  {
-    name: "USDC/USDT",
-    equity: 500,
-    eq0: 247_596_387,
-    eq1: 242_338_099,
-    cx: 0,
-    cy: 0,
-    oracle: "v4",
-    oracleFeeBps: 0.08,
-    volatility: "stablecoin",
-    annualVol: 0.0005, // 0.05%
-    auctionTriggerThreshold: 0.5, // 50%
-    recenterRange: 0.0001, // 1 bps
-  },
-];
+// ─── Profile loading + validation ──────────────────────────────────────
+
+function validateProfile(raw: unknown, source: string): PoolProfile {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error(`${source}: profile must be a JSON object`);
+  }
+  const r = raw as Record<string, unknown>;
+
+  const requireType = (key: string, type: "string" | "number") => {
+    if (!(key in r)) throw new Error(`${source}: missing required field "${key}"`);
+    if (typeof r[key] !== type) {
+      throw new Error(`${source}: field "${key}" must be ${type}, got ${typeof r[key]}`);
+    }
+  };
+
+  requireType("name", "string");
+  requireType("equity", "number");
+  requireType("eq0", "number");
+  requireType("eq1", "number");
+  requireType("cx", "number");
+  requireType("cy", "number");
+  requireType("oracle", "string");
+  requireType("oracleFeeBps", "number");
+  requireType("volatility", "string");
+  requireType("annualVol", "number");
+  requireType("auctionTriggerThreshold", "number");
+  requireType("recenterRange", "number");
+
+  if (r.oracle !== "v3" && r.oracle !== "v4") {
+    throw new Error(`${source}: field "oracle" must be "v3" or "v4", got "${r.oracle}"`);
+  }
+  if (r.volatility !== "stablecoin" && r.volatility !== "moderate" && r.volatility !== "high") {
+    throw new Error(
+      `${source}: field "volatility" must be "stablecoin", "moderate", or "high", got "${r.volatility}"`,
+    );
+  }
+
+  for (const key of ["equity", "eq0", "eq1", "annualVol", "auctionTriggerThreshold", "recenterRange"]) {
+    if ((r[key] as number) <= 0) {
+      throw new Error(`${source}: field "${key}" must be > 0`);
+    }
+  }
+  for (const key of ["cx", "cy"]) {
+    const v = r[key] as number;
+    if (v < 0 || v > 1) throw new Error(`${source}: field "${key}" must be in [0, 1]`);
+  }
+
+  return r as unknown as PoolProfile;
+}
+
+function loadProfile(filePath: string): PoolProfile {
+  const abs = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+  if (!fs.existsSync(abs)) {
+    throw new Error(`Profile file not found: ${abs}`);
+  }
+  const raw = JSON.parse(fs.readFileSync(abs, "utf8"));
+  return validateProfile(raw, abs);
+}
+
+function loadAllProfiles(): { profile: PoolProfile; source: string }[] {
+  const dir = path.resolve(__dirname, "profiles");
+  if (!fs.existsSync(dir)) {
+    throw new Error(`Profiles directory not found: ${dir}`);
+  }
+  const files = fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith(".json"))
+    .sort();
+  if (files.length === 0) {
+    throw new Error(`No .json profiles found in ${dir}`);
+  }
+  return files.map((f) => {
+    const full = path.join(dir, f);
+    return { profile: loadProfile(full), source: full };
+  });
+}
 
 // ─── Oracle noise estimates ────────────────────────────────────────────
 
@@ -96,13 +148,34 @@ function estimateOracleNoise(pool: PoolProfile): number {
 
 // ─── Calibration ───────────────────────────────────────────────────────
 
-function calibrate(pool: PoolProfile) {
+interface CalibrationResult {
+  // FeeConfig (WAD)
+  baseFeeWad: bigint;
+  maxFeeWad: bigint;
+  gasCoeffWad: bigint;
+  externalFeeWad: bigint;
+  captureRateWad: bigint;
+  attractRateWad: bigint;
+  // AuctionConfig (WAD / blocks)
+  decayPerBlockWad: bigint;
+  auctionTriggerThresholdWad: bigint;
+  clearThresholdWad: bigint;
+  maxShiftMagnitudeWad: bigint;
+  minAuctionBlocks: number;
+  recenterRangeWad: bigint;
+  maxRecenterDriftWad: bigint;
+  minRecenterDeltaWad: bigint;
+  surchargeDecayPerBlockWad: bigint;
+  surchargeMultiplierWad: bigint;
+  deploySurchargeWad: bigint;
+}
+
+function calibrate(pool: PoolProfile): CalibrationResult {
   console.log(`\n${"=".repeat(70)}`);
-  console.log(`  ${pool.name} — V8 Hook Parameter Calibration`);
+  console.log(`  ${pool.name} — Hook Parameter Calibration`);
   console.log(`${"=".repeat(70)}\n`);
 
   const leverage = pool.eq0 / pool.equity;
-  const priceSensitivityPerDollar = 2 / pool.eq0;
 
   // ── σ₁ derivation ─────────────────────────────────────────────────
   const sigma1 = pool.annualVol / Math.sqrt(BLOCKS_PER_YEAR);
@@ -151,10 +224,23 @@ function calibrate(pool: PoolProfile) {
   console.log(`  As % of pool depth: ${triggerExposureBps.toFixed(4)} bps`);
   console.log();
 
-  // ── Clear threshold (V8: reserve-based, not price-based) ──────────
-  // V8 uses fraction of clearing amount remaining (0.1 = 10% remaining = 90% cleared)
-  const clearThresholdFraction = 0.1; // 10% remaining
-  const clearThresholdWad = BigInt(Math.round(clearThresholdFraction * 1e18));
+  // ── Max shift magnitude (cap on per-auction priceY shift) ──────────
+  // Sized per volatility class to match existing deployments. Floored to
+  // a generous multiple of the "typical" exposure-sized shift so the cap
+  // only saturates for unusually large exposures.
+  let maxShiftMagnitudeBps: number;
+  if (pool.volatility === "stablecoin") maxShiftMagnitudeBps = 1; // 1 bps
+  else if (pool.volatility === "moderate") maxShiftMagnitudeBps = 150; // 1.5%
+  else maxShiftMagnitudeBps = 250; // 2.5%
+  const maxShiftMagnitudeWad = BigInt(Math.round(maxShiftMagnitudeBps * 1e14));
+
+  // ── Clear threshold ─────────────────────────────────────────────────
+  // Price-convergence metric: |marginalPrice - oraclePrice| / oraclePrice.
+  // Hook invariant: clearThreshold < maxShiftMagnitude (otherwise auction
+  // would clear on the very first swap). Use 1/3 of maxShift so the arb
+  // has been mostly consumed before clearing is permitted.
+  const clearThresholdBps = maxShiftMagnitudeBps / 3;
+  const clearThresholdWad = BigInt(Math.round(clearThresholdBps * 1e14));
 
   // ── Min auction blocks ─────────────────────────────────────────────
   // startingFee / D / 2 ≈ (k*D + premium) / D / 2 ≈ k/2 + premium/(2*D)
@@ -188,7 +274,7 @@ function calibrate(pool: PoolProfile) {
   console.log(`  minAuctionBlocks:  ${minAuctionBlocks}`);
   console.log(`  minAuctionInterval: ${minAuctionInterval} (cooldown)`);
   console.log(`  auctionTimeout:    ${auctionTimeout}`);
-  console.log(`  clearThreshold:    ${clearThresholdFraction * 100}% remaining (${clearThresholdWad})`);
+  console.log(`  clearThreshold:    ${clearThresholdBps.toFixed(4)} bps (${clearThresholdWad})`);
   console.log();
 
   console.log("Oracle guard (g=3):");
@@ -263,13 +349,21 @@ function calibrate(pool: PoolProfile) {
   else minRecenterDeltaBps = 0;
 
   // ═══════════════════════════════════════════════════════════════════
-  // V8 AuctionConfig output
+  // AuctionConfig output
   // ═══════════════════════════════════════════════════════════════════
 
+  const auctionTriggerThresholdWad = BigInt(Math.round(pool.auctionTriggerThreshold * 1e18));
+  const recenterRangeWad = BigInt(Math.round(pool.recenterRange * 1e18));
+  const maxRecenterDriftWad = BigInt(Math.round(maxRecenterDriftBps * 1e14));
+  const minRecenterDeltaWad = BigInt(Math.round(minRecenterDeltaBps * 1e14));
+  const captureRateWad = BigInt(Math.round(captureRate * 1e18));
+  const attractRateWad = BigInt(Math.round(attractRate * 1e18));
+  const surchargeMultiplierWad = BigInt(Math.round(surchargeMultiplier * 1e18));
+
   console.log("─".repeat(70));
-  console.log("V8 AuctionConfig struct values:");
+  console.log("AuctionConfig struct values:");
   console.log(`  decayPerBlock:          ${decayPerBlockWad}`);
-  console.log(`  auctionTriggerThreshold: ${BigInt(Math.round(pool.auctionTriggerThreshold * 1e18))}`);
+  console.log(`  auctionTriggerThreshold: ${auctionTriggerThresholdWad}`);
   console.log(`  clearThreshold:         ${clearThresholdWad}`);
   console.log(`  minAuctionBlocks:       ${minAuctionBlocks}`);
   console.log(`  minAuctionInterval:     ${minAuctionInterval}`);
@@ -277,20 +371,21 @@ function calibrate(pool: PoolProfile) {
   console.log(`  kMarginBlocks:          ${kMarginBlocks}`);
   console.log(`  oracleGuardMultiplier:  ${BigInt(Math.round(oracleGuardMultiplier * 1e18))}`);
   console.log(`  maxSnapshotInterval:    ${maxSnapshotInterval}`);
-  console.log(`  recenterRange:          ${BigInt(Math.round(pool.recenterRange * 1e18))}`);
-  console.log(`  maxRecenterDrift:       ${BigInt(Math.round(maxRecenterDriftBps * 1e14))}`);
-  console.log(`  minRecenterDelta:       ${BigInt(Math.round(minRecenterDeltaBps * 1e14))}`);
+  console.log(`  recenterRange:          ${recenterRangeWad}`);
+  console.log(`  maxRecenterDrift:       ${maxRecenterDriftWad}`);
+  console.log(`  minRecenterDelta:       ${minRecenterDeltaWad}`);
   console.log(`  surchargeDecayPerBlock: ${surchargeDecayWad}`);
-  console.log(`  surchargeMultiplier:    ${BigInt(Math.round(surchargeMultiplier * 1e18))}`);
+  console.log(`  surchargeMultiplier:    ${surchargeMultiplierWad}`);
   console.log(`  deploySurcharge:        ${deploySurchargeWad}`);
+  console.log(`  maxShiftMagnitude:      ${maxShiftMagnitudeWad} (${maxShiftMagnitudeBps} bps)`);
   console.log();
-  console.log("V8 FeeConfig struct values:");
+  console.log("FeeConfig struct values:");
   console.log(`  baseFee:     ${baseFeeWad}`);
   console.log(`  maxFee:      ${maxFeeWad}`);
   console.log(`  gasCoeff:    ${gasCoeffWad}`);
   console.log(`  externalFee: ${externalFeeWad}`);
-  console.log(`  captureRate: ${BigInt(Math.round(captureRate * 1e18))}`);
-  console.log(`  attractRate: ${BigInt(Math.round(attractRate * 1e18))}`);
+  console.log(`  captureRate: ${captureRateWad}`);
+  console.log(`  attractRate: ${attractRateWad}`);
   console.log("─".repeat(70));
 
   // ── Validation checks ──────────────────────────────────────────────
@@ -344,6 +439,11 @@ function calibrate(pool: PoolProfile) {
       pass: halfLifeDays > 30,
       detail: `${halfLifeDays.toFixed(0)} days`,
     },
+    {
+      name: "clearThreshold < maxShiftMagnitude (hook invariant)",
+      pass: clearThresholdWad < maxShiftMagnitudeWad,
+      detail: `${clearThresholdWad} < ${maxShiftMagnitudeWad}`,
+    },
   ];
 
   let allPass = true;
@@ -358,10 +458,89 @@ function calibrate(pool: PoolProfile) {
   } else {
     console.log("\n  All checks passed ✓");
   }
+
+  return {
+    baseFeeWad,
+    maxFeeWad,
+    gasCoeffWad,
+    externalFeeWad,
+    captureRateWad,
+    attractRateWad,
+    decayPerBlockWad,
+    auctionTriggerThresholdWad,
+    clearThresholdWad,
+    maxShiftMagnitudeWad,
+    minAuctionBlocks,
+    recenterRangeWad,
+    maxRecenterDriftWad,
+    minRecenterDeltaWad,
+    surchargeDecayPerBlockWad: surchargeDecayWad,
+    surchargeMultiplierWad,
+    deploySurchargeWad,
+  };
 }
 
-// ─── Run ───────────────────────────────────────────────────────────────
+// ─── Env-var emitter ───────────────────────────────────────────────────
 
-for (const pool of pools) {
-  calibrate(pool);
+function emitEnvBlock(pool: PoolProfile, r: CalibrationResult): void {
+  console.log();
+  console.log("# ─── Paste into your shell, then run DeployHook.s.sol ──────────────");
+  console.log(`# Profile: ${pool.name}`);
+  // FeeConfig
+  console.log(`BASE_FEE=${r.baseFeeWad}`);
+  console.log(`MAX_FEE=${r.maxFeeWad}`);
+  console.log(`GAS_COEFF=${r.gasCoeffWad}`);
+  console.log(`EXTERNAL_FEE=${r.externalFeeWad}`);
+  console.log(`CAPTURE_RATE=${r.captureRateWad}`);
+  console.log(`ATTRACT_RATE=${r.attractRateWad}`);
+  // AuctionConfig
+  console.log(`DECAY_PER_BLOCK=${r.decayPerBlockWad}`);
+  console.log(`AUCTION_TRIGGER_THRESHOLD=${r.auctionTriggerThresholdWad}`);
+  console.log(`CLEAR_THRESHOLD=${r.clearThresholdWad}`);
+  console.log(`MAX_SHIFT_MAGNITUDE=${r.maxShiftMagnitudeWad}`);
+  console.log(`MIN_AUCTION_BLOCKS=${r.minAuctionBlocks}`);
+  console.log(`RECENTER_RANGE=${r.recenterRangeWad}`);
+  console.log(`MAX_RECENTER_DRIFT=${r.maxRecenterDriftWad}`);
+  console.log(`MIN_RECENTER_DELTA=${r.minRecenterDeltaWad}`);
+  console.log(`SURCHARGE_DECAY_PER_BLOCK=${r.surchargeDecayPerBlockWad}`);
+  console.log(`SURCHARGE_MULTIPLIER=${r.surchargeMultiplierWad}`);
+  console.log(`DEPLOY_SURCHARGE=${r.deploySurchargeWad}`);
 }
+
+// ─── Entry point ───────────────────────────────────────────────────────
+
+function main(): void {
+  const argv = process.argv.slice(2);
+  const wantEnv = argv.includes("--env");
+  const positional = argv.filter((a) => !a.startsWith("--"));
+
+  let runs: { profile: PoolProfile; source: string }[];
+  if (positional.length === 0) {
+    runs = loadAllProfiles();
+  } else if (positional.length === 1) {
+    const source = positional[0];
+    runs = [{ profile: loadProfile(source), source }];
+  } else {
+    throw new Error(
+      `Expected 0 or 1 profile path arguments, got ${positional.length}: ${positional.join(" ")}`,
+    );
+  }
+
+  const results: { profile: PoolProfile; result: CalibrationResult }[] = [];
+  for (const { profile } of runs) {
+    results.push({ profile, result: calibrate(profile) });
+  }
+
+  if (wantEnv) {
+    if (results.length !== 1) {
+      console.log();
+      console.log(
+        "⚠ --env requires exactly one profile (got " + results.length + "). Re-run with a single profile path.",
+      );
+    } else {
+      emitEnvBlock(results[0].profile, results[0].result);
+    }
+  }
+}
+
+main();

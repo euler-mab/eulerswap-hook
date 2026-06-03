@@ -5,14 +5,11 @@ A practical playbook for choosing optimal parameters when deploying a new EulerS
 **Pre-requisites:** Basic familiarity with AMMs, Euler vaults, and the EVC.
 
 **Related docs** (referenced throughout, not duplicated):
-- [`contracts/src/DYNAMIC_FEE_MODEL.md`](../contracts/src/DYNAMIC_FEE_MODEL.md) -- Full fee formula spec
+- [`docs/dynamic-fee-model.md`](dynamic-fee-model.md) -- Full fee formula spec
 - [`docs/additive-boost-derivation.md`](additive-boost-derivation.md) -- Boost math (BX/BY formulas)
-- [`docs/debt-management.md`](debt-management.md) -- Auction mechanism design
-- [`docs/hookv2-deployment.md`](hookv2-deployment.md) -- V2 deployment walkthrough
-- [`docs/hookv3-design.md`](hookv3-design.md) -- V3 exposure-based triggers
-- [`agent/REBALANCING_STRATEGY.md`](../agent/REBALANCING_STRATEGY.md) -- Interest-rate rebalancing
-- [`contracts/src/TWAP_RECENTERING.md`](../contracts/src/TWAP_RECENTERING.md) -- TWAP manipulation costs
-- [`agent/docs/swap-gas-costs.md`](../agent/docs/swap-gas-costs.md) -- Gas cost breakdown
+- [`docs/rebalance-auction-design.md`](rebalance-auction-design.md) -- Auction mechanism design
+- [`docs/calibration-guide.md`](calibration-guide.md) -- Per-parameter derivation
+- [`docs/per-lp-architecture.md`](per-lp-architecture.md) -- Why each Euler account is its own AMM
 
 ---
 
@@ -167,11 +164,11 @@ In order of importance:
 
 **Two-sided:** Deposit both assets. Less initial leverage but a buffer before debt appears.
 
-For volatile pairs (USDC/WETH), one-sided USDC is preferred -- it eliminates price exposure at equilibrium. See [`REBALANCING_STRATEGY.md`](../agent/REBALANCING_STRATEGY.md) for the rationale.
+For volatile pairs (USDC/WETH), one-sided USDC is preferred -- it eliminates price exposure at equilibrium.
 
 ### 4.4 Worked Example: USDC/WETH
 
-Inputs (from [`BoostReconfigure.s.sol`](../contracts/script/BoostReconfigure.s.sol)):
+Inputs (matching the live USDC/WETH pool, see [`BoostPool.s.sol`](../contracts/script/BoostPool.s.sol)):
 ```
 xr = 3611 USDC,  yr = 0.000394 WETH
 xd = 0,          yd = 0.32 WETH
@@ -191,7 +188,7 @@ x0 = 3611 + 710,746 = 714,357 USDC  (~198x leverage)
 
 Health at boundary: H_XX = 1.000 (barely solvent, by design).
 
-The [`BoostReconfigure.s.sol`](../contracts/script/BoostReconfigure.s.sol) script uses the TypeScript `math.ts` to compute these values and the Forge script to execute the reconfiguration on-chain.
+[`BoostPool.s.sol`](../contracts/script/BoostPool.s.sol) computes these values from current vault state and reconfigures the pool on-chain in a single transaction.
 
 ---
 
@@ -233,12 +230,12 @@ uint112 min0 = uint112(uint256(EQ0) * SQRT101_DEN / SQRT101_NUM);  // eq0 / sqrt
 
 ### 5.3 Asymmetric Min Reserves
 
-After a debt auction or rebalance, the pool may not be centered. The V2 hook's `_restorePreAuctionParams` uses asymmetric min reserves:
+After an auction or rebalance, the pool may not be centered. Asymmetric min reserves can give the depleted side room to recover:
 
-- **Depleted side:** Wider range (`reserve × (1 - 2×delta)`) to give the side room to recover
+- **Depleted side:** Wider range (`reserve × (1 - 2×delta)`)
 - **Attracted side:** Keeps pre-auction min reserve
 
-See [`hookv3-design.md`](hookv3-design.md) for the exposure-relative boundary placement that V3 will use.
+In the current hook, recentering after auction sets `eq = current reserves` directly — the boundary follows the new equilibrium without an explicit asymmetric step.
 
 ---
 
@@ -267,13 +264,11 @@ When the pool's `priceX/priceY` drifts from market:
 
 ### 6.3 Recentering
 
-Two approaches:
+In the current hook, recentering is **autonomous** — [`DynamicFeeAuctionHook`](../contracts/src/DynamicFeeAuctionHook.sol) calls `reconfigure()` from inside `afterSwap` whenever a swap reduces exposure beyond `minRecenterDelta`. The hook updates `priceY`, sets `eq = current reserves`, and recomputes `minReserves`, then applies a curvature-aware surcharge that decays to zero.
 
-1. **Price-only recenter** (`RecenterPool.s.sol`): Updates `priceY`, sets `eq = current reserves`, recomputes `minReserves`. No trading.
+If exposure exceeds `auctionTriggerThreshold` and no rebalancing flow appears, the hook shifts the equilibrium price to create a profitable arb and starts a Dutch fee-decay auction. The clearing trade is itself the rebalance — no external venue, no slippage cost.
 
-2. **Rebalance** (`agent/src/rebalance.ts`): Sells overweight asset via DEX, repays vault debt, then recenters. Use when significant debt has accumulated.
-
-After recentering, `gasCoeff` should also be updated if equilibrium reserves changed significantly (it depends on pool depth).
+`gasCoeff` is owner-updatable post-deploy; revisit it if your pool's equilibrium depth changes materially.
 
 ---
 
@@ -309,7 +304,7 @@ In practice, c=0 with a tight range (`rx = 0.005-0.01`) achieves similar depth c
 
 ## 8. Hook Fee Parameters
 
-The core of the dynamic fee strategy. See [`DYNAMIC_FEE_MODEL.md`](../contracts/src/DYNAMIC_FEE_MODEL.md) for the complete formula.
+The core of the dynamic fee strategy. See [`dynamic-fee-model.md`](dynamic-fee-model.md) for the complete formula.
 
 ### 8.1 Overview
 
@@ -414,53 +409,44 @@ Prevents extreme fees during volatility spikes.
 
 ---
 
-## 9. Auction Parameters (V2+ Hooks)
+## 9. Auction Parameters
 
-Debt auctions allow the pool to autonomously repay vault debt by temporarily shifting its price off-market to attract arbers who bring in the needed asset. See [`debt-management.md`](debt-management.md) for the full design.
+Dutch fee-decay auctions let the pool autonomously rebalance directional exposure by temporarily shifting `priceY` to expose an arb, then decaying the fee block-by-block until a swap clears it. See [`auction-walkthrough.md`](auction-walkthrough.md) for a step-by-step trace and [`rebalance-auction-design.md`](rebalance-auction-design.md) for the design rationale.
 
-### 9.1 When to Use Auctions
+### 9.1 When auctions run
 
-Only relevant for V2+ hooks with `afterSwap` support (`swapHookedOperations = 6`).
+Only relevant if your hook implements `afterSwap` (`swapHookedOperations` includes `EULER_SWAP_HOOK_AFTER_SWAP`, e.g. `0x06`).
 
-- No hook or getFee-only hook: Debt managed by agent direct swap
-- V2+ hook with afterSwap: Configure auction params (can be disabled by setting thresholds to 0)
+- **No hook or [`MinimalHook`](../contracts/src/MinimalHook.sol)**: no auctions. Rebalancing requires an off-chain operator to call `reconfigure()` via the EVC.
+- **[`DynamicFeeAuctionHook`](../contracts/src/DynamicFeeAuctionHook.sol)**: auctions run automatically. Set `auctionTriggerThreshold` to 0 to effectively disable them while keeping the continuous-recenter loop active.
 
-### 9.2 Threshold Selection
+### 9.2 `auctionTriggerThreshold` (WAD)
 
-**V2 (absolute thresholds):**
-- `threshold0`: Reserve0 level below which asset0 debt triggers an auction. Set just above the reserve level where debt becomes meaningful.
-- `threshold1`: Same for asset1.
-- Set to 0 to disable a side.
+NAV-relative exposure threshold above which an auction starts. e.g. `0.5e18` = 50% of NAV.
 
-Current USDC/WETH deployment:
-```
-threshold0: 0                    (disabled)
-threshold1: 321.5 WETH           (just above reserve1, triggers on any WETH debt)
-```
+Calibration: pick this from the equity vs. expected per-block flow trade-off. Tighter triggers rebalance more often but at higher accumulated surcharge cost; looser triggers leave more directional exposure on the book between auctions. Stablecoin pools tolerate looser triggers (low IL risk); volatile pools should be tighter.
 
-**V3 (exposure-relative, future):** Uses `triggerBps` as a fraction of NAV instead of absolute reserve levels. See [`hookv3-design.md`](hookv3-design.md).
+### 9.3 `maxShiftMagnitude` (WAD)
 
-### 9.3 delta (Off-Market Shift)
-
-How far to shift the pool price during an auction. Larger delta = faster clearing but higher LP cost.
+Cap on how far `priceY` can be shifted in a single auction. Bigger shifts clear more exposure per cycle but pay more if the auction times out.
 
 ```
-Auction LP cost ≈ x0 × delta^2 / 4
+auction LP cost ≈ x0 × shift² / 4    (small-shift approximation)
 ```
 
-The delta must be large enough for arbers to profit:
+The shift must be large enough for arbers to profit:
 ```
-delta > 2 × (externalFee + gas/notional)
+shift > 2 × (externalFee + gas/notional)
 ```
 
-**Current value:** 100 bps for USDC/WETH.
+### 9.4 `decayPerBlock` and `clearThreshold`
 
-### 9.4 startFee and decayPerSecond
+- **`decayPerBlock`** (WAD): how fast the auction fee falls. Typical values are tied to the asset's per-block volatility (σ₁); the calibration script outputs a reasonable default.
+- **`clearThreshold`** (WAD): the marginal-price-vs-oracle distance within which the auction is considered cleared. Must be strictly less than `maxShiftMagnitude` — the hook enforces this.
 
-- **`startFee`:** 200 bps. Must exceed `delta/2` so the auction starts with no taker (fee decays into profitability).
-- **`decayPerSecond`:** 1 bps/sec (= 12 bps per Ethereum block at 12s block time).
+### 9.5 `minAuctionBlocks`
 
-The first USDC/WETH auction cleared in 14 blocks (168 seconds), fully repaying 0.7117 WETH of debt. See [`hookv2-deployment.md`](hookv2-deployment.md) for the swap-by-swap data.
+Floor on auction duration before clearing is allowed. Prevents the auction from clearing on the very first swap before the fee has had time to decay below the shift's profit ceiling.
 
 ---
 
@@ -482,7 +468,7 @@ The first USDC/WETH auction cleared in 14 blocks (168 seconds), fully repaying 0
 | captureRate | 80% | Standard |
 | attractRate | 30% | Standard |
 | externalFee | 5 bps | Uni V3 0.05% fee |
-| Hook | LPAgentHookV2 | GET_FEE + AFTER_SWAP |
+| Hook | `DynamicFeeAuctionHook` | `GET_FEE \| AFTER_SWAP` (`0x06`) |
 
 ### 10.2 Scenario: ETH Drops 2%
 
@@ -497,17 +483,18 @@ Walk through the fee logic when price moves:
 7. **Attract fee:** `5 + 0.3 × (200 - 13) = 61 bps`
 8. **Arber trades**, capturing 20% of 177 bps = 35 bps profit
 9. **Reserves move** back toward equilibrium
-10. **Agent recenters** periodically to update priceY
+10. **Hook recenters automatically** from `afterSwap`, with curvature-aware surcharge to prevent round-trip extraction
 
 ### 10.3 Monitoring Triggers
 
+Most maintenance via this hook is autonomous. Owner intervention is reserved for:
+
 | Signal | Action |
 |--------|--------|
-| Pool priceY > 50 bps stale | Recenter (`RecenterPool.s.sol`) |
-| Vault debt > 1% of NAV | Consider rebalance (`rebalance.ts`) |
-| Gas price sustained > 5 gwei | No action needed -- gasCoeff handles automatically |
-| Vault utilization > 85% | Adjust fee asymmetry per [`REBALANCING_STRATEGY.md`](../agent/REBALANCING_STRATEGY.md) |
-| After BoostReconfigure | Update gasCoeff (depends on eq reserves) |
+| Persistent exposure not clearing via auction | Inspect `auctionTriggerThreshold` / `maxShiftMagnitude`; update via `setAuctionParams()` |
+| Gas regime change (e.g. mainnet → L2) | Update `gasCoeff` via `setFeeParams()` |
+| Equity changed materially after capital add/withdraw | Re-run `calibrate-hook-params.ts`; update fee + auction params if needed |
+| Vault utilization > 85% | Add capital via [`AddCapital.s.sol`](../contracts/script/AddCapital.s.sol) or reduce pool depth |
 
 ---
 
@@ -545,11 +532,10 @@ The pool's fee is 100-1000x above the market clearing price. No rational trader 
 
 2. **gasCoeff is huge relative to mismatch.** The pool is small in ETH terms (~$7k virtual reserves ≈ 1.26 ETH), so the no-arb zone is massive (195 bps at 0.4 gwei). Almost every swap pays just baseFee. This makes the dynamic fee formula irrelevant -- everything is below threshold.
 
-3. **Interest rate risk dominates.** For stablecoins, the primary risk isn't IL but the carry cost of vault borrowing. See [`REBALANCING_STRATEGY.md`](../agent/REBALANCING_STRATEGY.md) for the four-layer interest-rate-aware strategy:
-   - Layer 1: Reserve-imbalance fee asymmetry (hook, gas-free)
-   - Layer 2: Interest-rate-aware fee scaling (agent)
-   - Layer 3: Equilibrium shift (agent reconfigure)
-   - Layer 4: Concentration reduction (emergency)
+3. **Interest rate risk dominates.** For stablecoins, the primary risk isn't IL but the carry cost of vault borrowing. The hook addresses this in three layers:
+   - **Routing-aware fee asymmetry** — attract flow that reduces directional exposure, capture flow that increases it
+   - **Dutch fee auctions** — when relative exposure exceeds `auctionTriggerThreshold`, shift equilibrium to create a profitable arb and decay the fee until cleared
+   - **Owner re-tuning** — `setFeeParams()` / `setAuctionParams()` to bump baseFee or thresholds when the rate environment changes
 
 4. **Range can be very narrow.** A 5 bps range (`rx = 0.0005`) would give ~2000x concentration. But tighter ranges require more frequent recentering.
 
@@ -575,25 +561,23 @@ This is a fundamental constraint for leveraged stablecoin AMMs -- the fee revenu
 
 | Parameter | Frequency | Trigger | How |
 |-----------|-----------|---------|-----|
-| `priceY` | Hours to days | Price drift > no-arb zone | `RecenterPool.s.sol` or agent |
-| `eq0/eq1` | After rebalance | Debt repaid, fresh vault state | `BoostReconfigure.s.sol` |
-| `min0/min1` | With eq changes | Always derived from eq | `eq / sqrt(1 + rx)` |
-| `gasCoeff` | After eq changes | Pool depth changed | `2e18 × sqrt(gasUnits × 2 / eqWei)` |
-| `baseFee` | Rarely | Competing venue fees change | `setFeeParams()` |
-| `captureRate/attractRate` | Rarely | Strategy change | `setFeeParams()` |
-| Auction thresholds | After reconfigure | eq changed, thresholds stale | `setAuctionParams()` |
+| `priceY` | Every recenter | Swap reduces exposure beyond `minRecenterDelta` | Hook's `afterSwap` calls `reconfigure()` |
+| `eq0/eq1` | Every recenter | Set to current reserves at recenter | Hook's `afterSwap` calls `reconfigure()` |
+| `min0/min1` | With eq changes | Always derived from eq | `eq / sqrt(1 + recenterRange)` |
+| `gasCoeff` | After eq changes | Pool depth changed materially | `setFeeParams()` (owner) |
+| `baseFee` | Rarely | Competing venue fees change | `setFeeParams()` (owner) |
+| `captureRate / attractRate` | Rarely | Strategy change | `setFeeParams()` (owner) |
+| Auction thresholds | After eq changes | Calibration drift | `setAuctionParams()` (owner) |
 
 ### 12.2 The Recenter-Rebalance-Reboost Cycle
 
-The full maintenance cycle:
+The full maintenance cycle is autonomous in this hook:
 
-1. **Monitor** -- Agent watches price drift, vault debt, utilization
-2. **Recenter** -- When price drifts beyond gasCoeff threshold, update priceY and set eq=reserves
-3. **Rebalance** -- When debt exceeds NAV threshold, sell overweight asset via DEX, repay debt
-4. **Reboost** -- From clean state (no debt), recompute additive boost with fresh vault state
-5. **Update hook** -- If eq changed significantly, update gasCoeff via `setFeeParams()`
-
-Each step has a script: `RecenterPool.s.sol`, `agent/src/rebalance.ts`, `BoostReconfigure.s.sol`.
+1. **Monitor** -- The hook caches NAV and net base-asset position at every recenter and tracks deltas via swap amounts; no off-chain monitor required.
+2. **Recenter** -- On every swap that reduces exposure beyond `minRecenterDelta`, the hook updates `priceY` and sets `eq = current reserves` from inside `afterSwap`.
+3. **Auction-rebalance** -- When relative exposure exceeds `auctionTriggerThreshold`, the hook shifts the equilibrium price to create a profitable arb and starts a Dutch fee-decay auction; the clearing swap is the rebalance.
+4. **Curvature surcharge** -- Each recenter installs an additive surcharge sized to the curvature bonus it creates, decaying block-by-block to prevent round-trip extraction.
+5. **Parameter updates** -- The owner can update fee, auction, recenter, and surcharge parameters via `setFeeParams()` / `setAuctionParams()` / etc. without redeploying the hook.
 
 ---
 
