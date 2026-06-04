@@ -44,16 +44,19 @@ Mechanisms 1–4 are autonomous; #5 is a permissionless add-on a pool operator c
 
 A single deployed pool on Ethereum mainnet, running mechanisms 1–4 (`builderFee` not enabled):
 
+A small proof-of-principle pool. **This is not "look at the returns" — it's "look, the mechanism works on real money."**
+
 | | USDC/USDT |
 |---|---|
 | Pool | [`0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8) |
 | Hook | [`0x99b97FD05b4F943899358F90855C0BEE34584e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41) |
-| LP equity (NAV) | **~$489** |
-| Volume (7d avg) | **~$46k/day** (bursty: $0 – $100k) |
-| Daily turnover (7d avg) | **~95×** |
-| Lifetime volume | ~$810k (187 swaps over ~90 days) |
+| LP equity (NAV) | ~$483 (started at $501) |
+| **P&L since live (~90 days)** | **-$18 (-3.6%)** |
+| Lifetime fees collected | $24 |
+| Volume | ~$810k cumulative (187 swaps), 7-day average $46k/day, bursty $0–$100k+ |
+| Auction cycles | 52+ started, all clearing |
 
-Per-trade capacity is order $10k (bounded by collateral × LTV); the curve's virtual reserves of $247M / $242M tighten slippage *within* that capacity to near-1:1. The interesting number isn't depth — it's turnover: ~95× equity per day on average, because the auction mechanic recycles inventory many times when flow is active. Volume is **bursty** — heavy days ($100k+) when aggregators route through, quiet days near zero when they don't. P&L runs slightly negative in quiet stretches (borrow carry exceeds fees) and recovers on busy days; current snapshot is -$12 over ~90 days. Full breakdown in [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md).
+The pool runs at a small loss: borrow carry on the directional leg outpaces swap-fee revenue on quiet days, and the busy days don't fully make it up at this NAV. $500 is a proof-of-concept size — too small to be profitable in absolute terms, but enough to demonstrate that the mechanism runs autonomously on real on-chain flow. Per-trade capacity is order $10k (bounded by collateral × LTV); the curve's virtual reserves of $247M / $242M tighten slippage *within* that capacity to near-1:1. Full breakdown in [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md), including honest discussion of where the mechanism would and wouldn't scale.
 
 ---
 

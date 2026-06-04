@@ -43,8 +43,8 @@ MAINNET_RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 |---|---|
 | `contracts/src/DynamicFeeAuctionHook.sol` | The production hook (~1000 lines, single contract) |
 | `contracts/src/MinimalHook.sol` | 50-line pedagogical starter — fork from here |
-| `contracts/test/DynamicFeeAuctionHook.t.sol` | 65 unit tests (mocked V3 oracle) |
-| `contracts/test/DynamicFeeAuctionHook.fork.t.sol` | 14 fork tests against the mainnet pool |
+| `contracts/test/DynamicFeeAuctionHook.t.sol` | 77 unit tests (mocked V3 oracle) |
+| `contracts/test/DynamicFeeAuctionHook.fork.t.sol` | 16 fork tests against the mainnet pool |
 | `contracts/test/walkthrough/` | Step-by-step auction walkthrough tests |
 | `contracts/script/DeployHook.s.sol` | Generic env-driven hook deploy + install |
 | `contracts/script/DeployPool.s.sol` | Env-driven EulerSwap factory deploy |

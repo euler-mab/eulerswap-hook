@@ -96,7 +96,7 @@ Pool was dormant for the first ~60 days, then orderflow picked up. Recent activi
 
 **Fees collected**: $24.27 lifetime, mostly from the active middle period. Annualized over ~90 days, that's roughly $100/year on $500 of equity — a ~20% APY in absolute fee terms, but borrow carry on the directional leg has been a similar order of magnitude.
 
-**P&L**: NAV today $489 vs $501 at deploy. The ~$12 gap is borrow carry on the directional leg minus fees collected. The position is not "running flat" in the original snapshot sense — it's running at a small loss (-2.4% over ~90 days), driven by quiet-period carry exceeding swap fees. Busy days more than cover carry; quiet days don't.
+**P&L**: NAV today $483 vs $501 at deploy. The ~$18 gap is borrow carry on the directional leg minus fees collected. The position is running at a small loss (-3.6% over ~90 days), driven by quiet-period carry exceeding swap fees. Busy days more than cover carry; quiet days don't.
 
 ---
 
@@ -104,14 +104,14 @@ Pool was dormant for the first ~60 days, then orderflow picked up. Recent activi
 
 - **Routing wins**: undercutting the V4 reference by 60% on base fee gets the pool quoted in aggregator paths it otherwise wouldn't be.
 - **Recenters are quiet**: with 1-bps range and minRecenterDelta = 0.5 bps, most swaps don't trigger reconfigures; the surcharge stays at zero except briefly after auctions.
-- **The auction mechanism is exercised**: 52 auctions started, 51 cleared cleanly over ~90 days. One currently active (started ~1.5 days ago, still waiting to clear) — see the open items below.
+- **The auction mechanism is exercised**: 52+ auctions started, all clearing within a few hours. One previously stuck for ~1.5 days (likely a recoverable reconfigure failure) cleared on its own a few cycles later.
 - **Spot oracle has been reliable**: V4 PoolManager `extsload` reads have been the dominant signal; no fallback-to-baseFee events observed in current monitoring.
 
 ## What's not (yet)
 
-- **$500 NAV is too small to be profitable in absolute terms.** $24 of fees over ~90 days is a proof-of-concept number, not a business. The same hook + same routing on $50k of equity would be doing $10M/day at $2k/day in fees.
+- **$500 NAV is too small to be profitable in absolute terms.** $24 of fees over ~90 days is a proof-of-concept number, not a business. **Naïvely** scaling linearly to $50k of equity gives ~$10M of cumulative volume per 90 days at ~$2k of fees — but this is an extrapolation, not a measurement. Real outcomes at higher capital depend on whether aggregators route a proportionally larger share of flow to a deeper pool, whether borrow rates stay benign, and whether the calibration still holds at scale. None of those are observed.
 - **Flow is bursty.** Volume by day ranges from $0 to ~$100k depending on aggregator routing. Quiet days drag P&L negative via carry; busy days recover it. Sustained busy flow would push the pool meaningfully positive.
-- **Currently stuck auction** (as of writing): an auction has been active for ~1.5 days without clearing — likely a reconfigure failed and the hook is in the retry window. Worth a manual `endAuction()` to reset cleanly. The hardening pass added an `auctionStartBlock` reset on caught reconfigures specifically for this case; the next swap should pick it up if the reconfigure succeeds.
+- **Recovery from stuck auctions** depends on the hook's owner. `endAuction()` is `onlyOwner` — if a `reconfigure()` failure during clearing leaves the auction state stuck, the owner has to call `endAuction()` manually (or wait for the next swap to re-trigger the clearing path). In practice the live pool has self-healed each time so far, but the recovery is not permissionless.
 
 ---
 

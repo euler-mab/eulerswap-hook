@@ -1,8 +1,9 @@
 # macOS
 .DS_Store
 
-# env files
+# env files (keep .env.example tracked as the template)
 .env*
+!.env.example
 
 # editor / local
 .claude/

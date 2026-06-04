@@ -62,6 +62,17 @@ Now imagine an attacker manipulates the Uniswap pool to push spot in either dire
 
 The closest thing to a "fee-compass attack" is: push spot toward what the attacker would have to pay normally, making them pay an unjustified extra capture fee. But this requires *first* moving spot, *then* swapping — and the first move requires paying Uniswap fees on a meaningful trade. It's never net-positive.
 
+### What about a *griefing* attack — inflating the fee to make aggregators skip the pool?
+
+A motivated competitor could push Uniswap spot off-market on every block where they think a retail order is coming, hoping aggregators see the AMM's elevated fee and route elsewhere. Two reasons this is unattractive:
+
+- **It costs Uniswap fees on the manipulation trade**, every block. To meaningfully move a deep V3 / V4 pool's `slot0`, the attacker is paying ~bps to Uniswap LPs each time. Sustained per-block griefing across an LP's lifetime is dominant-strategy losing.
+- **Aggregators re-quote often.** A one-block fee inflation typically only diverts the swap if the aggregator quoted in that exact block. The attacker doesn't generally know when retail flow is incoming, so they're paying full freight for a low hit rate.
+
+The defensive property remains: any direction the attacker pushes spot, the hook's fee response is *upward only*. So the worst case is "the pool gets quoted less retail flow this block" — which the LP wouldn't have profited on anyway, since the elevated fee means competition wins. The pool is no worse off than if the bad block hadn't happened.
+
+The one case where this *would* matter: a competitor with a separate sustained motive (e.g. a competing single-LP venue on the same pair) and very deep pockets, willing to subsidize Uniswap arbs as a marketing cost. That's a real but specific threat, and the mitigation is the same as anywhere: tune the fee compass against a deep enough Uniswap pool that the manipulation cost is meaningful.
+
 ---
 
 ## How the hook reads spot
