@@ -44,7 +44,7 @@ Asymmetric by design. Toxic flow pays for itself, retail flow gets a discount, a
 
 EulerSwap is the substrate. Each Euler account is its own AMM, with the same collateral that's earning lending yield doubling as swap liquidity. With LTVs up to 96% on stables, the pool can source per-trade inventory ~25× its equity by looping the vault credit. The curve's "virtual reserves" (eq0/eq1) then shape the slippage *within* that capacity — large virtual reserves with concentration around a peg means near-1:1 pricing for trades inside the band. Per-trade capacity, though, is still ultimately bounded by collateral × LTV.
 
-![Credit-backed amplification — \$500 NAV supports ~\$10k of per-trade inventory and tens of $k/day of cumulative throughput on busy days because the auction cycles direction many times per day](../assets/2-credit-backed-depth.png)
+![Credit-backed amplification — \$500 NAV supports ~\$10k of per-trade inventory, and the auction cycles direction many times per day so cumulative throughput far exceeds per-trade depth](../assets/2-credit-backed-depth.png)
 
 The live USDC/USDT example: ~\$500 of equity in a sub-account (\$382 USDC + \$119 USDT). Per-trade capacity is order \$10k. The curve has virtual reserves of \$247M / \$242M which give very tight pricing within that capacity — but the \$247M number is a slippage-curve parameter, not a depth claim. The actually-interesting number is **daily turnover**: when flow is active, the auction recycles direction multiple times a day, taking volume well into multiples of equity. The pool's averaged ~\$46k/day over the last week on \$483 NAV (~95×). Flow is bursty — quiet days drop to zero, busy days exceed \$100k.
 

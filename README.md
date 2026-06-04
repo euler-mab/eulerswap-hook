@@ -16,25 +16,25 @@ This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHo
 
 [DynamicFeeAuctionHook.sol](contracts/src/DynamicFeeAuctionHook.sol) is autonomous — once deployed, it runs without any off-chain bot. **Five mechanisms** compound inside the hook, each solving a specific failure mode of naïve constant-product LPing:
 
-### 1. Uniswap spot as a fee compass — *direction signal*
+### 1. Uniswap spot as a fee compass — _direction signal_
 
 The hook reads spot from the deepest Uniswap pool for the pair (V3 `slot0()` or V4 `extsload`) and uses it as a **fee compass** — a direction signal, not a collateral oracle. Spot is unsafe for pricing collateral but **safe for fee bumping**: the hook only ever raises the fee above `baseFee`, never lowers it. A manipulator pays the inflated fee on their own swap. Full analysis: [docs/uniswap-fee-compass.md](docs/uniswap-fee-compass.md).
 
-### 2. Routing-aware asymmetric fees — *price-discriminate by direction*
+### 2. Routing-aware asymmetric fees — _price-discriminate by direction_
 
 When the AMM is offering an arb against itself: **capture** (`baseFee + captureRate × oracleDelta`). When it's competing for retail flow against a deeper venue: **attract** (`baseFee − attractRate × externalFee`, never below `baseFee`). Solves the "every LP is equally exposed to toxic flow" problem of passive AMMs.
 
-### 3. Dutch fee auctions — *rebalance without external slippage*
+### 3. Dutch fee auctions — _rebalance without external slippage_
 
 When net base-asset exposure exceeds a configurable share of NAV, the hook shifts `priceY` to expose a profitable arb, then decays the fee block-by-block until a swap clears it. Solves the "rebalance by selling on Uniswap and eating slippage" problem of passive credit-backed designs. Clears on **price convergence** to the oracle (not reserve-based); `minAuctionBlocks` keeps the auction open long enough for the fee to decay.
 
-### 4. Curvature-aware recenter surcharge — *anti-round-trip*
+### 4. Curvature-aware recenter surcharge — _anti-round-trip_
 
 Recentering can be round-tripped by an attacker who anticipates it. The hook adds an additive surcharge sized to the curvature bonus the recenter creates, decaying to zero over a configurable horizon. Plus a one-shot **deploy surcharge** so a mispriced initial deploy is expensive to arb before the operator notices.
 
-### 5. Builder-fee bump — *opportunistic top-up* &nbsp;<sup>(optional, off on the live pool)</sup>
+### 5. Builder-fee bump — _opportunistic top-up_ &nbsp;<sup>(optional, off on the live pool)</sup>
 
-Permissionless `setBuilderFee(fee)` lets any party — in practice the block builder — raise the quoted fee for the current block above the public floor. `getFee` returns `max(publicFee, builderFee)`. A configurable share of the bumped delta is accrued to the bumper as revenue split. Solves "the public formula leaves the builder's information edge on the table" — a builder with a private CEX-DEX signal can bid just above floor on swaps they predict will still go through, capturing some of the spread for the LP. Closest cousin in the propAMM family, but inverted: instead of a builder-coordinated AMM streaming signed quotes, the AMM is fully public and the builder is invited to *opt in* via revenue share if they have an edge.
+Permissionless `setBuilderFee(fee)` lets any party — in practice the block builder — raise the quoted fee for the current block above the public floor. `getFee` returns `max(publicFee, builderFee)`. A configurable share of the bumped delta is accrued to the bumper as revenue split. Solves "the public formula leaves the builder's information edge on the table" — a builder with a private CEX-DEX signal can bid just above floor on swaps they predict will still go through, capturing some of the spread for the LP. Closest cousin in the propAMM family, but inverted: instead of a builder-coordinated AMM streaming signed quotes, the AMM is fully public and the builder is invited to _opt in_ via revenue share if they have an edge.
 
 **If this mechanism works in the wild** — i.e., a sophisticated builder reliably bids close-to-fair-value — then mechanisms 1–2 (fee compass + asymmetric fees) effectively become a **safety floor** rather than the primary fee-setting logic. The builder's private signal usually beats the public spot oracle, and the public formula is just there to give solvers and agents a deterministic fee they can quote against between bumps. Mechanisms 3–4 (auctions + curvature surcharge) still do work because exposure still accumulates and recenters still happen. But this is **hypothetical today** — `builderFee` is **untested in the wild** and no builder has integrated. **Disabled by default** (`builderFeeShareBps = 0`); not enabled on the live USDC/USDT pool. Design: [docs/builder-fee-design.md](docs/builder-fee-design.md).
 
@@ -48,17 +48,17 @@ A single deployed pool on Ethereum mainnet, running mechanisms 1–4 (`builderFe
 
 A small proof-of-principle pool. **This is not "look at the returns" — it's "look, the mechanism works on real money."**
 
-| | USDC/USDT |
-|---|---|
-| Pool | [`0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8) |
-| Hook | [`0x99b97FD05b4F943899358F90855C0BEE34584e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41) |
-| LP equity (NAV) | ~\$483 (started at \$501) |
-| **P&L since live (~90 days)** | **-\$18 (-3.6%)** |
-| Lifetime fees collected | \$24 |
-| Volume | ~\$810k cumulative (187 swaps), 7-day average \$46k/day, bursty \$0–\$100k+ |
-| Auction cycles | 52+ started, all clearing |
+|                               | USDC/USDT                                                                                                               |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Pool                          | [`0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8) |
+| Hook                          | [`0x99b97FD05b4F943899358F90855C0BEE34584e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41) |
+| LP equity (NAV)               | ~\$483 (started at \$501)                                                                                               |
+| **P&L since live (~90 days)** | **-\$18 (-3.6%)**                                                                                                       |
+| Lifetime fees collected       | \$24                                                                                                                    |
+| Volume                        | ~\$810k cumulative (187 swaps), 7-day average \$46k/day, bursty \$0–\$100k+                                             |
+| Auction cycles                | 52+ started, all clearing                                                                                               |
 
-The pool runs at a small loss: borrow carry on the directional leg outpaces swap-fee revenue on quiet days, and the busy days don't fully make it up at this NAV. \$500 is a proof-of-concept size — too small to be profitable in absolute terms, but enough to demonstrate that the mechanism runs autonomously on real on-chain flow. Per-trade capacity is order \$10k (bounded by collateral × LTV); the curve's virtual reserves of \$247M / \$242M tighten slippage *within* that capacity to near-1:1. Full breakdown in [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md), including honest discussion of where the mechanism would and wouldn't scale.
+The pool runs at a small loss: borrow carry on the directional leg outpaces swap-fee revenue on quiet days, and the busy days don't fully make it up at this NAV. \$500 is a proof-of-concept size — too small to be profitable in absolute terms, but enough to demonstrate that the mechanism runs autonomously on real on-chain flow. Per-trade capacity is order \$10k (bounded by collateral × LTV); the curve's virtual reserves of \$247M / \$242M tighten slippage _within_ that capacity to near-1:1. Full breakdown in [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md), including honest discussion of where the mechanism would and wouldn't scale.
 
 ---
 
@@ -71,24 +71,21 @@ Active LP designs sit between two extremes:
 
 A few approaches sit in between, each making different trade-offs:
 
-| Design | What it does | Substrate |
-|---|---|---|
-| **Uniswap V3 JIT** | Single-block LP positions around big swaps | Uniswap V3 |
-| **Fluid DEX** | Lending-vault assets double as DEX liquidity (shared LP) | Instadapp Smart Vaults |
-| **Yield Basis** (Egorov, 2025) | 2× leveraged CFMM eliminates IL drag — position tracks underlying | Curve infra |
-| **Active single-LP, rule-based** (this repo) | Single-LP curve + dynamic fees + autonomous Dutch auctions | EulerSwap |
+| Design                                       | What it does                                                      | Substrate              |
+| -------------------------------------------- | ----------------------------------------------------------------- | ---------------------- |
+| **Uniswap V3 JIT**                           | Single-block LP positions around big swaps                        | Uniswap V3             |
+| **Fluid DEX**                                | Lending-vault assets double as DEX liquidity (shared LP)          | Instadapp Smart Vaults |
+| **Yield Basis** (Egorov, 2025)               | 2× leveraged CFMM eliminates IL drag — position tracks underlying | Curve infra            |
+| **Active single-LP, rule-based** (this repo) | Single-LP curve + dynamic fees + autonomous Dutch auctions        | EulerSwap              |
 
-**EulerSwap is the primitive that makes these accessible.** Each Euler account becomes its own AMM. The curve, fee schedule, rebalancing strategy, and *vault choice* are all yours to pick:
+**EulerSwap is the primitive that makes these accessible.** Each Euler account becomes its own AMM with curve, fee schedule, rebalancing strategy, and _vault choice_ all configurable:
 
-1. **Each Euler account is its own AMM.** No factory subscription, no shared LP shares.
-2. **Three vault configurations, your choice.** EulerSwap doesn't force a lending design — the vaults you wire the pool against decide its behavior:
-   - **Pass-through escrow.** Inventory sits as a custodial balance, no lending, no borrowing — the pool quotes like a vanilla AMM with isolated deposits.
-   - **Yield-bearing inventory.** Deposits sit in a lending vault and earn interest while quoting. No borrowing, no leverage, but your inventory keeps working.
-   - **Credit-amplified (optional).** On top of yield-bearing inventory, the pool can additionally *borrow* against its own collateral to source inventory for each swap — deepening per-trade capacity by up to ~25× on stable pairs. This is what the live USDC/USDT example uses. The position underneath stays small and directional; the auction mechanic recycles it many times per day.
-3. **Any curve, any range.** A `concentration` parameter interpolates between constant-product (Uniswap V2), constant-sum (Curve-style for stables), and range-bound liquidity (Uniswap V3). Set per-side and per-pool.
-4. **Hooks.** EulerSwap exposes `getFee` and `afterSwap` hook points. The hook controls fee dynamics and can call `reconfigure()` from inside `afterSwap` to rebalance — no off-chain bot required for the core loop.
-
-This repo implements **one configuration**: a single-LP, credit-backed AMM with autonomous fee modulation and Dutch fee auctions for rebalancing. "Proprietary" in the limited sense that one Euler account owns the position and tunes the fee schedule via a public oracle — not in the off-chain-quoter, private-orderflow sense some readers will hear in "propAMM". Fees and shifts are public formulas a swapper can simulate before they trade; the right shape for an on-chain venue (gas, transparency, manipulation resistance).
+1. **Three vault configurations.** The vaults you wire to a pool decide its behavior:
+   - **Pass-through escrow.** Inventory sits as a custodial balance — no lending, no borrowing. A vanilla AMM with isolated deposits.
+   - **Yield-bearing inventory.** Deposits sit in a lending vault and earn interest while quoting. No leverage, but inventory keeps working.
+   - **Credit-amplified (optional).** On top of yield-bearing, the pool can _borrow_ against its own collateral to source inventory per-swap — deepening per-trade capacity by up to ~25× on stable pairs. This is what the live USDC/USDT example uses.
+2. **Any curve, any range.** A `concentration` parameter interpolates between constant-product (Uniswap V2), constant-sum (Curve-style for stables), and range-bound liquidity (Uniswap V3). Set per-side and per-pool.
+3. **Hooks.** EulerSwap exposes `getFee` and `afterSwap`. The hook controls fee dynamics and can call `reconfigure()` from inside `afterSwap` to rebalance — no off-chain bot required for the core loop.
 
 ### Other configurations the same substrate supports
 
@@ -106,7 +103,7 @@ The hook in this repo is one waypoint in that broader exploration — not the on
 
 The textbook "AMM LP is unprofitable vs HODL" critique assumes a passive constant-product LP getting picked off by arbs. An active LP flips the model: you quote fees that price in the toxicity of each direction, you use credit to deepen liquidity without locking up capital, you use lending to earn yield on idle AMM reserves, and you participate in the routing layer that retail actually uses.
 
-The live USDC/USDT pool at ~\$500 NAV doing tens of $k/day on busy days is what that looks like in practice. EulerSwap was built to make this approach accessible to any account on Euler. This repo is one way to operate one.
+The live USDC/USDT pool at ~\$500 NAV is the smallest possible proof that the autonomous loop works on real flow — not a returns claim. EulerSwap was built to make this approach accessible to any account on Euler. This repo is one way to operate one.
 
 ---
 
@@ -154,7 +151,7 @@ contracts/
     ClearingSwap.t.sol                # auction-clearing unit tests
     EulerSwapAccumulator.t.sol        # accumulator math unit tests
     MinimalHook.t.sol                 # 4 tests for the pedagogical starter
-    walkthrough/                      # step-by-step auction walkthroughs
+    walkthrough/                      # step-by-step auction walkthroughsIt sou
   script/
     DeployHook.s.sol                  # Generic env-driven hook deploy + install
     DeployPool.s.sol                  # Generic env-driven EulerSwap pool factory deploy
@@ -182,35 +179,39 @@ scripts/
 ## Documentation map
 
 ### Getting started
-| Doc | Read it when you want to… |
-|---|---|
-| [docs/build-your-own-active-lp.md](docs/build-your-own-active-lp.md) | Walk through deploying your own active-LP pool end-to-end |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | See how account + pool + hook + oracle + orderflow fit together |
-| [docs/blog-post.md](docs/blog-post.md) | Read the narrative version of the design (Medium-style post, with diagrams) |
-| [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md) | See the live ~\$500-NAV pool with actual on-chain numbers (volume, P&L, auctions) |
-| [docs/faq.md](docs/faq.md) | Get quick answers to common newcomer questions (sub-accounts, minimum equity, oracle choice, …) |
-| [docs/addresses.md](docs/addresses.md) | Look up canonical contract addresses per chain (EVC, registry, vaults, oracles, live pools) |
+
+| Doc                                                                  | Read it when you want to…                                                                       |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [docs/build-your-own-active-lp.md](docs/build-your-own-active-lp.md) | Walk through deploying your own active-LP pool end-to-end                                       |
+| [ARCHITECTURE.md](ARCHITECTURE.md)                                   | See how account + pool + hook + oracle + orderflow fit together                                 |
+| [docs/blog-post.md](docs/blog-post.md)                               | Read the narrative version of the design (Medium-style post, with diagrams)                     |
+| [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md)         | See the live ~\$500-NAV pool with actual on-chain numbers (volume, P&L, auctions)               |
+| [docs/faq.md](docs/faq.md)                                           | Get quick answers to common newcomer questions (sub-accounts, minimum equity, oracle choice, …) |
+| [docs/addresses.md](docs/addresses.md)                               | Look up canonical contract addresses per chain (EVC, registry, vaults, oracles, live pools)     |
 
 ### Design space
-| Doc | Read it when you want to… |
-|---|---|
-| [docs/yield-basis-analysis.md](docs/yield-basis-analysis.md) | Map Egorov's Yield Basis design (2× leveraged CFMM for IL elimination) onto EulerSwap, including formal proofs and feasibility analysis |
-| [docs/yield-basis-comparison.md](docs/yield-basis-comparison.md) | Compare Yield Basis vs this hook with Monte Carlo simulation — honest about where each wins |
-| [docs/per-lp-architecture.md](docs/per-lp-architecture.md) | Understand why each Euler account is its own AMM (vs. shared-LP pools) |
+
+| Doc                                                              | Read it when you want to…                                                                                                               |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| [docs/yield-basis-analysis.md](docs/yield-basis-analysis.md)     | Map Egorov's Yield Basis design (2× leveraged CFMM for IL elimination) onto EulerSwap, including formal proofs and feasibility analysis |
+| [docs/yield-basis-comparison.md](docs/yield-basis-comparison.md) | Compare Yield Basis vs this hook with Monte Carlo simulation — honest about where each wins                                             |
+| [docs/per-lp-architecture.md](docs/per-lp-architecture.md)       | Understand why each Euler account is its own AMM (vs. shared-LP pools)                                                                  |
 
 ### Mechanisms
-| Doc | Read it when you want to… |
-|---|---|
-| [docs/uniswap-fee-compass.md](docs/uniswap-fee-compass.md) | Understand the spot-as-fee-compass pattern and why it's safe |
-| [docs/dynamic-fee-model.md](docs/dynamic-fee-model.md) | See the full dynamic-fee formula with derivations |
-| [docs/auction-walkthrough.md](docs/auction-walkthrough.md) | Trace a single auction cycle step by step |
-| [docs/builder-fee-design.md](docs/builder-fee-design.md) | See the optional 5th mechanism — opportunistic builder-side fee bump |
-| [docs/additive-boost-derivation.md](docs/additive-boost-derivation.md) | Read the math behind h=1-at-boundary boost calibration |
+
+| Doc                                                                    | Read it when you want to…                                            |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| [docs/uniswap-fee-compass.md](docs/uniswap-fee-compass.md)             | Understand the spot-as-fee-compass pattern and why it's safe         |
+| [docs/dynamic-fee-model.md](docs/dynamic-fee-model.md)                 | See the full dynamic-fee formula with derivations                    |
+| [docs/auction-walkthrough.md](docs/auction-walkthrough.md)             | Trace a single auction cycle step by step                            |
+| [docs/builder-fee-design.md](docs/builder-fee-design.md)               | See the optional 5th mechanism — opportunistic builder-side fee bump |
+| [docs/additive-boost-derivation.md](docs/additive-boost-derivation.md) | Read the math behind h=1-at-boundary boost calibration               |
 
 ### Tuning
-| Doc | Read it when you want to… |
-|---|---|
-| [docs/calibration-guide.md](docs/calibration-guide.md) | Derive every hook parameter from first principles |
+
+| Doc                                                                  | Read it when you want to…                                            |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| [docs/calibration-guide.md](docs/calibration-guide.md)               | Derive every hook parameter from first principles                    |
 | [docs/parameter-strategy-guide.md](docs/parameter-strategy-guide.md) | Tune parameters for stablecoins, volatile pairs, narrow ranges, etc. |
 
 ---
@@ -221,15 +222,15 @@ scripts/
 git submodule update --init --recursive    # or: make setup
 ```
 
-| Submodule | Repo |
-|---|---|
-| `contracts/eulerswap` | [euler-xyz/euler-swap](https://github.com/euler-xyz/euler-swap) |
-| `contracts/euler-vault-kit` | [euler-xyz/euler-vault-kit](https://github.com/euler-xyz/euler-vault-kit) |
+| Submodule                            | Repo                                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `contracts/eulerswap`                | [euler-xyz/euler-swap](https://github.com/euler-xyz/euler-swap)                             |
+| `contracts/euler-vault-kit`          | [euler-xyz/euler-vault-kit](https://github.com/euler-xyz/euler-vault-kit)                   |
 | `contracts/ethereum-vault-connector` | [euler-xyz/ethereum-vault-connector](https://github.com/euler-xyz/ethereum-vault-connector) |
-| `contracts/euler-price-oracle` | [euler-xyz/euler-price-oracle](https://github.com/euler-xyz/euler-price-oracle) |
-| `contracts/evk-periphery` | [euler-xyz/evk-periphery](https://github.com/euler-xyz/evk-periphery) |
-| `contracts/euler-orderflow-router` | [euler-xyz/euler-orderflow-router](https://github.com/euler-xyz/euler-orderflow-router) |
-| `contracts/euler-interfaces` | [euler-xyz/euler-interfaces](https://github.com/euler-xyz/euler-interfaces) |
+| `contracts/euler-price-oracle`       | [euler-xyz/euler-price-oracle](https://github.com/euler-xyz/euler-price-oracle)             |
+| `contracts/evk-periphery`            | [euler-xyz/evk-periphery](https://github.com/euler-xyz/evk-periphery)                       |
+| `contracts/euler-orderflow-router`   | [euler-xyz/euler-orderflow-router](https://github.com/euler-xyz/euler-orderflow-router)     |
+| `contracts/euler-interfaces`         | [euler-xyz/euler-interfaces](https://github.com/euler-xyz/euler-interfaces)                 |
 
 ---
 
@@ -237,29 +238,29 @@ git submodule update --init --recursive    # or: make setup
 
 The wider Euler stack this repo sits on. **Audited substrates** the reference implementation depends on:
 
-| Repo | What it is |
-|---|---|
-| [euler-vault-kit (EVK)](https://github.com/euler-xyz/euler-vault-kit) | The vault framework that backs Euler lending |
+| Repo                                                                                    | What it is                                                         |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [euler-vault-kit (EVK)](https://github.com/euler-xyz/euler-vault-kit)                   | The vault framework that backs Euler lending                       |
 | [ethereum-vault-connector (EVC)](https://github.com/euler-xyz/ethereum-vault-connector) | Account-abstraction layer for cross-vault collateral and operators |
-| [euler-price-oracle](https://github.com/euler-xyz/euler-price-oracle) | Composable price-oracle adapters for collateral pricing |
-| [euler-swap](https://github.com/euler-xyz/euler-swap) | Single-LP AMM with vault-backed liquidity and a hook interface |
-| [evk-periphery](https://github.com/euler-xyz/evk-periphery) | Factories, swappers, and utilities wrapping EVK |
-| [euler-interfaces](https://github.com/euler-xyz/euler-interfaces) | Canonical addresses + interface definitions per chain |
-| [euler-audits](https://github.com/euler-xyz/euler-audits) | Audit reports for the substrates above |
+| [euler-price-oracle](https://github.com/euler-xyz/euler-price-oracle)                   | Composable price-oracle adapters for collateral pricing            |
+| [euler-swap](https://github.com/euler-xyz/euler-swap)                                   | Single-LP AMM with vault-backed liquidity and a hook interface     |
+| [evk-periphery](https://github.com/euler-xyz/evk-periphery)                             | Factories, swappers, and utilities wrapping EVK                    |
+| [euler-interfaces](https://github.com/euler-xyz/euler-interfaces)                       | Canonical addresses + interface definitions per chain              |
+| [euler-audits](https://github.com/euler-xyz/euler-audits)                               | Audit reports for the substrates above                             |
 
 **Tooling and libraries:**
 
-| Repo | What it is |
-|---|---|
-| [euler-sdk](https://github.com/euler-xyz/euler-sdk) | TypeScript SDK — vaults, swap, exec, markets, liquidation |
-| [euler-swap-jslib](https://github.com/euler-xyz/euler-swap-jslib) | Lightweight JS library with EulerSwap curve math (viem-based) |
-| [euler-orderflow-router](https://github.com/euler-xyz/euler-orderflow-router) | Orderflow routing API for EulerSwap pools |
+| Repo                                                                          | What it is                                                    |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| [euler-sdk](https://github.com/euler-xyz/euler-sdk)                           | TypeScript SDK — vaults, swap, exec, markets, liquidation     |
+| [euler-swap-jslib](https://github.com/euler-xyz/euler-swap-jslib)             | Lightweight JS library with EulerSwap curve math (viem-based) |
+| [euler-orderflow-router](https://github.com/euler-xyz/euler-orderflow-router) | Orderflow routing API for EulerSwap pools                     |
 
 **UIs to fork:**
 
-| Repo | What it is |
-|---|---|
-| [euler-lite](https://github.com/euler-xyz/euler-lite) | Vue-based minimal UI for interacting with Euler |
+| Repo                                                      | What it is                                             |
+| --------------------------------------------------------- | ------------------------------------------------------ |
+| [euler-lite](https://github.com/euler-xyz/euler-lite)     | Vue-based minimal UI for interacting with Euler        |
 | [euler-maglev](https://github.com/euler-xyz/euler-maglev) | Minimal experimental interface for EulerSwap instances |
 
 **Docs:**
