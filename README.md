@@ -2,11 +2,15 @@
 
 [![ci](https://github.com/euler-mab/eulerswap-hook/actions/workflows/ci.yml/badge.svg)](https://github.com/euler-mab/eulerswap-hook/actions/workflows/ci.yml)
 
+## Overview
+
 A reference hook for **active single-LP liquidity provision** on [EulerSwap](https://github.com/euler-xyz/euler-swap) — one operator per pool, dynamic fees set against a Uniswap-spot oracle, Dutch fee-decay auctions for autonomous rebalancing. All on-chain. No off-chain bot for the core loop.
 
 The "active" framing means concrete things: **single operator per pool** (one Euler account owns the position, not a shared LP curve), **fee-compass-driven asymmetric fees** (a Uniswap-spot reference tells the hook which direction is arb vs retail, so it can quote each side differently), and **autonomous Dutch-auction rebalancing** (when inventory drifts, the hook offers a known arb that decays in price until someone takes it). All in public Solidity, runnable inside `getFee` and `afterSwap`. No off-chain quoter, no private orderflow, no builder integration required.
 
 This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHook.sol) contract, calibration tooling, and deploy scripts needed to launch your own pool. Narrative-style overview in [`docs/blog-post.md`](docs/blog-post.md).
+
+## Disclaimer
 
 > ⚠️ **The hook in this repo is experimental and unaudited.** The Euler substrate underneath (EulerSwap, EVK, EVC) is audited and battle-tested — this isn't. Fork it, learn from it, **get a security review before deploying with real capital**. No warranty.
 

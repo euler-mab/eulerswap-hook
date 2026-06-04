@@ -14,7 +14,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
+
+      - name: Init submodules (recursive, skipping broken nested ref in euler-orderflow-router)
+        run: |
+          # Direct submodules first
+          git submodule update --init --jobs 4
+          # Recurse into each one EXCEPT euler-orderflow-router — its pinned commit
+          # has a malformed nested .gitmodules entry ('modules' path with no URL)
+          # that breaks `--recursive`. The hook itself doesn't depend on anything
+          # inside that submodule's sub-submodules, so we skip it.
+          for sm in $(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}'); do
+            if [ "$sm" = "contracts/euler-orderflow-router" ]; then
+              echo "Skipping recursive init for $sm (known malformed nested .gitmodules)"
+              continue
+            fi
+            git -C "$sm" submodule update --init --recursive --jobs 4
+          done
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
