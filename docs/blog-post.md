@@ -10,7 +10,7 @@ This repo explores ways to reduce LVR. It's an EulerSwap hook — a single ~1000
 
 Four mechanisms compound, with a fifth available as an optional opt-in. None is novel in isolation — what's interesting is that together they let a single LP autonomously price-discriminate by direction, source per-trade inventory ~25× their equity via credit, and rebalance without an off-chain bot.
 
-**A note on what this post is.** It's a working proof-of-concept, not a finished design. The contracts run autonomously on a small live mainnet pool, the calibration tooling is solid, and the deploy path for a fresh pair is documented end-to-end with helper scripts that auto-detect what they can. But the empirical evidence is thin (one pool, 90 days, $500 NAV) and several of the mechanism choices have honest open-research alternatives. The post is structured as: (a) here's what it does today, (b) here's where the design is genuinely open, (c) here's how to collaborate. If you read past the live-numbers section, the **Open problems worth working on** section near the end is where the actually-interesting next-step questions sit. The goal is "this is cool, here are some further thoughts" — not "this is the finished article."
+**A note on what this post is.** It's a working proof-of-concept, not a finished design. The contracts run autonomously on a small live mainnet pool, the calibration tooling is solid, and the deploy path for a fresh pair is documented end-to-end with helper scripts that auto-detect what they can.
 
 ![Passive constant-product LP vs active single-LP hook — same flow, different fee response, different P&L](https://raw.githubusercontent.com/euler-mab/eulerswap-hook/main/assets/1-passive-vs-active.png)
 
@@ -130,7 +130,7 @@ The mechanisms above are what the hook does today. Several of them are also genu
 
 6. **LVR under credit amplification.** Credit-amplified pools take on directional exposure the unleveraged version can't, so realised LVR scales with the leverage at the moment of holding it. The 25× per-trade capacity is a peak number, not a time-averaged one — what matters is the time-integrated exposure × σ², which depends on how aggressively the auction recycles inventory back to neutral. The case study shows the directionally-correct outcome (small loss); what's missing is the analytic bound — "at NAV X with σ Y and auction parameters Z, expected daily LVR is W, and fee capture needs to exceed it by some margin to be net positive." That's the equation a serious operator wants in their head before allocating real capital.
 
-## Be honest about the risks
+## Risks
 
 This is experimental, unaudited reference code:
 
