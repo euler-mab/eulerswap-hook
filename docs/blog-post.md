@@ -28,17 +28,7 @@ Spot-as-fee-compass is the cheap, lazy, completely safe choice — and almost no
 
 ## Routing-aware asymmetric fees
 
-With a fee compass, you can quote different fees in different directions. When the pool is offering an arb against itself, the hook **captures** the arb:
-
-```
-fee = baseFee + captureRate × oracleDelta
-```
-
-When the pool is competing for retail flow against a deeper venue, it **attracts** flow by quoting tighter than the reference Uniswap pool:
-
-```
-fee = baseFee − attractRate × externalFee
-```
+With a fee compass, you can quote different fees in different directions. When the pool is offering an arb against itself, the hook **captures** the arb: `fee = baseFee + captureRate × oracleDelta`. When the pool is competing for retail flow against a deeper venue, it **attracts** flow by quoting tighter than the reference Uniswap pool: `fee = baseFee − attractRate × externalFee`.
 
 Asymmetric by design. Toxic flow pays for itself, retail flow gets a discount, and the LP isn't relying on a private fair-value model to tell them which is which — the spot oracle is the signal.
 
