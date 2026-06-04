@@ -468,17 +468,18 @@ oracle pool, and a runtime assert that the pool's `token0` is WBTC. Fill in
 the `POOL` and `EULER_ACCOUNT` constants from step 4c and the
 `PRIVATE_KEY=0x... forge script ... --broadcast` invocation is one line.
 
-### Total command count and time
+### Command count
 
 - **Setup (one-time, mainnet reads only)**: 1× `find-vaults`, 1×
-  `compute-pool-prices`, 1× `make calibrate` — ~30–60s total, mostly the
-  vault enumerator's multicall fan-out.
-- **Dry-run (anvil)**: 4× `forge script --broadcast` (steps 4a–4d) — ~20s
-  per script on a forked mainnet, so ~1.5 min end-to-end including the fork
-  spin-up. Total: ~6 commands, ~2.5 minutes wall-clock.
+  `compute-pool-prices`, 1× `make calibrate`.
+- **Dry-run (anvil)**: 4× `forge script --broadcast` against a forked
+  mainnet (steps 4a–4d).
 - **Mainnet broadcast**: same 4 forge invocations against your live RPC,
   plus the optional [`RegisterPools.s.sol`](../contracts/script/RegisterPools.s.sol).
-  Allow ~5 min for inclusion + confirmations.
+
+The wall-clock depends on how many of these steps you batch, your
+network, and how comfortable you are with each one — measure yours, don't
+trust someone else's number.
 
 The Phase-1 guards (calibrator's `asset0` check, `compute-pool-prices`'s
 `ASSET0 < ASSET1` assertion, `AddCapital`'s auto-detected token side,

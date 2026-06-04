@@ -10,7 +10,7 @@ This repo is one way out of that. It's an EulerSwap hook — a single ~1000-line
 
 Four mechanisms compound, with a fifth available as an optional opt-in. None is novel in isolation — what's interesting is that together they let a single LP autonomously price-discriminate by direction, source per-trade inventory ~25× their equity via credit, and rebalance without an off-chain bot.
 
-**A note on what this post is.** It's a working proof-of-concept, not a finished design. The contracts run autonomously on a small live mainnet pool, the calibration tooling is solid, and a fresh pair can be deployed in roughly an hour. But the empirical evidence is thin (one pool, 90 days, $500 NAV) and several of the mechanism choices have honest open-research alternatives. The post is structured as: (a) here's what it does today, (b) here's where the design is genuinely open, (c) here's how to collaborate. If you read past the live-numbers section, the **Open problems worth working on** section near the end is where the actually-interesting next-step questions sit. The goal is "this is cool, here are some further thoughts" — not "this is the finished article."
+**A note on what this post is.** It's a working proof-of-concept, not a finished design. The contracts run autonomously on a small live mainnet pool, the calibration tooling is solid, and the deploy path for a fresh pair is documented end-to-end with helper scripts that auto-detect what they can. But the empirical evidence is thin (one pool, 90 days, $500 NAV) and several of the mechanism choices have honest open-research alternatives. The post is structured as: (a) here's what it does today, (b) here's where the design is genuinely open, (c) here's how to collaborate. If you read past the live-numbers section, the **Open problems worth working on** section near the end is where the actually-interesting next-step questions sit. The goal is "this is cool, here are some further thoughts" — not "this is the finished article."
 
 ![Passive constant-product LP vs active single-LP hook — same flow, different fee response, different P&L](../assets/1-passive-vs-active.png)
 
@@ -44,7 +44,7 @@ Asymmetric by design. Toxic flow pays for itself, retail flow gets a discount, a
 
 ## Credit-backed depth
 
-EulerSwap is the substrate. Each Euler account is its own AMM, with the same collateral that's earning lending yield doubling as swap liquidity. With LTVs up to 96% on stables, the pool can source per-trade inventory ~25× its equity by looping the vault credit. The curve's "virtual reserves" (eq0/eq1) then shape the slippage *within* that capacity — large virtual reserves with concentration around a peg means near-1:1 pricing for trades inside the band. Per-trade capacity, though, is still ultimately bounded by collateral × LTV.
+EulerSwap is the substrate. Each Euler account is its own AMM, with the same collateral that's earning lending yield doubling as swap liquidity. With LTVs up to 96% on stables, the pool can source per-trade inventory ~25× its equity in *either* direction by borrowing against the side it holds — long USDC and short USDT one minute, the opposite after enough flow the other way. The curve's "virtual reserves" (eq0/eq1) then shape the slippage *within* that capacity — large virtual reserves with concentration around a peg means near-1:1 pricing for trades inside the band. Per-trade capacity is still ultimately bounded by collateral × LTV, on whichever side the next trade is leaning.
 
 ![Credit-backed amplification — \$500 NAV supports ~\$10k of per-trade inventory, and the auction cycles direction many times per day so cumulative throughput far exceeds per-trade depth](../assets/2-credit-backed-depth.png)
 
@@ -140,7 +140,7 @@ The mechanisms above are what the hook does today. Several of them are also genu
 
 6. **LVR under credit amplification.** A 25× credit-amplified pool has 25× higher LVR exposure than the unleveraged version of the same trades, and the borrow carry compounds. The case study shows the directionally-correct outcome; what's missing is the analytic bound — "at NAV X with σ Y, expected LVR per day is Z, and fee capture needs to exceed it by W to be net positive." That's the equation a serious operator wants in their head before allocating real capital.
 
-None of these are "we'll fix it later" placeholders. They're "we shipped what we knew how to ship; the rest is open and interesting." The hook is a working substrate for asking these questions — the contracts run, the calibration tooling is solid, and a fresh pair can be deployed in roughly an hour. Now the interesting work is figuring out what the design *should* be.
+None of these are "we'll fix it later" placeholders. They're "we shipped what we knew how to ship; the rest is open and interesting." The hook is a working substrate for asking these questions — the contracts run, the calibration tooling is solid, and the deploy path for a fresh pair has helper scripts at every step. Now the interesting work is figuring out what the design *should* be.
 
 ## Be honest about the risks
 
