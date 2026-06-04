@@ -1,5 +1,7 @@
 # DynamicFeeAuctionHook for EulerSwap
 
+[![ci](https://github.com/euler-mab/eulerswap-hook/actions/workflows/ci.yml/badge.svg)](https://github.com/euler-mab/eulerswap-hook/actions/workflows/ci.yml)
+
 A reference hook for **active single-LP liquidity provision** on [EulerSwap](https://github.com/euler-xyz/euler-swap) — one operator per pool, dynamic fees set against a Uniswap-spot oracle, Dutch fee-decay auctions for autonomous rebalancing. All on-chain. No off-chain bot for the core loop.
 
 The "active" framing means concrete things: **single operator per pool** (one Euler account owns the position, not a shared LP curve), **fee-oracle-driven asymmetric fees** (quote higher for arb direction, lower for retail), and **autonomous Dutch-auction rebalancing** (when inventory drifts, the hook offers a known arb that decays in price until someone takes it). All in public Solidity, runnable inside `getFee` and `afterSwap`. No off-chain quoter, no private orderflow, no builder integration required.
@@ -110,45 +112,31 @@ The live USDC/USDT pool at ~$500 NAV doing tens of $k/day on busy days is what t
 
 ## Quickstart
 
-Full walkthrough — including the prerequisite EulerSwap factory deploy and sub-account setup — in [**docs/build-your-own-active-lp.md**](docs/build-your-own-active-lp.md).
+```bash
+git clone https://github.com/euler-mab/eulerswap-hook.git
+cd eulerswap-hook
+make setup       # submodules + npm install + forge build
+make test        # 167 unit tests, no RPC required
+make doctor      # verify toolchain + env
+```
+
+For a forked-mainnet dry-run of the full deploy (no real ETH spent):
 
 ```bash
-# 1. Clone + init submodules
-git clone <this-repo> eulerswap-hook
-cd eulerswap-hook
-git submodule update --init --recursive
-
-# 2. Build + test
-cd contracts
-forge build
-forge test --no-match-path "test/*.fork.t.sol"     # 167 unit tests
-
-# 3. Calibrate parameters for your pool. Copy/edit a profile in scripts/profiles/
-#    then write a paste-ready env-var block:
-cd ../scripts && npm install
-npx tsx calibrate-hook-params.ts profiles/usdc-weth.json --env > .env.hook
-
-# 4. Deploy the EulerSwap pool via the factory (env-driven)
-source .env.hook
-cd ../contracts
-PRIVATE_KEY=0x... \
-FACTORY=0xEulerSwapFactory EULER_ACCOUNT=0x... \
-SUPPLY_VAULT_0=0x... SUPPLY_VAULT_1=0x... \
-BORROW_VAULT_0=0x... BORROW_VAULT_1=0x... \
-  forge script script/DeployPool.s.sol:DeployPool \
-  --rpc-url $RPC_URL --broadcast --slow -vvvv
-
-# 5. Deploy the hook against the new pool and bind it (env-driven, same .env.hook)
-PRIVATE_KEY=0x... \
-POOL=0xPoolFromStep4 EULER_ACCOUNT=0x... \
-ORACLE_TARGET=0x... ORACLE_TOKEN0=0x... \
-  forge script script/DeployHook.s.sol:DeployHook \
-  --rpc-url $RPC_URL --broadcast --slow -vvvv
-
-# 6. Register for orderflow routing
-PRIVATE_KEY=0x... POOLS=0xPool EULER_ACCOUNTS=0xAccount \
-  forge script script/RegisterPools.s.sol --rpc-url $RPC_URL --broadcast
+cp .env.example .env
+# fill in MAINNET_RPC_URL in .env, then:
+source .env && make demo
 ```
+
+Mainnet deployment (calibrate → deploy pool → deploy hook → register orderflow) is documented end-to-end in [**docs/build-your-own-active-lp.md**](docs/build-your-own-active-lp.md). The commands stay explicit `forge script ... --broadcast` invocations — never wrapped in `make` — so you never accidentally broadcast.
+
+Generate calibration env vars for a pool profile:
+
+```bash
+make calibrate profile=usdc-weth     # writes paste-ready vars to stdout
+```
+
+Available AI-agent prompts: [PROMPTS.md](PROMPTS.md).
 
 ---
 
@@ -230,7 +218,7 @@ scripts/
 ## Submodules
 
 ```bash
-git submodule update --init --recursive
+git submodule update --init --recursive    # or: make setup
 ```
 
 | Submodule | Repo |
@@ -242,6 +230,42 @@ git submodule update --init --recursive
 | `contracts/evk-periphery` | [euler-xyz/evk-periphery](https://github.com/euler-xyz/evk-periphery) |
 | `contracts/euler-orderflow-router` | [euler-xyz/euler-orderflow-router](https://github.com/euler-xyz/euler-orderflow-router) |
 | `contracts/euler-interfaces` | [euler-xyz/euler-interfaces](https://github.com/euler-xyz/euler-interfaces) |
+
+---
+
+## Ecosystem resources
+
+The wider Euler stack this repo sits on. **Audited substrates** the reference implementation depends on:
+
+| Repo | What it is |
+|---|---|
+| [euler-vault-kit (EVK)](https://github.com/euler-xyz/euler-vault-kit) | The vault framework that backs Euler lending |
+| [ethereum-vault-connector (EVC)](https://github.com/euler-xyz/ethereum-vault-connector) | Account-abstraction layer for cross-vault collateral and operators |
+| [euler-price-oracle](https://github.com/euler-xyz/euler-price-oracle) | Composable price-oracle adapters for collateral pricing |
+| [euler-swap](https://github.com/euler-xyz/euler-swap) | Single-LP AMM with vault-backed liquidity and a hook interface |
+| [evk-periphery](https://github.com/euler-xyz/evk-periphery) | Factories, swappers, and utilities wrapping EVK |
+| [euler-interfaces](https://github.com/euler-xyz/euler-interfaces) | Canonical addresses + interface definitions per chain |
+| [euler-audits](https://github.com/euler-xyz/euler-audits) | Audit reports for the substrates above |
+
+**Tooling and libraries:**
+
+| Repo | What it is |
+|---|---|
+| [euler-sdk](https://github.com/euler-xyz/euler-sdk) | TypeScript SDK — vaults, swap, exec, markets, liquidation |
+| [euler-swap-jslib](https://github.com/euler-xyz/euler-swap-jslib) | Lightweight JS library with EulerSwap curve math (viem-based) |
+| [euler-orderflow-router](https://github.com/euler-xyz/euler-orderflow-router) | Orderflow routing API for EulerSwap pools |
+
+**UIs to fork:**
+
+| Repo | What it is |
+|---|---|
+| [euler-lite](https://github.com/euler-xyz/euler-lite) | Vue-based minimal UI for interacting with Euler |
+| [euler-maglev](https://github.com/euler-xyz/euler-maglev) | Minimal experimental interface for EulerSwap instances |
+
+**Docs:**
+
+- [docs.euler.finance](https://docs.euler.finance) — official user-facing docs
+- [euler-docs](https://github.com/euler-xyz/euler-docs) — source for the official docs
 
 ---
 

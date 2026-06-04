@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Build and unit-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: scripts/package-lock.json
+
+      - name: Install JS deps
+        run: cd scripts && npm ci || cd scripts && npm install
+
+      - name: Forge build
+        working-directory: contracts
+        run: forge build --sizes
+
+      - name: Forge test (unit only)
+        working-directory: contracts
+        run: forge test --no-match-path "test/*.fork.t.sol" -vv
+
+      - name: Forge fmt check
+        working-directory: contracts
+        run: forge fmt --check
+        continue-on-error: true

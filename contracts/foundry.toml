@@ -5,7 +5,12 @@ out = "out"
 libs = ["eulerswap/lib"]
 solc = "0.8.27"
 optimizer = true
-optimizer_runs = 2500
+optimizer_runs = 2500           # Repo-specific override (series default is 800)
+evm_version = "cancun"
+# via_ir intentionally NOT enabled here. The series convention favors via-IR but
+# this repo has 167 passing tests under the legacy pipeline and existing struct
+# refactors already handle the stack-too-deep cases. Switching adds ~30-60s to
+# compile time with no functional gain. New code should still avoid deep stacks.
 
 remappings = [
   "forge-std/=eulerswap/lib/forge-std/src/",
@@ -17,3 +22,9 @@ remappings = [
   "permit2/=eulerswap/lib/euler-vault-kit/lib/permit2/",
   "@uniswap/v4-core/=eulerswap/lib/v4-periphery/lib/v4-core/",
 ]
+
+[rpc_endpoints]
+mainnet = "${MAINNET_RPC_URL}"
+
+[etherscan]
+mainnet = { key = "${ETHERSCAN_API_KEY}" }
