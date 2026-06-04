@@ -6,9 +6,9 @@ Most AMM LPs lose to arbs. The textbook complaint — "you're just paying LVR" �
 
 This repo is one way out of that. It's an EulerSwap hook — a single ~1000-line Solidity contract — that runs **active single-LP liquidity provision**: one operator per pool, dynamic fees set against a Uniswap-spot oracle, Dutch fee-decay auctions for autonomous rebalancing. All on-chain, no off-chain bot for the core loop.
 
-"Single operator, asymmetric fees, capture arb economics" is also the goal of the propAMM family (Titan, Sorella Angstrom, Arrakis HOT, Solana pAMMs) — but the machinery is different. Those are off-chain quoters streaming signed prices to a block builder, with private fair-value models and per-block sequencing. This hook has no off-chain quoter, no private orderflow, no builder integration. Just a fee compass and a public state machine, run inside `getFee` and `afterSwap`. Naming the difference up front so the rest of the post doesn't have to keep relitigating it.
+"Single operator, asymmetric fees, capture arb economics" is also the goal of the propAMM family (Titan, Sorella Angstrom, Arrakis HOT, Solana pAMMs). Those are builder-coordinated: an off-chain market maker streams signed quotes to a block builder, who sequences taker flow against the freshest quote each block. This hook starts from the opposite end — a fully public formula anyone can simulate from chain state — and then exposes an *optional* permissionless mechanism (`builderFee`, the fifth mechanism below) that invites a builder to bump the public fee on the LP's terms, sharing the captured spread back. That hybrid is its own design space, and `builderFee` is where this repo's research interests overlap with the propAMM frontier — closer to the propAMM end if and when a builder ever integrates, closer to "just a public formula" today.
 
-Four mechanisms compound, with a fifth available as an optional opt-in. None is novel in isolation — what's interesting is that together they let a single LP autonomously price-discriminate by direction, source per-trade inventory ~25× their equity via credit, rebalance without an off-chain bot, and live alongside Fluid DEX and Egorov's Yield Basis in the broader space of credit-backed active LP designs on-chain.
+Four mechanisms compound, with a fifth available as an optional opt-in. None is novel in isolation — what's interesting is that together they let a single LP autonomously price-discriminate by direction, source per-trade inventory ~25× their equity via credit, and rebalance without an off-chain bot.
 
 ![Passive constant-product LP vs active single-LP hook — same flow, different fee response, different P&L](../assets/1-passive-vs-active.png)
 
@@ -80,7 +80,7 @@ The four mechanisms above are entirely public — anyone can simulate the fee fr
 
 The hook exposes an opt-in `setBuilderFee(fee)` that lets anyone — in practice the block builder, since they control transaction ordering — raise the quoted fee above the public floor for the current block. `getFee` returns `max(publicFee, builderFee)`, so the public floor is preserved by construction. A configurable share of the bumped delta accrues to the bumper as revenue split. Trustless: the floor can never be lowered; griefing (setting an unprofitable bump) costs gas with no return; self-trade bumps are net negative.
 
-**If this works in the wild** — it's untested today — it makes the other mechanisms less load-bearing. The fee compass and asymmetric-fee formula become a *public floor that solvers can simulate*, while a sophisticated builder bids the actual market-clearing fee on top. Auctions and surcharges still rebalance the position and protect recenters, but the per-swap fee-setting moves from "best public approximation" to "private signal capped by the public floor." Right now, with `builderFeeShareBps = 0` on the deployed example pool, the public mechanisms are doing all the work. Full design: [docs/builder-fee-design.md](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/builder-fee-design.md).
+The four mechanisms above aren't redundant with `builderFee` — they're **layered defenses against different LVR sources**. The fee compass + asymmetric fees protect against directional toxicity from arbs trading against a stale public price; auctions clear accumulated exposure; the curvature surcharge prevents round-trip extraction across recenters; `builderFee` lets a builder with a private CEX-DEX signal price information the public formula can't see. If `builderFee` proves itself in the wild, **some of the public-formula parameters could be relaxed** (e.g. lower `captureRate`, looser `attractRate`) because the builder is already bidding the fair fee — but the auction, surcharge, and base floor remain load-bearing. They're each closing a different leak. Right now, with `builderFeeShareBps = 0` on the deployed example pool, the public mechanisms carry the full LVR-defense load. Full design: [docs/builder-fee-design.md](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/builder-fee-design.md).
 
 ## Live numbers
 
@@ -98,7 +98,7 @@ The author runs one of these on Ethereum mainnet:
 | Lifetime auctions (started / cleared) | 52+ / all clearing |
 | P&L since live (~90 days) | -\$18 (-3.6%) |
 
-The pool's running a small loss — quiet stretches accrue more borrow carry than the busy stretches' fees recover. At 10× equity the same mechanism would be net positive; at 100×, meaningful. The proof-of-principle here is that the *mechanism* works at all, not that \$500 is the right size to capture the upside.
+The pool's running a small loss — quiet stretches accrue more borrow carry than the busy stretches' fees recover. The proof-of-principle here is that the *mechanism* works at all, not that \$500 is the right size to capture the upside. What the breakeven equity actually is — and how it depends on σ, the borrow rate, and the share of incoming flow that's retail vs arb — is an empirical question the live pool doesn't answer (and one of the open problems listed below).
 
 ## Plug into routing for free
 
@@ -112,7 +112,7 @@ Every mechanism above runs on-chain, inside `getFee()` and `afterSwap()`. The ho
 
 That means: no keeper, no bot, no off-chain process needed to operate. The owner can call `setFeeParams` / `setAuctionParams` etc. to retune from time to time as the pair's flow profile clarifies, but that's a slow-timescale operation. The core loop is the hook.
 
-This matters because the alternative — an off-chain agent that monitors the pool and submits rebalance txs — is what early versions of this project did, and it's brittle. Every keeper-driven design has the same failure modes: bot goes down, RPC flakes, gas price spikes, MEV bots front-run the rebalance. Moving the whole loop into `afterSwap` removes the entire off-chain failure surface.
+This matters because the alternative — an off-chain agent that monitors the pool and submits rebalance txs — is brittle. Every keeper-driven design has the same failure modes: bot goes down, RPC flakes, gas price spikes, MEV bots front-run the rebalance. Moving the whole loop into `afterSwap` removes the entire off-chain failure surface.
 
 ## A reference you can deploy today
 
@@ -121,6 +121,24 @@ The hook, deploy scripts, calibration tooling, and design docs are at:
 → **[github.com/euler-mab/eulerswap-hook](https://github.com/euler-mab/eulerswap-hook)**
 
 The deploy flow is env-driven end-to-end. Calibration takes a JSON profile and outputs paste-ready env vars; `DeployPool.s.sol` deploys the EulerSwap pool itself; `DeployHook.s.sol` deploys the hook and binds it; `RegisterPools.s.sol` opts you into Euler's orderflow router. The walkthrough at [`docs/build-your-own-active-lp.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/build-your-own-active-lp.md) covers every step end-to-end, including an anvil dry-run recipe so you can test the whole sequence against a forked mainnet without spending real ETH.
+
+## Open problems worth working on
+
+The mechanisms above are what the hook does today. Several of them are also genuine open research questions where the next step probably needs more than a clever refactor — and that's the part I'm most excited about. If any of these resonate, please open an issue or reach out:
+
+1. **Bounding the give-up to private-orderflow searchers.** The fee compass is provably safe against an isolated arber: any manipulation pays the inflated fee on the manipulator's own swap. But a UniswapX-style filler holding private retail flow can manipulate the V3 reference *downward* and route that flow through the attract-side discount in the same block — capturing spread the LP should have won. The defensive monotonicity ("fee never lowers below `baseFee`") still holds, but the worst-case give-up vs an OFA-holding adversary hasn't been formally bounded. There's a real paper to write here.
+
+2. **Sealed-bid clearing for the rebalance auction.** The current Dutch decay routes the arb to whoever has the lowest gas/latency. A sealed-bid mechanism — block builders submit signed bids each block, highest wins, LP captures the spread between top and second bid — would route more of that value back to the LP. This is the SUAVE / OFA design pattern applied to AMM rebalancing. Concrete next step: prototype as a v2 hook variant and measure the revenue uplift against the current Dutch design on a paired test pool.
+
+3. **Variance-aware trigger thresholds.** `auctionTriggerThreshold = 50% of NAV` is clean for stables but doesn't scale gracefully to volatile pairs. A σ-aware adaptive trigger — fire when exposure exceeds `c · σ · √T` rather than a fixed NAV fraction — better reflects what's actually risky. The change is mechanically small; whether it matters in practice is an empirical question nobody's run yet.
+
+4. **`builderFee` in the wild — the propAMM bridge.** The mechanism is implemented, tested, and dormant. Its forward thesis is that this hook is the *public-formula* base layer for a propAMM-style design, with the builder bid as the private-signal layer on top — keeping the LP's safety floor non-negotiable while letting a sophisticated bidder express better information when they have it. Whether that hybrid is actually competitive against a from-the-ground-up builder-coordinated AMM is the open question. First real integration produces the first empirical answer, and the data on what the public-formula floor is costing the LP each block in the meantime.
+
+5. **Backtest, simulate, compare.** The live pool is 90 days at \$500 NAV. The realized distribution of outcomes at larger NAV, in different volatility regimes, against different competitor venues — all unobserved. A Monte Carlo over real historical mainnet flow (passive V3 vs. this hook vs. Yield Basis on the same swap-by-swap input) would tell us where the breakeven equity sits, which mechanism contributes most, and how the design behaves through fat-tailed periods like a stETH depeg or a 30% intraday move.
+
+6. **LVR under credit amplification.** A 25× credit-amplified pool has 25× higher LVR exposure than the unleveraged version of the same trades, and the borrow carry compounds. The case study shows the directionally-correct outcome; what's missing is the analytic bound — "at NAV X with σ Y, expected LVR per day is Z, and fee capture needs to exceed it by W to be net positive." That's the equation a serious operator wants in their head before allocating real capital.
+
+None of these are "we'll fix it later" placeholders. They're "we shipped what we knew how to ship; the rest is open and interesting." The hook is a working substrate for asking these questions — the contracts run, the calibration tooling is solid, and a fresh pair can be deployed in roughly an hour. Now the interesting work is figuring out what the design *should* be.
 
 ## Be honest about the risks
 
@@ -134,6 +152,6 @@ If you're using this as a template, fork it, read it, get a security review of t
 
 ---
 
-That's the design. The individual primitives — Dutch auctions, spot oracles, asymmetric fees, additive surcharges — aren't new. What's interesting is the integration: one autonomous hook that quotes directionally, deepens via vault credit, and rebalances by selling the arb to the highest bidder. All on-chain, all rule-based, no bot.
+That's the design. The individual primitives — Dutch auctions, spot oracles, asymmetric fees, additive surcharges — aren't new. What's interesting is the integration: one autonomous hook that quotes directionally, deepens via vault credit, rebalances by letting an arber take a decaying spread, and leaves a permissionless door (`builderFee`) for a sophisticated bidder to price information the public formula can't see. All on-chain, all rule-based, no bot.
 
-For the broader design-space context (Fluid DEX, Yield Basis, Uniswap V3 JIT, where this hook sits), see the [README design-space section](https://github.com/euler-mab/eulerswap-hook#where-this-sits-in-the-design-space). For the per-mechanism derivations, [`docs/uniswap-fee-compass.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/uniswap-fee-compass.md), [`docs/dynamic-fee-model.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/dynamic-fee-model.md), and [`docs/auction-walkthrough.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/auction-walkthrough.md). For the live pool's lifetime numbers, [`docs/case-study-usdc-usdt.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/case-study-usdc-usdt.md).
+For the broader design-space context (Fluid DEX, Yield Basis, Uniswap V3 JIT, where this hook sits), see the [README design-space section](https://github.com/euler-mab/eulerswap-hook#where-this-sits-in-the-design-space). For the per-mechanism derivations, [`docs/uniswap-fee-compass.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/uniswap-fee-compass.md), [`docs/dynamic-fee-model.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/dynamic-fee-model.md), [`docs/auction-walkthrough.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/auction-walkthrough.md), and [`docs/builder-fee-design.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/builder-fee-design.md). For the live pool's lifetime numbers, [`docs/case-study-usdc-usdt.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/case-study-usdc-usdt.md).

@@ -2,24 +2,24 @@
 
 **Status:** implemented in [DynamicFeeAuctionHook.sol](../contracts/src/DynamicFeeAuctionHook.sol). 20 unit tests in [DynamicFeeAuctionHook.t.sol](../contracts/test/DynamicFeeAuctionHook.t.sol) cover the threat-model table below. **Disabled by default** (`builderFeeShareBps = 0`) and **untested in the wild** — no builder has integrated yet.
 
-## How this changes the role of the other mechanisms
+## How this fits with the other mechanisms — layered LVR defense
 
-If `builderFee` works as intended in practice — i.e., a sophisticated builder reliably bids fees close to true fair-value — the public formula's role shifts from *primary fee-setting* to *safety floor*:
+The hook's five mechanisms each close a different LVR leak. They're not alternatives competing for "the fee" — they're complementary layers:
 
-| Mechanism | Role today (no builder) | Role if builderFee is live and useful |
+| Mechanism | LVR source it defends against | Role if `builderFee` is live and useful |
 |---|---|---|
-| Fee compass (#1) | Direction signal driving the formula | Backup signal for blocks where no builder bumps |
-| Asymmetric fees (#2) | The fee | Lower bound on the fee |
-| Dutch auctions (#3) | Primary rebalance mechanism | Still primary — exposure accumulates regardless of who set the fees |
-| Curvature surcharge (#4) | Anti-round-trip protection | Still needed — round-trips don't care which fee path produced the recenter |
-| Builder fee (#5) | Off | Source of the actual fee on most swaps |
+| Fee compass (#1) | Stale public spot vs true fair-value | Backup signal for blocks where no builder bumps |
+| Asymmetric fees (#2) | Directional toxicity from arbs against the public price | Can be **relaxed** (lower `captureRate`, looser `attractRate`) since the builder is already pricing in better information |
+| Dutch auctions (#3) | Accumulated directional exposure that needs rebalancing | **Still load-bearing** — exposure builds regardless of who set the per-swap fees |
+| Curvature surcharge (#4) | Round-trip extraction across recenters | **Still load-bearing** — round-trips are about curve shape, not fee level |
+| Builder fee (#5) | The builder's private CEX-DEX signal the public formula can't see | The primary per-swap fee setter when a builder bids |
 
 The properties that stay invariant either way:
 - Public floor is always preserved (`max(publicFee, builderFee)`).
 - Solvers can always simulate `publicFee` from chain state for routing without talking to any builder.
 - Auctions still clear directional exposure; surcharges still protect post-recenter curves.
 
-So the design isn't binary "either public formula or builder bids". It's **layered**: the public mechanisms are load-bearing today, and would degrade gracefully into a safety floor if the builder market ever matures around this hook.
+So if `builderFee` proves itself, mechanisms 1–2 don't get *removed* — they get *parameterized down*, because the builder is closing the same LVR leak more precisely. Mechanisms 3–4 stay where they are. The point is layered defense across distinct leaks, not redundant defenses against one.
 
 ## Problem
 
