@@ -10,6 +10,8 @@ This repo is one way out of that. It's an EulerSwap hook — a single ~1000-line
 
 Four mechanisms compound, with a fifth available as an optional opt-in. None is novel in isolation — what's interesting is that together they let a single LP autonomously price-discriminate by direction, source per-trade inventory ~25× their equity via credit, and rebalance without an off-chain bot.
 
+**A note on what this post is.** It's a working proof-of-concept, not a finished design. The contracts run autonomously on a small live mainnet pool, the calibration tooling is solid, and a fresh pair can be deployed in roughly an hour. But the empirical evidence is thin (one pool, 90 days, $500 NAV) and several of the mechanism choices have honest open-research alternatives. The post is structured as: (a) here's what it does today, (b) here's where the design is genuinely open, (c) here's how to collaborate. If you read past the live-numbers section, the **Open problems worth working on** section near the end is where the actually-interesting next-step questions sit. The goal is "this is cool, here are some further thoughts" — not "this is the finished article."
+
 ![Passive constant-product LP vs active single-LP hook — same flow, different fee response, different P&L](../assets/1-passive-vs-active.png)
 
 ## Uniswap spot as a fee compass
@@ -152,6 +154,8 @@ If you're using this as a template, fork it, read it, get a security review of t
 
 ---
 
-That's the design. The individual primitives — Dutch auctions, spot oracles, asymmetric fees, additive surcharges — aren't new. What's interesting is the integration: one autonomous hook that quotes directionally, deepens via vault credit, rebalances by letting an arber take a decaying spread, and leaves a permissionless door (`builderFee`) for a sophisticated bidder to price information the public formula can't see. All on-chain, all rule-based, no bot.
+That's the design as it stands. The individual primitives — Dutch auctions, spot oracles, asymmetric fees, additive surcharges — aren't new. What's interesting is the integration: one autonomous hook that quotes directionally, deepens via vault credit, rebalances by letting an arber take a decaying spread, and leaves a permissionless door (`builderFee`) for a sophisticated bidder to price information the public formula can't see. All on-chain, all rule-based, no bot.
+
+Treat this as a starting point, not a finished answer. The hook is a working substrate for the research questions in the Open Problems section above — every one of those is more interesting than getting the current parameters exactly right, and several of them probably have better answers than the choices this repo ships with. If any of the open problems resonate, or if you spot something that's just wrong, the issue tracker is the right place. The goal is to compound on what's here, not defend it.
 
 For the broader design-space context (Fluid DEX, Yield Basis, Uniswap V3 JIT, where this hook sits), see the [README design-space section](https://github.com/euler-mab/eulerswap-hook#where-this-sits-in-the-design-space). For the per-mechanism derivations, [`docs/uniswap-fee-compass.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/uniswap-fee-compass.md), [`docs/dynamic-fee-model.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/dynamic-fee-model.md), [`docs/auction-walkthrough.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/auction-walkthrough.md), and [`docs/builder-fee-design.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/builder-fee-design.md). For the live pool's lifetime numbers, [`docs/case-study-usdc-usdt.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/case-study-usdc-usdt.md).
