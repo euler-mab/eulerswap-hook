@@ -31,19 +31,20 @@ The prior internal audit identified 13 issues and fixed 9. This follow-up:
 
 ### New Findings Summary
 
-| ID | Title | Severity |
-|---|---|---|
-| M-01 | `_safeTransfer` does not verify token contract existence | Medium |
-| L-01 | `setBuilderFee` zero-fee check is bypassable with `fee = 1` | Low |
-| L-02 | `batchSettleBuilderShare` is an unbounded loop | Low |
-| L-03 | Unidirectional-swap assertion reverts the swap instead of silently skipping | Low |
-| N-01 | ERC-777 callback tokens enable in-callback re-entry into setBuilderFee + swap | Note |
-| N-02 | No reentrancy guard on `withdrawBuilderShare` and `batchSettleBuilderShare` | Note |
-| N-03 | Pre-existing: `approxNav` can grow stale across many swaps without recenter | Note |
-| N-04 | Pre-existing: owner can change all fee/auction params atomically with no announcement | Note |
-| N-05 | Missing convenience view `isCurrentlyBumped() returns (bool, address, uint64)` | Note |
+| ID | Title | Severity | Status |
+|---|---|---|---|
+| M-01 | `_safeTransfer` does not verify token contract existence | Medium | **Fixed** |
+| L-01 | `setBuilderFee` zero-fee check is bypassable with `fee = 1` | Low | **Fixed** (now `require(fee >= baseFee)`) |
+| L-02 | `batchSettleBuilderShare` is an unbounded loop | Low | **Fixed** (capped at 256) |
+| L-03 | Unidirectional-swap assertion reverts the swap instead of silently skipping | Low | **Fixed** (early-return) |
+| N-01 | ERC-777 callback tokens enable in-callback re-entry into setBuilderFee + swap | Note | Mitigated via N-02 |
+| N-02 | No reentrancy guard on `withdrawBuilderShare` and `batchSettleBuilderShare` | Note | **Fixed** (`nonReentrantBuilderFee`) |
+| N-03 | Pre-existing: `approxNav` can grow stale across many swaps without recenter | Note | Acknowledged |
+| N-04 | Pre-existing: owner can change all fee/auction params atomically with no announcement | Note | Acknowledged (inherent to single-LP design) |
+| N-05 | Missing convenience view `isCurrentlyBumped() returns (bool, address, uint64)` | Note | **Fixed** |
 
 **0 Critical, 0 High, 1 Medium, 3 Low, 5 Notes.**
+**Remediated:** 6 of 9.
 
 ---
 

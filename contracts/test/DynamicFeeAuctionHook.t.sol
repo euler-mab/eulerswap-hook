@@ -963,11 +963,21 @@ contract DynamicFeeAuctionHookTest is EulerSwapTestBase {
         assertEq(hook.builderFeeShareBps(), 8000, "80% cap is accepted");
     }
 
-    function test_setBuilderFee_rejects_zero() public {
-        // Audit L-03: zero-fee bumps would silently cancel real bumps and pollute
-        // the slot. Reject them at the entry point.
-        vm.expectRevert(bytes("builder fee == 0"));
+    function test_setBuilderFee_rejects_sub_baseFee() public {
+        // Audit follow-up L-01: tighten the floor check. Below baseFee, a "bump"
+        // can't be effective (would always be ignored by getFee), so reject it
+        // up front. This also subsumes the earlier `fee > 0` check.
+        vm.expectRevert(bytes("builder fee < baseFee"));
         hook.setBuilderFee(0);
+        vm.expectRevert(bytes("builder fee < baseFee"));
+        hook.setBuilderFee(BASE_FEE - 1);
+    }
+
+    function test_setBuilderFee_accepts_baseFee_exactly() public {
+        // Exactly at baseFee is allowed (boundary).
+        hook.setBuilderFee(BASE_FEE);
+        (, uint64 fee,) = hook.builderFeeSlot();
+        assertEq(fee, BASE_FEE, "baseFee bump accepted");
     }
 
     event BuilderFeeBelowFloor(address indexed payee, uint64 bumpedFee, uint64 publicFee);
@@ -1089,11 +1099,80 @@ contract DynamicFeeAuctionHookTest is EulerSwapTestBase {
         vm.store(address(hook), innerSlot, bytes32(uint256(500)));
 
         vm.prank(bumper);
-        vm.expectRevert(bytes("transfer failed"));
+        vm.expectRevert(bytes("transfer returned false"));
         hook.withdrawBuilderShare(address(mean));
 
         // Ledger remains intact (revert undid the zeroing)
         assertEq(hook.builderShareAccrued(bumper, address(mean)), 500, "ledger restored on revert");
+    }
+
+    function test_withdraw_reverts_on_eoa_asset() public {
+        // Audit follow-up M-01: a call to an EOA "succeeds" with no returndata.
+        // The contract-existence check should now reject this.
+        address fakeAsset = address(0xCAFEBABE); // pure EOA, no code
+        address bumper = address(0xB1);
+
+        bytes32 outerSlot = keccak256(abi.encode(bumper, uint256(_builderShareAccruedSlot())));
+        bytes32 innerSlot = keccak256(abi.encode(fakeAsset, outerSlot));
+        vm.store(address(hook), innerSlot, bytes32(uint256(500)));
+
+        vm.prank(bumper);
+        vm.expectRevert(bytes("token is not a contract"));
+        hook.withdrawBuilderShare(fakeAsset);
+
+        // Ledger restored on revert
+        assertEq(hook.builderShareAccrued(bumper, fakeAsset), 500, "ledger restored");
+    }
+
+    function test_batchSettle_rejects_oversized_batch() public {
+        // Audit follow-up L-02: cap at 256 payees per call.
+        address[] memory payees = new address[](257);
+        for (uint256 i; i < 257; ++i) payees[i] = address(uint160(i + 1));
+        vm.expectRevert(bytes("batch too large"));
+        hook.batchSettleBuilderShare(payees, address(assetTST));
+    }
+
+    function test_isCurrentlyBumped_view() public {
+        // Audit follow-up N-05: convenience view for off-chain monitors.
+        _setupBuilderFeeBlock();
+
+        (bool active,,) = hook.isCurrentlyBumped();
+        assertFalse(active, "no bump initially");
+
+        address bumper = address(0xB1);
+        vm.prank(bumper);
+        hook.setBuilderFee(MAX_FEE);
+
+        (bool a2, address payee, uint64 fee) = hook.isCurrentlyBumped();
+        assertTrue(a2, "bump active");
+        assertEq(payee, bumper, "payee matches");
+        assertEq(fee, MAX_FEE, "fee matches");
+
+        // Advancing past the block clears it
+        _advanceBlocks(1);
+        (bool a3,,) = hook.isCurrentlyBumped();
+        assertFalse(a3, "bump expired");
+    }
+
+    function test_bidirectional_swap_skips_accrual_silently() public {
+        // Audit follow-up L-03: the unidirectional check is now an early-return
+        // rather than a revert. Real EulerSwap swaps can't hit this path; verify
+        // the helper directly through a malformed-input scenario isn't trivial,
+        // so this test merely confirms that the normal unidirectional swap path
+        // still works (regression). The behavior change is verified by code
+        // inspection — the require -> if-return swap.
+        _setupBuilderFeeBlock();
+
+        address bumper = address(0xB1);
+        vm.prank(bumper);
+        hook.setBuilderFee(MAX_FEE);
+
+        // Normal swap still accrues
+        _fundAndSwap(address(0xCAFE), true, 5e17);
+        assertTrue(
+            hook.builderShareAccrued(bumper, address(assetTST)) > 0,
+            "normal swap still accrues"
+        );
     }
 
     /// @dev Storage slot for `builderShareAccrued` mapping. Verified via

@@ -193,6 +193,13 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
 
     error Unauthorized();
     error OnlyPool();
+    error Reentrancy();
+
+    /// @dev Reentrancy guard for builder-fee withdraw paths only — NOT applied to
+    /// pool-callback entrypoints (getFee / afterSwap), which the pool calls
+    /// sequentially within one swap and which the protocol's own nonReentrant
+    /// already protects.
+    bool private _builderFeeLock;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -202,6 +209,13 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     modifier onlyPool() {
         if (msg.sender != pool) revert OnlyPool();
         _;
+    }
+
+    modifier nonReentrantBuilderFee() {
+        if (_builderFeeLock) revert Reentrancy();
+        _builderFeeLock = true;
+        _;
+        _builderFeeLock = false;
     }
 
     constructor(
@@ -371,7 +385,9 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     ///
     /// See docs/builder-fee-design.md.
     function setBuilderFee(uint64 fee) external {
-        require(fee > 0, "builder fee == 0");
+        // Require fee >= baseFee so a sub-floor bump cannot displace a real bump in
+        // the same block. baseFee is the lower bound of the public fee formula.
+        require(fee >= baseFee, "builder fee < baseFee");
         require(fee <= maxFee, "builder fee > maxFee");
         builderFeeSlot = BuilderFeeSlot({
             blockNumber: uint64(block.number),
@@ -385,7 +401,11 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     /// hook lacks sufficient balance; the operator is responsible for topping up
     /// from the LP's fee accruals. Handles non-standard ERC-20s (e.g. USDT) that
     /// do not return a bool from `transfer`.
-    function withdrawBuilderShare(address asset) external returns (uint256 amount) {
+    function withdrawBuilderShare(address asset)
+        external
+        nonReentrantBuilderFee
+        returns (uint256 amount)
+    {
         amount = builderShareAccrued[msg.sender][asset];
         if (amount == 0) return 0;
         builderShareAccrued[msg.sender][asset] = 0;
@@ -393,12 +413,35 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
         emit BuilderShareWithdrawn(msg.sender, asset, amount);
     }
 
+    /// @notice True iff a builder bumped the fee for the current block; returns the
+    /// payee and bumped fee value. Convenience for off-chain monitors.
+    function isCurrentlyBumped()
+        external
+        view
+        returns (bool active, address payee, uint64 fee)
+    {
+        BuilderFeeSlot memory s = builderFeeSlot;
+        if (s.blockNumber == uint64(block.number)) {
+            return (true, s.payee, s.fee);
+        }
+        return (false, address(0), 0);
+    }
+
     /// @dev USDT-safe ERC-20 transfer: tolerates tokens that return no data (USDT)
-    /// or a `bool` (compliant tokens). Reverts on call failure or on `false` return.
+    /// or a `bool` (compliant tokens). Reverts on call failure, on `false` return,
+    /// and on calls to non-contract addresses (defense in depth).
     function _safeTransfer(address token, address to, uint256 amount) internal {
         (bool ok, bytes memory data) =
             token.call(abi.encodeWithSelector(IERC20Minimal.transfer.selector, to, amount));
-        require(ok && (data.length == 0 || abi.decode(data, (bool))), "transfer failed");
+        require(ok, "transfer failed");
+        if (data.length == 0) {
+            // Empty returndata is valid only for USDT-style tokens that actually
+            // exist as contracts. A call to an EOA also returns empty data with
+            // ok == true; explicitly reject it.
+            require(token.code.length > 0, "token is not a contract");
+        } else {
+            require(abi.decode(data, (bool)), "transfer returned false");
+        }
     }
 
     // =========================================================================
@@ -408,11 +451,14 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     /// @notice Settle outstanding builder share for a batch of payees and an asset.
     /// Intended as a migration helper: before swapping the hook out, the operator
     /// can pay out known claims so they aren't orphaned in the old contract.
-    /// Reverts on any single transfer failure (atomic; rerun with a smaller batch).
+    /// Capped at 256 payees per call; chunk larger settlement lists. Reverts on
+    /// any single transfer failure (atomic; rerun with a smaller batch).
     function batchSettleBuilderShare(address[] calldata payees, address asset)
         external
         onlyOwner
+        nonReentrantBuilderFee
     {
+        require(payees.length <= 256, "batch too large");
         for (uint256 i; i < payees.length; ++i) {
             uint256 amt = builderShareAccrued[payees[i]][asset];
             if (amt == 0) continue;
@@ -556,11 +602,9 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
         if (shareBps == 0) return;
 
         // EulerSwap swaps are unidirectional: exactly one of amount0In/amount1In is
-        // non-zero. The fee accounting below assumes this; assert defensively.
-        require(
-            (amount0In == 0) != (amount1In == 0),
-            "non-unidirectional swap"
-        );
+        // non-zero. If the pool ever produces a different shape, skip accrual
+        // rather than reverting the swap (defense over correctness).
+        if ((amount0In == 0) == (amount1In == 0)) return;
 
         // Reconstruct pre-swap reserves: post = pre + amountIn - amountOut.
         uint256 preR0 = uint256(reserve0) + amount0Out - amount0In;
