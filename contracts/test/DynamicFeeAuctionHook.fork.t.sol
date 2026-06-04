@@ -28,7 +28,7 @@ interface IERC20 {
 }
 
 /// @title Fork test: deploy hook on real mainnet USDC/WETH pool
-/// @dev Run with: forge test --match-contract DynamicFeeAuctionHookForkTest --fork-url $RPC_URL -vvv
+/// @dev Run with: forge test --match-contract DynamicFeeAuctionHookForkTest --fork-url $MAINNET_RPC_URL -vvv
 contract DynamicFeeAuctionHookForkTest is Test {
     using FullMath for uint256;
     using Sqrt for uint256;

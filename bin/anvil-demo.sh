@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # Anvil-fork demo for the DynamicFeeAuctionHook.
-# Spins up a forked-mainnet anvil node and runs the USDC/WETH deploy script
-# against it using the well-known anvil test key. Never broadcasts to mainnet.
+# Spins up a forked-mainnet anvil node and runs the USDC/WETH hook fork tests
+# against it — they deploy the full hook + bind it + assert it works. Never broadcasts.
 
 set -euo pipefail
 
 : "${MAINNET_RPC_URL:?MAINNET_RPC_URL must be set. Copy .env.example to .env and source it.}"
 
-ANVIL_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 ANVIL_PORT=${ANVIL_PORT:-8545}
 
 cleanup() {
@@ -31,14 +30,25 @@ done
 
 echo "Anvil ready."
 echo
-echo "Running the USDC/WETH hook fork tests against the local anvil. This exercises"
-echo "the full deploy + install path against real mainnet state."
+echo "Running the hook fork tests against the local anvil. This exercises the full"
+echo "deploy + install path against real mainnet state."
 echo
 
-cd contracts && forge test \
-  --match-contract DynamicFeeAuctionHookForkTest \
-  --fork-url "http://localhost:$ANVIL_PORT" \
-  -vv
+# GOTCHA: this repo has TWO fork-test styles in the same suite:
+#   - DynamicFeeAuctionHook.fork.t.sol → no createSelectFork; relies on --fork-url
+#   - HealthAtBoundary.fork.t.sol      → vm.createSelectFork(envString("MAINNET_RPC_URL"))
+# We need BOTH redirects to point at the local anvil. --fork-url alone doesn't override
+# the env var, and overriding the env var alone leaves tests without a fork URL.
+#
+# ETHERSCAN_API_KEY is dummied because foundry.toml's [etherscan] block resolves it
+# eagerly even for test runs — but anvil doesn't need it.
+cd contracts && \
+  MAINNET_RPC_URL="http://localhost:$ANVIL_PORT" \
+  ETHERSCAN_API_KEY="${ETHERSCAN_API_KEY:-unused}" \
+  forge test \
+    --match-path "test/*.fork.t.sol" \
+    --fork-url "http://localhost:$ANVIL_PORT" \
+    -vv
 
 echo
 echo "Demo complete. Anvil shutting down."

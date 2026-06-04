@@ -84,7 +84,7 @@ contract HealthAtBoundaryTest is Test {
     uint256 usdtVaultPrice;
 
     function setUp() public {
-        vm.createSelectFork(vm.envString("RPC_URL"));
+        vm.createSelectFork(vm.envString("MAINNET_RPC_URL"));
         periphery = new EulerSwapPeriphery();
 
         // Cache current oracle prices for underlying tokens

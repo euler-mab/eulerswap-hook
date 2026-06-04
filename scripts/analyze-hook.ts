@@ -16,8 +16,8 @@ const HOOK_DEPLOY = BigInt(process.env.HOOK_DEPLOY_BLOCK ?? "24651832");
 const DEC0 = Number(process.env.DECIMALS_0 ?? 6);
 const DEC1 = Number(process.env.DECIMALS_1 ?? 18);
 
-const RPC_URL = process.env.RPC_URL;
-if (!RPC_URL) { console.error("Set RPC_URL"); process.exit(1); }
+const RPC_URL = process.env.MAINNET_RPC_URL ?? process.env.RPC_URL;
+if (!RPC_URL) { console.error("Set MAINNET_RPC_URL"); process.exit(1); }
 
 const client = createPublicClient({
   chain: mainnet, transport: http(RPC_URL),

@@ -23,8 +23,8 @@ const UNI_POOL = (process.env.UNI_POOL_ADDRESS ?? "0x88e6A0c2dDD26FEEb64F039a2c4
 const DEC0 = Number(process.env.DECIMALS_0 ?? 6);
 const DEC1 = Number(process.env.DECIMALS_1 ?? 18);
 
-const RPC_URL = process.env.RPC_URL;
-if (!RPC_URL) { console.error("Set RPC_URL"); process.exit(1); }
+const RPC_URL = process.env.MAINNET_RPC_URL ?? process.env.RPC_URL;
+if (!RPC_URL) { console.error("Set MAINNET_RPC_URL"); process.exit(1); }
 
 const client = createPublicClient({
   chain: mainnet,

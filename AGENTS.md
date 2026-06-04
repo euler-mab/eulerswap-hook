@@ -20,11 +20,11 @@ cd ../scripts && npm install                # viem + tsx for the TS scripts
 # Solidity build
 cd contracts && forge build
 
-# Unit tests (no RPC required) — 155 tests, 10 suites
+# Unit tests (no RPC required) — 167 tests, 10 suites
 forge test --no-match-path "test/*.fork.t.sol"
 
-# Fork tests (mainnet fork, RPC required)
-RPC_URL=https://... forge test --match-path "test/*.fork.t.sol"
+# Fork tests (mainnet fork, MAINNET_RPC_URL required)
+MAINNET_RPC_URL=https://... forge test --match-path "test/*.fork.t.sol"
 
 # Single test contract
 forge test --match-contract DynamicFeeAuctionHookTest -vv
@@ -34,7 +34,7 @@ cd scripts && npx tsx calibrate-hook-params.ts profiles/usdc-weth.json
 npx tsx calibrate-hook-params.ts profiles/usdc-weth.json --env  # paste-ready env block
 
 # On-chain analysis (RPC required)
-RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
+MAINNET_RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 ```
 
 ## Repo layout (essentials)
@@ -96,7 +96,7 @@ RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 ## Pitfalls
 
 - **`forge build` errors with "stack too deep" on `DeployHookUSDCUSDT.s.sol`**: should be fixed (struct + helper refactor). If it returns, the deploy script still builds under `--via-ir`.
-- **Fork tests fail without `RPC_URL`**: expected. Use `--no-match-path "test/*.fork.t.sol"` for unit-only runs.
+- **Fork tests fail without `MAINNET_RPC_URL`**: expected. Use `--no-match-path "test/*.fork.t.sol"` for unit-only runs (or `make test`).
 - **`npx tsx` not found**: run `npm install` in `scripts/` first.
 - **`DeployPool` reverts with `Unauthorized()`**: the factory requires `_msgSender() == eulerAccount`. The script wraps in `evc.call` so sub-account deploys work. Don't bypass.
 - **Calibration `--env` output missing `EQ0`/`EQ1`/`MIN0`/`MIN1`/`PRICE_X`/`PRICE_Y`**: by design — these are deploy-time inputs (boost math + oracle read), not calibration outputs. The walkthrough Step 5 shows where to supply them.
