@@ -10,7 +10,7 @@ Each EVC account is your EOA with its **last byte XOR'd** with the sub-account n
 
 ## Why use a sub-account vs the main EOA?
 
-**Isolation.** A propAMM pool borrows aggressively against its own collateral — if its parameters are mistuned or the market gaps badly, liquidation risk on that sub-account should not touch the rest of your Euler activity (savings vaults, other pools, leveraged positions). Putting the pool on its own sub-account walls off that risk. It also makes accounting much cleaner: NAV, debt, and PnL for the pool are exactly what's in that one sub-account. The deploy scripts in [contracts/script/](../contracts/script) all assume the pool lives on a dedicated sub-account.
+**Isolation.** An active-LP pool borrows aggressively against its own collateral — if its parameters are mistuned or the market gaps badly, liquidation risk on that sub-account should not touch the rest of your Euler activity (savings vaults, other pools, leveraged positions). Putting the pool on its own sub-account walls off that risk. It also makes accounting much cleaner: NAV, debt, and PnL for the pool are exactly what's in that one sub-account. The deploy scripts in [contracts/script/](../contracts/script) all assume the pool lives on a dedicated sub-account.
 
 ## How much equity do I need to start?
 

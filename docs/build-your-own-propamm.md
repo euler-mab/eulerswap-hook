@@ -1,6 +1,6 @@
-# Build your own propAMM on EulerSwap
+# Build your own active single-LP AMM on EulerSwap
 
-End-to-end walkthrough for launching a credit-backed proprietary AMM with the hook in this repo.
+End-to-end walkthrough for launching a credit-backed, single-LP active AMM with the hook in this repo.
 
 This guide assumes you've read the [README](../README.md) and want to actually deploy something. By the end you'll have:
 
@@ -260,7 +260,7 @@ And do a tiny test swap (e.g. $1) through Euler's swap UI ([app.euler.finance](h
 
 ## Step 8 — Get retail flow
 
-A propAMM with no flow is just an arb magnet. Plug into the orderflow layer:
+An active-LP pool with no flow is just an arb magnet. Plug into the orderflow layer:
 
 ### Euler's own orderflow router (easiest)
 

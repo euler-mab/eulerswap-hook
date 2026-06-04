@@ -4,7 +4,7 @@ Coding-agent quickstart for this repo. Humans should start at [README.md](README
 
 ## What this repo is
 
-A single Solidity hook contract for [EulerSwap](https://github.com/euler-xyz/euler-swap) (`DynamicFeeAuctionHook`), plus calibration tooling and deploy scripts. The hook does dynamic fee modulation, Dutch fee-decay auctions for rebalancing, and autonomous recentering — all on-chain. propAMM-style, but rule-based not model-based. See [ARCHITECTURE.md](ARCHITECTURE.md) for the mental model.
+A single Solidity hook contract for [EulerSwap](https://github.com/euler-xyz/euler-swap) (`DynamicFeeAuctionHook`), plus calibration tooling and deploy scripts. The hook does dynamic fee modulation, Dutch fee-decay auctions for rebalancing, and autonomous recentering — all on-chain. Active single-LP design: adjacent in goal to a propAMM (single operator captures arb economics) but rule-based and on-chain, not a block-builder operation with private signals. See [ARCHITECTURE.md](ARCHITECTURE.md) for the mental model.
 
 ## First-time setup
 

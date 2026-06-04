@@ -1,8 +1,8 @@
 # DynamicFeeAuctionHook for EulerSwap
 
-A reference hook for running a **propAMM-style strategy** on [EulerSwap](https://github.com/euler-xyz/euler-swap) — a single Euler account becomes its own AMM, borrows against its own collateral for just-in-time depth, and quotes dynamic fees against a Uniswap-spot oracle. The hook handles fee modulation, Dutch fee-decay auctions for rebalancing, and autonomous recentering. All on-chain. No off-chain bot for the core loop.
+A reference hook for **active single-LP liquidity provision** on [EulerSwap](https://github.com/euler-xyz/euler-swap) — one operator per pool, dynamic fees set against a Uniswap-spot oracle, Dutch fee-decay auctions for autonomous rebalancing. All on-chain. No off-chain bot for the core loop.
 
-It is **not** a TradFi-style prop venue (no private fair-value model, no per-quote pricing). It's the on-chain rule-based version of that idea, sitting alongside Fluid DEX, Egorov's Yield Basis, and Uniswap V3 JIT — see [Where this sits in the design space](#where-this-sits-in-the-design-space) for the precise placement.
+The hook is **adjacent in goal** to a propAMM (single operator, capture arb economics, asymmetric fees) but **different in mechanism**. Most propAMMs in 2026 are block-builder operations — a builder runs an in-block AMM with private fair-value signals and quotes against incoming orderflow as it builds the block. This hook has no builder integration, no private signals, no per-block mempool advantage. Just public formulas, every block, on-chain. See [Where this sits in the design space](#where-this-sits-in-the-design-space) for placement against Fluid DEX, Yield Basis, and Uniswap V3 JIT.
 
 This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHook.sol) contract, calibration tooling, and deploy scripts needed to launch your own pool. For routing your pool through aggregators and intent systems, see the separate [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) repo.
 
@@ -28,39 +28,39 @@ A single deployed pool on Ethereum mainnet, running this exact hook:
 |---|---|
 | Pool | [`0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8) |
 | Hook | [`0x99b97FD05b4F943899358F90855C0BEE34584e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41) |
-| LP equity (NAV) | **~$500** |
-| Daily volume | **~$98k** |
-| Daily turnover | **~196×** |
-| Lifetime volume | ~$810k (187 swaps) |
+| LP equity (NAV) | **~$489** |
+| Volume (7d avg) | **~$46k/day** (bursty: $0 – $100k) |
+| Daily turnover (7d avg) | **~95×** |
+| Lifetime volume | ~$810k (187 swaps over ~90 days) |
 
-The pool quotes from virtual reserves of **~$247M / $242M** — orders of magnitude deeper than its real equity — by borrowing against itself via Euler's vaults. Fees collected roughly equal borrow carry on the directional leg, so the position runs ~flat while doing real volume. Full breakdown in [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md).
+Per-trade capacity is order $10k (bounded by collateral × LTV); the curve's virtual reserves of $247M / $242M tighten slippage *within* that capacity to near-1:1. The interesting number isn't depth — it's turnover: ~95× equity per day on average, because the auction mechanic recycles inventory many times when flow is active. Volume is **bursty** — heavy days ($100k+) when aggregators route through, quiet days near zero when they don't. P&L runs slightly negative in quiet stretches (borrow carry exceeds fees) and recovers on busy days; current snapshot is -$12 over ~90 days. Full breakdown in [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md).
 
 ---
 
 ## Where this sits in the design space
 
-"propAMM" is a loose, evolving DeFi term — not a strict TradFi import. It points at the space of liquidity-provision designs that sit between two extremes:
+Active LP designs sit between two extremes:
 
 - **Passive multi-LP AMMs** (Uniswap V2/V3, Curve) — shared liquidity, public curve, no operator discretion. Anyone can LP; nobody manages quotes.
-- **TradFi prop market makers** (Citadel, Wintermute) — private fair-value models, per-quote pricing, opaque inventory management. Nothing public; nothing rule-based.
+- **Block-builder propAMMs** — a builder runs an in-block AMM with private fair-value signals and per-block quoting, captures spread + MEV at block-build time. Opaque, builder-only, off-chain.
 
-DeFi has been filling in the middle ground. Active LP designs in this space:
+A few approaches sit in between, each making different trade-offs:
 
 | Design | What it does | Substrate |
 |---|---|---|
 | **Uniswap V3 JIT** | Single-block LP positions around big swaps | Uniswap V3 |
 | **Fluid DEX** | Lending-vault assets double as DEX liquidity (shared LP) | Instadapp Smart Vaults |
 | **Yield Basis** (Egorov, 2025) | 2× leveraged CFMM eliminates IL drag — position tracks underlying | Curve infra |
-| **Active single-LP, propAMM-style** (this repo) | Single-LP curve + dynamic fees + autonomous rebalancing | EulerSwap |
+| **Active single-LP, rule-based** (this repo) | Single-LP curve + dynamic fees + autonomous Dutch auctions | EulerSwap |
 
 **EulerSwap is the primitive that makes these accessible.** Each Euler account becomes its own AMM. Collateral and debt across the account define a single pool. The curve, fee schedule, and rebalancing strategy are all yours to choose. What makes it work:
 
 1. **Each Euler account is its own AMM.** Collateral and debt across the account define one pool. No factory subscription, no shared LP shares.
-2. **Credit-backed liquidity.** The pool borrows against its own collateral to provide quotes. With LTVs up to ~96% on stables, virtual reserves are amplified ~50× over real equity. The position underneath stays small and directional.
+2. **Credit-backed liquidity.** The pool borrows against its own collateral to source inventory for each swap. With LTVs up to ~96% on stables, per-trade capacity is ~25× equity via vault credit. The position underneath stays small and directional, but the auction mechanic recycles it many times per day.
 3. **Any curve, any range.** A `concentration` parameter interpolates between constant-product (Uniswap V2), constant-sum (Curve-style for stables), and range-bound liquidity (Uniswap V3). Set per-side and per-pool.
 4. **Hooks.** EulerSwap exposes `getFee` and `afterSwap` hook points. The hook controls fee dynamics and can call `reconfigure()` from inside `afterSwap` to rebalance — no off-chain bot required for the core loop.
 
-This repo implements **one configuration**: a single-LP, credit-backed AMM with autonomous fee modulation and Dutch fee auctions for rebalancing. It's propAMM-flavored (single operator, dynamic fees, active rebalancing) but **rule-based, not model-based** — fees and shifts are public formulas, not private signals. That's the right choice for an on-chain venue (gas, transparency, manipulation resistance) but it's a distinction worth naming.
+This repo implements **one configuration**: a single-LP, credit-backed AMM with autonomous fee modulation and Dutch fee auctions for rebalancing. It shares the goal of a propAMM (single operator captures arb economics, asymmetric fees), but the mechanism is fundamentally different from a block-builder propAMM — **rule-based, not model-based, on-chain not in-builder**. Fees and shifts are public formulas. That's the right shape for an on-chain venue (gas, transparency, manipulation resistance) but it's a distinction worth naming, because the two designs share a vocabulary without sharing a machinery.
 
 ### Other configurations the same substrate supports
 
@@ -107,9 +107,9 @@ All four mechanisms are derived from first principles in [docs/rebalance-auction
 
 ## Why this matters
 
-The textbook "AMM LP is unprofitable vs HODL" critique assumes a passive constant-product LP getting picked off by arbs. A propAMM flips the model: you actively quote fees that price in the toxicity of each direction, you use credit to deepen liquidity without locking up capital, and you participate in the routing layer that retail actually uses.
+The textbook "AMM LP is unprofitable vs HODL" critique assumes a passive constant-product LP getting picked off by arbs. An active LP flips the model: you quote fees that price in the toxicity of each direction, you use credit to deepen liquidity without locking up capital, and you participate in the routing layer that retail actually uses.
 
-The live USDC/USDT pool at $500 NAV doing $100k/day is what that looks like in practice. EulerSwap was built to make this approach accessible to any account on Euler. This repo is one way to operate one.
+The live USDC/USDT pool at ~$500 NAV doing tens of $k/day on busy days is what that looks like in practice. EulerSwap was built to make this approach accessible to any account on Euler. This repo is one way to operate one.
 
 ---
 
@@ -200,7 +200,7 @@ scripts/
 ### Getting started
 | Doc | Read it when you want to… |
 |---|---|
-| [docs/build-your-own-propamm.md](docs/build-your-own-propamm.md) | Walk through deploying your own propAMM end-to-end |
+| [docs/build-your-own-propamm.md](docs/build-your-own-propamm.md) | Walk through deploying your own active-LP pool end-to-end |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | See how account + pool + hook + oracle + orderflow fit together |
 | [docs/blog-post.md](docs/blog-post.md) | Read the narrative version of the design (Medium-style post, with diagrams) |
 | [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md) | See the live $500-NAV / $100k-day pool with actual on-chain numbers |

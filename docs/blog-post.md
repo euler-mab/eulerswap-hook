@@ -1,14 +1,16 @@
-# How to run a propAMM-style LP on EulerSwap without a bot
+# How to run an active single-LP AMM on EulerSwap without a bot
 
 ## Introduction
 
 Most AMM LPs lose to arbs. The textbook complaint — "you're just paying LVR" — assumes a passive constant-product position with one fee for every direction. Every directional move means the arber takes the spread before you can react, and you eat the inventory shift. Concentrated liquidity tightens depth but doesn't change the asymmetry.
 
-This repo is one way out of that. It's an EulerSwap hook — a single ~1000-line Solidity contract — that runs a **propAMM-style LP**: single operator, public curve, rule-based fees, on-chain rebalancing. propAMM-style, not literal TradFi prop: fees and shifts are public formulas, not private signals. That's the right shape for an on-chain venue (gas, transparency, manipulation resistance) but it's a distinction worth naming.
+This repo is one way out of that. It's an EulerSwap hook — a single ~1000-line Solidity contract — that runs **active single-LP liquidity provision**: one operator per pool, dynamic fees set against a Uniswap-spot oracle, Dutch fee-decay auctions for autonomous rebalancing. All on-chain, no off-chain bot for the core loop.
 
-Four mechanisms compound. None is novel in isolation — what's interesting is that together they let a single LP autonomously price-discriminate by direction, deepen quotes by ~50× via credit, rebalance without an off-chain bot, and live alongside Fluid DEX and Egorov's Yield Basis in the broader space of credit-backed active LP designs on-chain.
+It's **adjacent in goal** to a propAMM — single operator captures arb economics with asymmetric fees — but the mechanism is different. Most propAMMs in 2026 are **block-builder operations**: a builder runs an in-block AMM with private fair-value signals and quotes against incoming orderflow as it builds the block. This hook has no builder integration and no private signals; it's rule-based, public formulas, every block, on-chain. Worth naming because the two designs share a vocabulary without sharing a machinery.
 
-![Passive constant-product LP vs propAMM-style LP — same flow, different fee response, different P&L](../assets/1-passive-vs-active.png)
+Four mechanisms compound. None is novel in isolation — what's interesting is that together they let a single LP autonomously price-discriminate by direction, source per-trade inventory ~25× their equity via credit, rebalance without an off-chain bot, and live alongside Fluid DEX and Egorov's Yield Basis in the broader space of credit-backed active LP designs on-chain.
+
+![Passive constant-product LP vs active single-LP hook — same flow, different fee response, different P&L](../assets/1-passive-vs-active.png)
 
 ## Uniswap spot as a fee compass
 
@@ -40,13 +42,13 @@ Asymmetric by design. Toxic flow pays for itself, retail flow gets a discount, a
 
 ## Credit-backed depth
 
-EulerSwap is the substrate. Each Euler account is its own AMM, with the same collateral that's earning lending yield doubling as swap liquidity. With LTVs up to 96% on stables, the curve sees virtual reserves ~50× the real position underneath; if you also concentrate around a peg, effective depth multiplies again.
+EulerSwap is the substrate. Each Euler account is its own AMM, with the same collateral that's earning lending yield doubling as swap liquidity. With LTVs up to 96% on stables, the pool can source per-trade inventory ~25× its equity by looping the vault credit. The curve's "virtual reserves" (eq0/eq1) then shape the slippage *within* that capacity — large virtual reserves with concentration around a peg means near-1:1 pricing for trades inside the band. Per-trade capacity, though, is still ultimately bounded by collateral × LTV.
 
-![Credit-backed amplification — $500 NAV becomes $247M of quoteable depth via 96% LTV vault credit plus narrow-band concentration](../assets/2-credit-backed-depth.png)
+![Credit-backed amplification — $500 NAV supports ~$10k of per-trade inventory and tens of $k/day of cumulative throughput on busy days because the auction cycles direction many times per day](../assets/2-credit-backed-depth.png)
 
-The live USDC/USDT example: ~$500 of equity in a sub-account ($382 USDC + $119 USDT), and the pool quotes against virtual reserves of $247M USDC / $242M USDT. That's a ~490,000× effective depth multiplier — a number that's only interesting in the context of a hook that knows what to do with it.
+The live USDC/USDT example: ~$500 of equity in a sub-account ($382 USDC + $119 USDT). Per-trade capacity is order $10k. The curve has virtual reserves of $247M / $242M which give very tight pricing within that capacity — but the $247M number is a slippage-curve parameter, not a depth claim. The actually-interesting number is **daily turnover**: when flow is active, the auction recycles direction multiple times a day, taking volume well into multiples of equity. The pool's averaged ~$46k/day over the last week on $489 NAV (~95×). Flow is bursty — quiet days drop to zero, busy days exceed $100k.
 
-Every swap that adds inventory deposits to the supply vault; every swap that drains inventory borrows from the borrow vault. The pool's "real" footprint is small and directional. Bigger virtual reserves = deeper quote = bigger directional position you can build up before a rebalance is needed.
+Every swap that adds inventory deposits to the supply vault or repays debt; every swap that drains inventory borrows from the borrow vault or withdraws supply. The pool's "real" footprint is small and directional. Auctions are what keep it from getting stuck.
 
 That's the next problem.
 
@@ -80,14 +82,15 @@ The author runs one of these on Ethereum mainnet:
 |---|---|
 | Pool | [`0x71...68A8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8) |
 | Hook | [`0x99...4e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41) |
-| LP equity (NAV) | ~$500 |
-| Daily volume | ~$98k |
-| Daily turnover | ~196× |
-| Lifetime volume | ~$810k (187 swaps) |
-| Pool fees collected (lifetime) | ~$24 |
-| P&L since live (~80 days) | ~flat |
+| LP equity (NAV) | ~$489 |
+| Volume (7d avg) | ~$46k/day (bursty: $0 – $100k) |
+| Daily turnover (7d avg) | ~95× |
+| Lifetime volume | ~$810k (187 swaps over ~90 days) |
+| Lifetime fees collected | ~$24 |
+| Lifetime auctions (started / ended) | 52 / 51 |
+| P&L since live (~90 days) | -$12 (-2.4%) |
 
-The pool quotes against $247M of virtual reserves backed by $500 of real equity, does ~$98k of volume a day, and runs roughly flat — fees collected ≈ vault borrow carry. At 10× equity it would be net positive; at 100×, meaningful. The proof-of-principle here is that the *mechanism* works at all, not that $500 is the right size to capture the upside.
+The pool's running a small loss — quiet stretches accrue more borrow carry than the busy stretches' fees recover. At 10× equity the same mechanism would be net positive; at 100×, meaningful. The proof-of-principle here is that the *mechanism* works at all, not that $500 is the right size to capture the upside.
 
 ## Plug into routing for free
 

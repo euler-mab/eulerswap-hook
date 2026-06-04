@@ -3,7 +3,7 @@
 > **Pool**: [`0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8)
 > **Hook**: [`0x99b97FD05b4F943899358F90855C0BEE34584e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41) ([DynamicFeeAuctionHook](../contracts/src/DynamicFeeAuctionHook.sol))
 > **Deploy script**: [`DeployHookUSDCUSDT.s.sol`](../contracts/script/DeployHookUSDCUSDT.s.sol)
-> **Live since**: 2026-03-15 (~80 days at time of writing)
+> **Live since**: 2026-03-15 (~90 days at time of writing)
 
 A live mainnet pool with $500 of equity quoting $100k of daily volume. Numbers below are on-chain at the time of writing — re-run [`scripts/analyze-hook.ts`](../scripts/analyze-hook.ts) for current state.
 
@@ -13,16 +13,20 @@ A live mainnet pool with $500 of equity quoting $100k of daily volume. Numbers b
 
 | Metric | Value |
 |---|---|
-| Real LP equity (NAV) | **~$499** |
-| Virtual reserves | **~$247M USDC / $242M USDT** |
-| Effective depth multiplier | **~490,000×** |
-| Daily volume (rolling 24h) | **~$98k** |
-| Daily turnover | **~196× NAV** |
-| Lifetime volume | ~$810k (187 swaps) |
-| Lifetime fees collected | $24.27 |
-| P&L since live | ~flat (-$1.70 = -0.34%) |
+All numbers below are a snapshot at the time of writing; re-run [`scripts/analyze-hook.ts`](../scripts/analyze-hook.ts) for current state.
 
-The pool is making roughly as much in fees as it pays in borrow carry on its directional leg. That's the design: low base fees to win flow, the LP earns when arbs hit the capture-fee multiplier or when the deploy/recenter surcharge is active.
+| Real LP equity (NAV) | **~$489** |
+| Per-trade capacity (collateral × LTV) | **~$10k** |
+| Curve virtual reserves (slippage-shape parameter, not depth) | ~$247M USDC / $242M USDT |
+| Volume (7-day average) | **~$46k/day** |
+| Volume (bursty range) | $0 – ~$100k/day depending on routing |
+| Daily turnover (7-day avg) | **~95× NAV** |
+| Lifetime volume | ~$810k (187 swaps over ~90 days) |
+| Lifetime fees collected | $24.27 |
+| Lifetime auctions started / ended | 52 / 51 (1 currently active) |
+| P&L since live | -$12 (-2.4%) — small loss from quiet periods, not flat |
+
+Each individual trade is bounded by the pool's per-trade capacity (collateral × LTV ≈ $10k). The reason cumulative volume is much larger than per-trade capacity is the auction loop: when the LP's net inventory builds up in one direction, the auction recycles it back to neutral by paying an arber to trade the opposite way, so the pool's directional position cycles. Volume is **bursty** — heavy days when aggregators route through the pool, quiet days when they route elsewhere — averaging ~$46k/day over the past week. The LP collects fees from each swap but pays vault borrow carry continuously, so quiet periods drag P&L slightly negative; busy periods recover it. Net so far: small loss (~-2.4%) over ~90 days.
 
 ---
 
@@ -31,9 +35,9 @@ The pool is making roughly as much in fees as it pays in borrow carry on its dir
 - **Equity at deploy**: $382 USDC + $119 USDT = $501 total
 - **Curve shape**: `concentration = 0` on both sides (range-bound), `range = 1 bps` (a single tick)
 - **Cross-LTV**: 96% USDC↔USDT (the Euler pair has symmetric high LTVs because the assets correlate ~1:1)
-- **Equilibrium reserves** (computed by [`_computeEquilibrium`](../contracts/script/DeployHookUSDCUSDT.s.sol) for `h=1` at the boundary): `eq0 ≈ $247.6M`, `eq1 ≈ $242.3M`. With LTV that high and concentration that aggressive, additive boost pushes the virtual reserves to nine figures off ~$500 of real collateral.
+- **Equilibrium reserves** (computed by [`_computeEquilibrium`](../contracts/script/DeployHookUSDCUSDT.s.sol) for `h=1` at the boundary): `eq0 ≈ $247.6M`, `eq1 ≈ $242.3M`. These are the constant-function curve's parameters, not the pool's real depth — they determine the *shape* of the slippage curve (how much price moves for a given trade size) within whatever physical capacity the pool has. With LTV=96% and range=1 bps, the additive boost makes the curve quote near-1:1 for any trade well within the per-trade capacity bound.
 
-The trade-off: a tighter range and higher LTV give you deeper virtual reserves, but the boundary is closer to the equilibrium price. For a USDC/USDT pair where spot moves ~5 bps over a typical week, a 1-bps range is fine; for ETH/USDC you'd want orders of magnitude wider.
+The trade-off: tighter range + higher LTV → tighter quotes within the band, but the boundary is closer to equilibrium and a single trade can exhaust the band faster. For a USDC/USDT pair where spot moves ~5 bps over a typical week, a 1-bps range is fine; for ETH/USDC you'd want orders of magnitude wider.
 
 ---
 
@@ -78,20 +82,21 @@ USDC borrowed: 6,850.15
 NAV (both ≈ $1): ~$499.30
 ```
 
-So the LP currently holds ~$7,350 USDT and owes ~$6,850 USDC against ~$500 of net equity — a directional position that the auction system is trying to clear back to delta-neutral on each large swap.
+So the LP currently holds ~$7,950 USDT and owes ~$7,460 USDC against ~$489 of net equity — a directional position that the auction system clears back to delta-neutral when exposure builds enough.
 
-**Volume distribution over the 80-day life:**
+**Volume distribution over the ~90-day life:**
 
 ```
 days 0–60:   ~52 swaps total (mostly probing trades, ~$13k volume)
-days 60–80:  ~135 swaps    ($795k+ volume) — pool started getting routed
+days 60–80:  ~135 swaps    (most of lifetime volume) — aggregators started routing through
+days 80–90:  bursty — quiet most days, ~$100k on busy days, $0 on quiet days
 ```
 
-Pool was dormant for the first ~60 days, then orderflow picked up sharply once retail aggregators started routing through it. The recent rate is ~$98k/day with no signs of slowing.
+Pool was dormant for the first ~60 days, then orderflow picked up. Recent activity is bursty — the 7-day average is ~$46k/day but individual days range from $0 to ~$100k depending on whether aggregators include the pool in their routing.
 
-**Fees collected**: $24.27 lifetime, mostly from the recent active period. Annualized, that's roughly $110/year on $500 of capital — a 22% APY in absolute fee terms.
+**Fees collected**: $24.27 lifetime, mostly from the active middle period. Annualized over ~90 days, that's roughly $100/year on $500 of equity — a ~20% APY in absolute fee terms, but borrow carry on the directional leg has been a similar order of magnitude.
 
-**P&L**: NAV today $499.30 vs $501 at deploy. The ~$1.70 gap is borrow carry on the USDC leg (the pool has ~$6,850 borrowed for an extended period; at the EVK's borrow APY that's a real annual cost). Fees collected over the period roughly offset it — call it net flat with the recent uptick in flow pushing it toward positive.
+**P&L**: NAV today $489 vs $501 at deploy. The ~$12 gap is borrow carry on the directional leg minus fees collected. The position is not "running flat" in the original snapshot sense — it's running at a small loss (-2.4% over ~90 days), driven by quiet-period carry exceeding swap fees. Busy days more than cover carry; quiet days don't.
 
 ---
 
@@ -99,14 +104,14 @@ Pool was dormant for the first ~60 days, then orderflow picked up sharply once r
 
 - **Routing wins**: undercutting the V4 reference by 60% on base fee gets the pool quoted in aggregator paths it otherwise wouldn't be.
 - **Recenters are quiet**: with 1-bps range and minRecenterDelta = 0.5 bps, most swaps don't trigger reconfigures; the surcharge stays at zero except briefly after auctions.
-- **No auctions triggered yet** (as of writing). The 50% NAV trigger is conservative; in 80 days no single direction has accumulated enough exposure to hit it. Either we're underutilizing the rebalancing machinery, or the trigger is well-tuned for this pair's flow profile — hard to say without more data.
-- **Spot oracle has been rock solid**: V4 PoolManager `extsload` reads have never failed (~190 successful reads to date). No fallback-to-baseFee events observed.
+- **The auction mechanism is exercised**: 52 auctions started, 51 cleared cleanly over ~90 days. One currently active (started ~1.5 days ago, still waiting to clear) — see the open items below.
+- **Spot oracle has been reliable**: V4 PoolManager `extsload` reads have been the dominant signal; no fallback-to-baseFee events observed in current monitoring.
 
 ## What's not (yet)
 
-- **$500 NAV is too small to be profitable in absolute terms.** $24 of fees over 80 days is a proof-of-concept number, not a business. The same hook + same routing on $50k of equity would be doing $10M/day at $2k/day in fees.
-- **Recent flow is bursty.** The last 11 days dominate lifetime stats. A few weeks of sustained data would tell us more about expected steady-state turnover.
-- **No active rebalancing has been needed**, so the auction system is unproven on this pool. Other deployments (or a scale-up of this one) would exercise it.
+- **$500 NAV is too small to be profitable in absolute terms.** $24 of fees over ~90 days is a proof-of-concept number, not a business. The same hook + same routing on $50k of equity would be doing $10M/day at $2k/day in fees.
+- **Flow is bursty.** Volume by day ranges from $0 to ~$100k depending on aggregator routing. Quiet days drag P&L negative via carry; busy days recover it. Sustained busy flow would push the pool meaningfully positive.
+- **Currently stuck auction** (as of writing): an auction has been active for ~1.5 days without clearing — likely a reconfigure failed and the hook is in the retry window. Worth a manual `endAuction()` to reset cleanly. The hardening pass added an `auctionStartBlock` reset on caught reconfigures specifically for this case; the next swap should pick it up if the reconfigure succeeds.
 
 ---
 

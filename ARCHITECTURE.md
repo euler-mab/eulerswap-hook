@@ -1,6 +1,6 @@
 # Architecture
 
-How the pieces fit together when you run an EulerSwap propAMM.
+How the pieces fit together when you run an active single-LP AMM on EulerSwap.
 
 ## The five components
 
@@ -106,7 +106,7 @@ If the oracle call reverts (paused pool, removed PoolManager state, anything), t
 
 ### 5. Orderflow
 
-A propAMM with no order flow is just an arb magnet. Register your pool with Euler's orderflow router (one tx via [`RegisterPools.s.sol`](contracts/script/RegisterPools.s.sol)) and every aggregator that integrates with Euler will see it. Additional channels — UniswapX, CoW Protocol, 1inch Fusion, Tycho — are generic EulerSwap-level integrations and live in [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations).
+An active-LP pool with no order flow is just an arb magnet. Register your pool with Euler's orderflow router (one tx via [`RegisterPools.s.sol`](contracts/script/RegisterPools.s.sol)) and every aggregator that integrates with Euler will see it. Additional channels — UniswapX, CoW Protocol, 1inch Fusion, Tycho — are generic EulerSwap-level integrations and live in [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations).
 
 ## A swap, end to end
 
