@@ -126,7 +126,7 @@ git submodule update --init --recursive
 # 2. Build + test
 cd contracts
 forge build
-forge test --no-match-path "test/*.fork.t.sol"     # 143 unit tests
+forge test --no-match-path "test/*.fork.t.sol"     # 155 unit tests
 
 # 3. Calibrate parameters for your pool. Copy/edit a profile in scripts/profiles/
 #    then write a paste-ready env-var block:
@@ -165,7 +165,7 @@ contracts/
     DynamicFeeAuctionHook.sol         # The hook (~1000 lines, single contract)
     MinimalHook.sol                   # 50-line pedagogical starter
   test/
-    DynamicFeeAuctionHook.t.sol       # 45 unit tests
+    DynamicFeeAuctionHook.t.sol       # 65 unit tests
     DynamicFeeAuctionHook.fork.t.sol  # 14 mainnet fork tests
     MinimalHook.t.sol                 # 4 tests
     walkthrough/                      # Step-by-step auction walkthroughs

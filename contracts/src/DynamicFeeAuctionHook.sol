@@ -29,8 +29,13 @@ interface IExtsload {
     function extsload(bytes32 slot) external view returns (bytes32);
 }
 
+interface IERC20Minimal {
+    function transfer(address to, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
 /// @title DynamicFeeAuctionHook — Oracle-reactive fees + Dutch fee-decay auctions
-/// @notice Autonomous hook for a single-LP EulerSwap pool. Four mechanisms:
+/// @notice Autonomous hook for a single-LP EulerSwap pool. Five mechanisms:
 ///   1. Oracle-reactive fee from Uniswap V3 slot0 or V4 extsload (fee-only,
 ///      never below baseFee — safe against spot manipulation).
 ///   2. Routing-aware asymmetry: attract retail flow, capture arbs.
@@ -39,6 +44,11 @@ interface IExtsload {
 ///   4. Clearing auction (fallback): when NAV-relative exposure exceeds the
 ///      trigger, shift priceY to expose an arb, decay the fee block-by-block,
 ///      and recenter when the marginal price converges to the oracle.
+///   5. Builder-fee bump: permissionless `setBuilderFee` lets anyone (in
+///      practice the block builder) raise the quoted fee for the current
+///      block. getFee returns max(public, builder); revenue share on the
+///      bumped delta is accrued to the bumper. Floor is preserved by
+///      construction. See docs/builder-fee-design.md.
 ///
 /// Exposure is measured against NAV (deposits − debts) — the denominator
 /// the LP cares about. Auction shifts are sized to actual exposure, not a
@@ -113,6 +123,23 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     bool public auctionClearAsset0;
     uint80 public preShiftPriceY;
 
+    // --- Builder fee (opportunistic builder-side fee bump) ---
+    // Anyone can raise the fee for the current block. getFee returns
+    // max(publicFee, builderFee), so the public floor is preserved. Revenue share
+    // on the bumped delta is accrued to msg.sender of setBuilderFee.
+    // Trustless: griefing pays gas with no return; only the block-controller
+    // wins the ordering race that gets share revenue; self-trade bumps are
+    // unprofitable. See docs/builder-fee-design.md.
+    struct BuilderFeeSlot {
+        uint64 blockNumber;
+        uint64 fee; // 1e18-scaled, same units as maxFee
+        address payee;
+    }
+
+    BuilderFeeSlot public builderFeeSlot;
+    uint16 public builderFeeShareBps; // 0..10000; portion of bumped delta paid to payee
+    mapping(address => mapping(address => uint256)) public builderShareAccrued;
+
     // --- Events ---
     event FeeParamsUpdated(
         uint64 baseFee, uint64 maxFee, uint64 gasCoeff, uint64 externalFee, uint256 captureRate, uint256 attractRate
@@ -128,6 +155,10 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     event Recentered(uint64 blockNumber);
     event ReconfigureFailed(uint64 blockNumber, string context);
     event UnderwaterDetected(uint64 blockNumber);
+    event BuilderFeeSet(address indexed payee, uint64 fee, uint64 blockNumber);
+    event BuilderFeeShareBpsUpdated(uint16 shareBps);
+    event BuilderShareAccrued(address indexed payee, address indexed asset, uint256 amount);
+    event BuilderShareWithdrawn(address indexed payee, address indexed asset, uint256 amount);
 
     // --- Constructor param structs ---
     struct OracleConfig {
@@ -238,12 +269,33 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
         revert("not implemented");
     }
 
-    /// @notice Dynamic fee: normal (oracle-reactive + surcharge) or auction (fee-decay).
+    /// @notice Dynamic fee: max(public formula, builder bump). Public formula is
+    /// normal (oracle-reactive + surcharge) or auction (fee-decay).
     function getFee(bool asset0IsInput, uint112 reserve0, uint112 reserve1, bool)
         external
         view
         override
         returns (uint64 fee)
+    {
+        uint256 publicFee = _publicFee(asset0IsInput, reserve0, reserve1);
+
+        // Builder bump applies only to the current block; ignore stale slots.
+        BuilderFeeSlot memory slot = builderFeeSlot;
+        if (slot.blockNumber == uint64(block.number) && uint256(slot.fee) > publicFee) {
+            uint256 bumped = uint256(slot.fee);
+            if (bumped > uint256(maxFee)) bumped = uint256(maxFee);
+            return uint64(bumped);
+        }
+
+        return uint64(publicFee);
+    }
+
+    /// @dev Public formula component of the fee — used by getFee and by the
+    /// afterSwap share-accrual to determine the bumped delta.
+    function _publicFee(bool asset0IsInput, uint112 reserve0, uint112 reserve1)
+        internal
+        view
+        returns (uint256)
     {
         if (auctionActive) {
             uint256 elapsed = block.number - uint256(auctionStartBlock);
@@ -257,33 +309,40 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
             }
 
             if (asset0IsInput == auctionClearAsset0) {
-                return uint64(auctionFee > uint256(maxFee) ? uint256(maxFee) : auctionFee);
+                return auctionFee > uint256(maxFee) ? uint256(maxFee) : auctionFee;
             } else {
                 uint256 normalFee = _computeNormalFee(asset0IsInput, reserve0, reserve1);
                 uint256 effectiveFee = normalFee > auctionFee ? normalFee : auctionFee;
-                return uint64(effectiveFee > uint256(maxFee) ? uint256(maxFee) : effectiveFee);
+                return effectiveFee > uint256(maxFee) ? uint256(maxFee) : effectiveFee;
             }
         }
 
         uint256 computedFee = _computeNormalFee(asset0IsInput, reserve0, reserve1);
         computedFee += _currentSurcharge();
         if (computedFee > uint256(maxFee)) computedFee = uint256(maxFee);
-        return uint64(computedFee);
+        return computedFee;
     }
 
-    /// @notice afterSwap: continuous recenter on improvement, auction as fallback.
+    /// @notice afterSwap: accrue builder share (if any), then continuous recenter
+    /// on improvement, auction as fallback.
     function afterSwap(
-        uint256,
-        uint256,
-        uint256,
-        uint256,
-        uint256,
-        uint256,
+        uint256 amount0In,
+        uint256 amount1In,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        uint256 fee0,
+        uint256 fee1,
         address,
         address,
         uint112 reserve0,
         uint112 reserve1
     ) external override onlyPool {
+        // Settle any builder-fee share BEFORE the auction/recenter logic may mutate
+        // state. Public-fee recomputation uses pre-swap reserves derived from deltas.
+        _accrueBuilderShare(
+            amount0In, amount1In, amount0Out, amount1Out, fee0, fee1, reserve0, reserve1
+        );
+
         if (!auctionActive) {
             _handleNormalMode(reserve0, reserve1);
         } else {
@@ -297,8 +356,45 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     }
 
     // =========================================================================
+    // Builder fee (permissionless)
+    // =========================================================================
+
+    /// @notice Raise the fee for the current block. Permissionless — caller becomes
+    /// payee of the bumped-delta share. `getFee` returns `max(publicFee, fee)`, so
+    /// the public floor is never lowered. Stale slots (from prior blocks) are
+    /// ignored automatically. See docs/builder-fee-design.md.
+    function setBuilderFee(uint64 fee) external {
+        require(fee <= maxFee, "builder fee > maxFee");
+        builderFeeSlot = BuilderFeeSlot({
+            blockNumber: uint64(block.number),
+            fee: fee,
+            payee: msg.sender
+        });
+        emit BuilderFeeSet(msg.sender, fee, uint64(block.number));
+    }
+
+    /// @notice Withdraw accrued builder-fee share for a given asset. Reverts if the
+    /// hook lacks sufficient balance; the operator is responsible for topping up
+    /// from the LP's fee accruals.
+    function withdrawBuilderShare(address asset) external returns (uint256 amount) {
+        amount = builderShareAccrued[msg.sender][asset];
+        if (amount == 0) return 0;
+        builderShareAccrued[msg.sender][asset] = 0;
+        require(IERC20Minimal(asset).transfer(msg.sender, amount), "transfer failed");
+        emit BuilderShareWithdrawn(msg.sender, asset, amount);
+    }
+
+    // =========================================================================
     // Owner management
     // =========================================================================
+
+    /// @notice Set the share of bumped-fee revenue paid to the bumper.
+    /// Setting to 0 disables the mechanism (no payee will bother bumping).
+    function setBuilderFeeShareBps(uint16 shareBps) external onlyOwner {
+        require(shareBps <= 10000, "shareBps > 100%");
+        builderFeeShareBps = shareBps;
+        emit BuilderFeeShareBpsUpdated(shareBps);
+    }
 
     function setFeeParams(
         uint64 _baseFee,
@@ -395,6 +491,58 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     /// @notice Owner can refresh vault state to correct for interest accrual drift
     function refreshVaultState() external onlyOwner {
         _cacheVaultState(_getUniswapPrice());
+    }
+
+    // =========================================================================
+    // Internal: builder-fee share accrual
+    // =========================================================================
+
+    /// @dev If a builder bumped the fee for this block, accrue the configured share
+    /// of the bumped delta to the bumper's payee address. Called from afterSwap.
+    /// Reconstructs pre-swap reserves from deltas so the public-fee comparison
+    /// uses the same inputs as the original getFee call.
+    function _accrueBuilderShare(
+        uint256 amount0In,
+        uint256 amount1In,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        uint256 fee0,
+        uint256 fee1,
+        uint112 reserve0,
+        uint112 reserve1
+    ) internal {
+        BuilderFeeSlot memory slot = builderFeeSlot;
+        if (slot.blockNumber != uint64(block.number)) return;
+        if (slot.fee == 0) return;
+        uint256 shareBps = uint256(builderFeeShareBps);
+        if (shareBps == 0) return;
+
+        // Reconstruct pre-swap reserves: post = pre + amountIn - amountOut.
+        // Use signed math via int256 to handle bidirectional swaps cleanly.
+        uint256 preR0 = uint256(reserve0) + amount0Out - amount0In;
+        uint256 preR1 = uint256(reserve1) + amount1Out - amount1In;
+        if (preR0 > type(uint112).max || preR1 > type(uint112).max) return;
+
+        bool asset0IsInput = amount0In > 0;
+        uint256 publicFee = _publicFee(asset0IsInput, uint112(preR0), uint112(preR1));
+
+        uint256 bumped = uint256(slot.fee);
+        if (bumped > uint256(maxFee)) bumped = uint256(maxFee);
+        if (bumped <= publicFee) return;
+
+        uint256 delta = bumped - publicFee;
+
+        // The fee was paid in the input asset; bumped portion of the total fee
+        // collected = totalFee * delta / bumped. Then payee gets shareBps of that.
+        uint256 totalFee = asset0IsInput ? fee0 : fee1;
+        if (totalFee == 0) return;
+
+        uint256 share = (totalFee * delta * shareBps) / (bumped * 10000);
+        if (share == 0) return;
+
+        address asset = asset0IsInput ? asset0 : asset1;
+        builderShareAccrued[slot.payee][asset] += share;
+        emit BuilderShareAccrued(slot.payee, asset, share);
     }
 
     // =========================================================================

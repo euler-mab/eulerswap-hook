@@ -20,7 +20,7 @@ cd ../scripts && npm install                # viem + tsx for the TS scripts
 # Solidity build
 cd contracts && forge build
 
-# Unit tests (no RPC required) — 135 tests, 10 suites
+# Unit tests (no RPC required) — 155 tests, 10 suites
 forge test --no-match-path "test/*.fork.t.sol"
 
 # Fork tests (mainnet fork, RPC required)
@@ -43,7 +43,7 @@ RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 |---|---|
 | `contracts/src/DynamicFeeAuctionHook.sol` | The production hook (~1000 lines, single contract) |
 | `contracts/src/MinimalHook.sol` | 50-line pedagogical starter — fork from here |
-| `contracts/test/DynamicFeeAuctionHook.t.sol` | 45 unit tests (mocked V3 oracle) |
+| `contracts/test/DynamicFeeAuctionHook.t.sol` | 65 unit tests (mocked V3 oracle) |
 | `contracts/test/DynamicFeeAuctionHook.fork.t.sol` | 14 fork tests against the mainnet pool |
 | `contracts/test/walkthrough/` | Step-by-step auction walkthrough tests |
 | `contracts/script/DeployHook.s.sol` | Generic env-driven hook deploy + install |

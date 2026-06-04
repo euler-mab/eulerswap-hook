@@ -1,6 +1,6 @@
 # `builderFee` — opportunistic builder-side fee bump
 
-**Status:** design sketch, not implemented. Open for discussion.
+**Status:** implemented in [DynamicFeeAuctionHook.sol](../contracts/src/DynamicFeeAuctionHook.sol). 20 unit tests in [DynamicFeeAuctionHook.t.sol](../contracts/test/DynamicFeeAuctionHook.t.sol) cover the threat-model table below.
 
 ## Problem
 
@@ -153,13 +153,20 @@ In each case the existing mechanism remains the **lower bound** on the fee. Noth
 
 ## Implementation size
 
-Estimated additions:
+Actual changes in [DynamicFeeAuctionHook.sol](../contracts/src/DynamicFeeAuctionHook.sol):
 
-- `BuilderFeeSlot` struct + storage slot: ~5 lines
-- `builderFeeShareBps` param + setter: ~5 lines
-- `setBuilderFee` external function: ~10 lines
-- `getFee` modification: ~5 lines
-- `afterSwap` share payout: ~15 lines (recompute public fee, derive delta, transfer)
-- Tests: 20–30 cases covering the threat-model rows above + happy path
+- `BuilderFeeSlot` struct + storage slot, `builderFeeShareBps` param, `builderShareAccrued` ledger
+- `setBuilderFee(uint64)` — permissionless, caller becomes payee
+- `setBuilderFeeShareBps(uint16)` — `onlyOwner` (defaults to 0 = dormant)
+- `withdrawBuilderShare(address asset)` — payee pulls accrued share; reverts if hook underfunded
+- `getFee` refactored to use internal `_publicFee` helper; returns `max(public, builder)`
+- `_accrueBuilderShare` called first in `afterSwap`, reconstructs pre-swap reserves from deltas
+- `IERC20Minimal` interface added for the withdraw transfer
 
-Total: ~40 LOC of hook code, ~200 LOC of tests. No external dependencies, no new audit surface beyond the bookkeeping.
+Total: ~70 LOC of hook code, ~280 LOC of tests (20 cases covering the threat-model table). No external dependencies beyond a minimal IERC20 interface.
+
+## Operational notes
+
+- **Defaults to dormant.** `builderFeeShareBps` is 0 at deploy. Nobody can earn share until the owner enables it. Once enabled, anyone can bump.
+- **Funding the hook.** The hook accrues share to a ledger but does not pull tokens from the pool — fees stay in the LP's accruals. To honor `withdrawBuilderShare`, the LP owner must transfer the corresponding asset balance into the hook contract. A practical pattern is to top up the hook periodically based on emitted `BuilderShareAccrued` events.
+- **Disable in emergencies.** Setting `builderFeeShareBps = 0` halts new accruals immediately. Existing accrued balances remain claimable.
