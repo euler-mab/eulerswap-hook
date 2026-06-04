@@ -2,7 +2,7 @@
 
 A reference hook for **active single-LP liquidity provision** on [EulerSwap](https://github.com/euler-xyz/euler-swap) — one operator per pool, dynamic fees set against a Uniswap-spot oracle, Dutch fee-decay auctions for autonomous rebalancing. All on-chain. No off-chain bot for the core loop.
 
-The hook is **adjacent in goal** to a propAMM (single operator, capture arb economics, asymmetric fees) but **different in mechanism**. Most propAMMs in 2026 are block-builder operations — a builder runs an in-block AMM with private fair-value signals and quotes against incoming orderflow as it builds the block. This hook has no builder integration, no private signals, no per-block mempool advantage. Just public formulas, every block, on-chain. See [Where this sits in the design space](#where-this-sits-in-the-design-space) for placement against Fluid DEX, Yield Basis, and Uniswap V3 JIT.
+The hook is **adjacent in goal** to a propAMM (single operator, capture arb economics, asymmetric fees) but **different in mechanism**. Most propAMMs in 2026 are **builder-coordinated**: an off-chain market maker streams signed quotes to the block builder, who matches incoming orderflow against the freshest quote inside the block before it lands. The private fair-value signal lives with the maker; the builder provides sequencing. This hook has no builder integration, no off-chain quoter, no per-block mempool advantage. Just public formulas, every block, on-chain. See [Where this sits in the design space](#where-this-sits-in-the-design-space) for placement against Fluid DEX, Yield Basis, and Uniswap V3 JIT.
 
 This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHook.sol) contract, calibration tooling, and deploy scripts needed to launch your own pool. For routing your pool through aggregators and intent systems, see the separate [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) repo.
 
@@ -42,7 +42,7 @@ Per-trade capacity is order $10k (bounded by collateral × LTV); the curve's vir
 Active LP designs sit between two extremes:
 
 - **Passive multi-LP AMMs** (Uniswap V2/V3, Curve) — shared liquidity, public curve, no operator discretion. Anyone can LP; nobody manages quotes.
-- **Block-builder propAMMs** — a builder runs an in-block AMM with private fair-value signals and per-block quoting, captures spread + MEV at block-build time. Opaque, builder-only, off-chain.
+- **Builder-coordinated propAMMs** — an off-chain market maker streams signed quotes to a block builder, who sequences taker flow against the freshest quote inside the block. Captures spread + MEV at block-build time. Private signal, builder-gated, off-chain quoter.
 
 A few approaches sit in between, each making different trade-offs:
 
@@ -60,7 +60,7 @@ A few approaches sit in between, each making different trade-offs:
 3. **Any curve, any range.** A `concentration` parameter interpolates between constant-product (Uniswap V2), constant-sum (Curve-style for stables), and range-bound liquidity (Uniswap V3). Set per-side and per-pool.
 4. **Hooks.** EulerSwap exposes `getFee` and `afterSwap` hook points. The hook controls fee dynamics and can call `reconfigure()` from inside `afterSwap` to rebalance — no off-chain bot required for the core loop.
 
-This repo implements **one configuration**: a single-LP, credit-backed AMM with autonomous fee modulation and Dutch fee auctions for rebalancing. It shares the goal of a propAMM (single operator captures arb economics, asymmetric fees), but the mechanism is fundamentally different from a block-builder propAMM — **rule-based, not model-based, on-chain not in-builder**. Fees and shifts are public formulas. That's the right shape for an on-chain venue (gas, transparency, manipulation resistance) but it's a distinction worth naming, because the two designs share a vocabulary without sharing a machinery.
+This repo implements **one configuration**: a single-LP, credit-backed AMM with autonomous fee modulation and Dutch fee auctions for rebalancing. It shares the goal of a propAMM (single operator captures arb economics, asymmetric fees), but the mechanism is fundamentally different from a builder-coordinated propAMM — **rule-based, not model-based, on-chain not builder-side**. Fees and shifts are public formulas a swapper can simulate before they trade. That's the right shape for an on-chain venue (gas, transparency, manipulation resistance) but it's a distinction worth naming, because the two designs share a vocabulary without sharing a machinery.
 
 ### Other configurations the same substrate supports
 
