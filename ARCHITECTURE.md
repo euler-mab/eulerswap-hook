@@ -80,15 +80,18 @@ Implements `IEulerSwapHookTarget` — three optional callbacks:
 
 The pool's `swapHookedOperations` byte selects which subset is active. The hook uses `0x06` (`GET_FEE | AFTER_SWAP`).
 
-The hook's state machine has **two modes**:
+The hook's state machine has **two modes** for the autonomous fee/rebalance loop:
 
 - **Normal**: oracle-reactive fee (capture arbs / attract retail) plus a decaying surcharge from the last recenter.
 - **Auction**: when relative exposure exceeds a threshold, shift the equilibrium price to create a profitable arb, decay the fee block-by-block until the arb is taken, then recenter and exit the auction.
+
+Layered on top, an **optional builder-fee mechanism** lets any party call `setBuilderFee(fee)` to raise the quoted fee above the public floor for the current block, with a configurable share of the bumped delta accrued to the bumper. `getFee` returns `max(publicFee, builderFee)` so the floor is preserved. Disabled by default (`builderFeeShareBps = 0`); not enabled on the deployed example pool. Full design: [docs/builder-fee-design.md](docs/builder-fee-design.md).
 
 State the hook tracks across swaps (all read/written from within `afterSwap`):
 - `lastExposure`, `baseNetAsset1`, `cachedNav` — for exposure measurement vs NAV
 - `surchargeStartBlock`, `surchargeInitialAmount` — for the recenter surcharge
 - `auctionActive`, `auctionStartBlock`, `auctionStartingFee`, `auctionClearAsset0`, `preShiftPriceY` — for the auction state machine
+- `builderFeeSlot`, `builderFeeShareBps`, `builderShareAccrued` — for the optional builder-fee mechanism
 
 ### 4. The fee oracle (Uniswap V3 or V4)
 

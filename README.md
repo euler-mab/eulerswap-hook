@@ -2,11 +2,9 @@
 
 A reference hook for **active single-LP liquidity provision** on [EulerSwap](https://github.com/euler-xyz/euler-swap) — one operator per pool, dynamic fees set against a Uniswap-spot oracle, Dutch fee-decay auctions for autonomous rebalancing. All on-chain. No off-chain bot for the core loop.
 
-The "active" framing means three concrete things: (1) **single operator per pool** — one Euler account owns the position, not a shared LP curve; (2) **fee-oracle-driven asymmetric fees** — the hook reads a Uniswap-spot reference and quotes higher for the direction that's arbing the pool, lower for the direction that's bringing retail flow; (3) **autonomous Dutch-auction rebalancing** — when inventory drifts off-neutral, the hook offers a known arb that decays in price until someone takes it. All in public Solidity, runnable inside `getFee` and `afterSwap`. No off-chain quoter, no private orderflow, no builder integration. See [Where this sits in the design space](#where-this-sits-in-the-design-space) for placement against Fluid DEX, Yield Basis, and Uniswap V3 JIT.
+The "active" framing means concrete things: **single operator per pool** (one Euler account owns the position, not a shared LP curve), **fee-oracle-driven asymmetric fees** (quote higher for arb direction, lower for retail), and **autonomous Dutch-auction rebalancing** (when inventory drifts, the hook offers a known arb that decays in price until someone takes it). All in public Solidity, runnable inside `getFee` and `afterSwap`. No off-chain quoter, no private orderflow, no builder integration required.
 
-This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHook.sol) contract, calibration tooling, and deploy scripts needed to launch your own pool. For routing your pool through aggregators and intent systems, see the separate [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) repo.
-
-📖 **Want the narrative version?** [`docs/blog-post.md`](docs/blog-post.md) is a ~1,800-word write-up of the design (passive-vs-active LP framing, credit-backed depth, the auction mechanic, live numbers) — same content as a Medium-style post.
+This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHook.sol) contract, calibration tooling, and deploy scripts needed to launch your own pool. For routing your pool through aggregators and intent systems, see the separate [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) repo. Narrative-style overview in [`docs/blog-post.md`](docs/blog-post.md).
 
 ## About the substrate
 
@@ -20,9 +18,37 @@ This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHo
 
 ---
 
+## What the hook does
+
+[DynamicFeeAuctionHook.sol](contracts/src/DynamicFeeAuctionHook.sol) is autonomous — once deployed, it runs without any off-chain bot. **Five mechanisms** compound inside the hook, each solving a specific failure mode of naïve constant-product LPing:
+
+### 1. Uniswap-spot-as-fee-oracle — *direction signal*
+
+The hook reads spot from the deepest Uniswap pool for the pair (V3 `slot0()` or V4 `extsload`). Spot is unsafe as a *collateral* oracle but **safe for fee bumping**: the hook only ever raises the fee above `baseFee`, never lowers it. A manipulator pays the inflated fee on their own swap. Full analysis: [docs/uniswap-oracle-pattern.md](docs/uniswap-oracle-pattern.md).
+
+### 2. Routing-aware asymmetric fees — *price-discriminate by direction*
+
+When the AMM is offering an arb against itself: **capture** (`baseFee + captureRate × oracleDelta`). When it's competing for retail flow against a deeper venue: **attract** (`baseFee − attractRate × externalFee`, never below `baseFee`). Solves the "every LP is equally exposed to toxic flow" problem of passive AMMs.
+
+### 3. Dutch fee auctions — *rebalance without external slippage*
+
+When net base-asset exposure exceeds a configurable share of NAV, the hook shifts `priceY` to expose a profitable arb, then decays the fee block-by-block until a swap clears it. Solves the "rebalance by selling on Uniswap and eating slippage" problem of passive credit-backed designs. Clears on **price convergence** to the oracle (not reserve-based); `minAuctionBlocks` keeps the auction open long enough for the fee to decay.
+
+### 4. Curvature-aware recenter surcharge — *anti-round-trip*
+
+Recentering can be round-tripped by an attacker who anticipates it. The hook adds an additive surcharge sized to the curvature bonus the recenter creates, decaying to zero over a configurable horizon. Plus a one-shot **deploy surcharge** so a mispriced initial deploy is expensive to arb before the operator notices.
+
+### 5. Builder-fee bump — *opportunistic top-up* &nbsp;<sup>(optional, off on the live pool)</sup>
+
+Permissionless `setBuilderFee(fee)` lets any party — in practice the block builder — raise the quoted fee for the current block above the public floor. `getFee` returns `max(publicFee, builderFee)`. A configurable share of the bumped delta is accrued to the bumper as revenue split. Solves "the public formula leaves the builder's information edge on the table" — a builder with a private CEX-DEX signal can bid just above floor on swaps they predict will still go through, capturing some of the spread for the LP. **Disabled by default** (`builderFeeShareBps = 0`); not enabled on the live USDC/USDT pool. Design: [docs/builder-fee-design.md](docs/builder-fee-design.md).
+
+Mechanisms 1–4 are autonomous; #5 is a permissionless add-on a pool operator can opt into. All five are derived from first principles in [docs/rebalance-auction-design.md](docs/rebalance-auction-design.md) (and the new #5 in [docs/builder-fee-design.md](docs/builder-fee-design.md)).
+
+---
+
 ## Live proof of principle
 
-A single deployed pool on Ethereum mainnet, running this exact hook:
+A single deployed pool on Ethereum mainnet, running mechanisms 1–4 (`builderFee` not enabled):
 
 | | USDC/USDT |
 |---|---|
@@ -74,37 +100,6 @@ The hook in this repo is one waypoint in that broader exploration — not the on
 
 ---
 
-## What this hook does
-
-[DynamicFeeAuctionHook.sol](contracts/src/DynamicFeeAuctionHook.sol) is autonomous — once deployed, it runs without any off-chain bot. Four mechanisms, all inside the hook:
-
-### 1. Uniswap-spot-as-fee-oracle
-
-The hook reads spot price from the deepest Uniswap pool for the pair:
-
-- **Uniswap V3**: `slot0()` returns `sqrtPriceX96` directly.
-- **Uniswap V4**: `extsload` on the PoolManager's state slot, keyed by pool ID.
-
-Spot is unsafe as a *collateral* oracle but **safe for fee bumping**: the hook only ever raises the fee above `baseFee`, never lowers it. Manipulating the oracle can cost the attacker more on their own swap, but never benefit them. Full analysis: [docs/uniswap-oracle-pattern.md](docs/uniswap-oracle-pattern.md).
-
-### 2. Routing-aware fee modulation
-
-When the AMM is offering an arb against itself, the hook *captures* the arb (`baseFee + captureRate × oracleDelta`). When it's competing for retail flow against a deeper venue, it *attracts* flow by quoting tighter than the reference Uniswap pool (`baseFee − attractRate × externalFee`). Asymmetric by design.
-
-### 3. Dutch fee auctions for rebalancing
-
-When net base-asset exposure exceeds a configurable share of NAV, the hook starts an auction: shift `priceY` to expose a profitable arb, then decay the fee block-by-block until a swap clears it. This converts the rebalancing cost into a competitive bid instead of paying slippage on an external venue.
-
-Auction clears on **price convergence** to the oracle (within `clearThreshold`) — a direct read on whether the arb has been consumed. `minAuctionBlocks` keeps the auction open long enough for the fee to decay.
-
-### 4. Curvature-aware surcharge on recenter
-
-Recentering can be round-tripped by an attacker who anticipates it. The hook adds an additive surcharge sized to the curvature bonus the recenter creates, decaying to zero over a configurable horizon. Plus a one-shot **deploy surcharge** so a mispriced initial deploy is expensive to arb before the operator notices.
-
-All four mechanisms are derived from first principles in [docs/rebalance-auction-design.md](docs/rebalance-auction-design.md).
-
----
-
 ## Why this matters
 
 The textbook "AMM LP is unprofitable vs HODL" critique assumes a passive constant-product LP getting picked off by arbs. An active LP flips the model: you quote fees that price in the toxicity of each direction, you use credit to deepen liquidity without locking up capital, and you participate in the routing layer that retail actually uses.
@@ -126,7 +121,7 @@ git submodule update --init --recursive
 # 2. Build + test
 cd contracts
 forge build
-forge test --no-match-path "test/*.fork.t.sol"     # 155 unit tests
+forge test --no-match-path "test/*.fork.t.sol"     # 167 unit tests
 
 # 3. Calibrate parameters for your pool. Copy/edit a profile in scripts/profiles/
 #    then write a paste-ready env-var block:
@@ -165,8 +160,8 @@ contracts/
     DynamicFeeAuctionHook.sol         # The hook (~1000 lines, single contract)
     MinimalHook.sol                   # 50-line pedagogical starter
   test/
-    DynamicFeeAuctionHook.t.sol       # 65 unit tests
-    DynamicFeeAuctionHook.fork.t.sol  # 14 mainnet fork tests
+    DynamicFeeAuctionHook.t.sol       # 77 unit tests
+    DynamicFeeAuctionHook.fork.t.sol  # 16 mainnet fork tests
     MinimalHook.t.sol                 # 4 tests
     walkthrough/                      # Step-by-step auction walkthroughs
     *.fork.t.sol                      # Mainnet-fork integration tests
@@ -220,6 +215,7 @@ scripts/
 | [docs/uniswap-oracle-pattern.md](docs/uniswap-oracle-pattern.md) | Understand the spot-as-fee-oracle pattern and why it's safe |
 | [docs/dynamic-fee-model.md](docs/dynamic-fee-model.md) | See the full dynamic-fee formula with derivations |
 | [docs/auction-walkthrough.md](docs/auction-walkthrough.md) | Trace a single auction cycle step by step |
+| [docs/builder-fee-design.md](docs/builder-fee-design.md) | See the optional 5th mechanism — opportunistic builder-side fee bump |
 | [docs/additive-boost-derivation.md](docs/additive-boost-derivation.md) | Read the math behind h=1-at-boundary boost calibration |
 
 ### Tuning

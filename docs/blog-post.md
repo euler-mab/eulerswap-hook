@@ -8,7 +8,7 @@ This repo is one way out of that. It's an EulerSwap hook — a single ~1000-line
 
 "Single operator, asymmetric fees, capture arb economics" is also the goal of the propAMM family (Titan, Sorella Angstrom, Arrakis HOT, Solana pAMMs) — but the machinery is different. Those are off-chain quoters streaming signed prices to a block builder, with private fair-value models and per-block sequencing. This hook has no off-chain quoter, no private orderflow, no builder integration. Just a fee oracle and a public state machine, run inside `getFee` and `afterSwap`. Naming the difference up front so the rest of the post doesn't have to keep relitigating it.
 
-Four mechanisms compound. None is novel in isolation — what's interesting is that together they let a single LP autonomously price-discriminate by direction, source per-trade inventory ~25× their equity via credit, rebalance without an off-chain bot, and live alongside Fluid DEX and Egorov's Yield Basis in the broader space of credit-backed active LP designs on-chain.
+Four mechanisms compound, with a fifth available as an optional opt-in. None is novel in isolation — what's interesting is that together they let a single LP autonomously price-discriminate by direction, source per-trade inventory ~25× their equity via credit, rebalance without an off-chain bot, and live alongside Fluid DEX and Egorov's Yield Basis in the broader space of credit-backed active LP designs on-chain.
 
 ![Passive constant-product LP vs active single-LP hook — same flow, different fee response, different P&L](../assets/1-passive-vs-active.png)
 
@@ -73,6 +73,14 @@ Every recenter creates a small kink in the curve. An attacker who anticipates a 
 The hook adds an additive surcharge to the fee, sized **exactly** to the curvature bonus the recenter exposed, decaying to zero over a configurable horizon. The first swap after a recenter pays the full surcharge; by the time the curve has settled, the surcharge is back to zero. Round-trip extraction becomes unprofitable.
 
 Plus a one-shot **deploy surcharge** — high at deployment, decaying over the first few hours, so a mispriced initial deploy is expensive to arb before the operator notices and corrects.
+
+## Optional fifth mechanism: builder fee bump
+
+The four mechanisms above are entirely public — anyone can simulate the fee from chain state. That's the right shape for an on-chain venue, but it leaves one thing on the table: a block builder with a private CEX-DEX signal knows the *real* fair-value spread on every block, and the public formula can't price that in.
+
+The hook exposes an opt-in `setBuilderFee(fee)` that lets anyone — in practice the block builder, since they control transaction ordering — raise the quoted fee above the public floor for the current block. `getFee` returns `max(publicFee, builderFee)`, so the public floor is preserved by construction. A configurable share of the bumped delta accrues to the bumper as revenue split. Trustless: the floor can never be lowered; griefing (setting an unprofitable bump) costs gas with no return; self-trade bumps are net negative.
+
+This is **off by default** (`builderFeeShareBps = 0`) and not enabled on the deployed example pool. Operators can opt in if they want to share rev with builders for the extra fee precision. Full design: [docs/builder-fee-design.md](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/builder-fee-design.md).
 
 ## Live numbers
 
