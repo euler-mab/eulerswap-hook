@@ -24,9 +24,9 @@ Expected: agent reads README, AGENTS, ARCHITECTURE, and produces a grounded summ
 
 ### Run the live-state analyzer
 
-> "Read the live USDC/USDT pool state via [scripts/analyze-hook.ts](scripts/analyze-hook.ts). Tell me current NAV, last-7-day volume, lifetime swap count, and whether an auction is active."
+> "Run [scripts/analyze-hook.ts](scripts/analyze-hook.ts) against the default live USDC/WETH pool. Summarize lifetime volume, fees collected, fee capture %, and the worst/best swaps. (The script auto-detects asset symbols + decimals from chain; only `MAINNET_RPC_URL` needs to be set.)"
 
-Expected: agent runs the analyzer against the live deployment, summarizes the on-chain state.
+Expected: agent sets the RPC env var, runs the analyzer, summarizes the on-chain history. The script auto-detects pool assets/decimals and only supports V3-oracle pools today — V4-oracle pools (like USDC/USDT) error out cleanly.
 
 ---
 

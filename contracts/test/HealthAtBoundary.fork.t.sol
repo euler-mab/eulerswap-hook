@@ -83,8 +83,14 @@ contract HealthAtBoundaryTest is Test {
     uint256 usdcVaultPrice;
     uint256 usdtVaultPrice;
 
+    // Pin a known-good mainnet block where both deployed pools are alive and the
+    // live LP account is reasonably fresh. ~March 20 2026, a few days after both
+    // pools deployed, with weeks of headroom before the USDC/WETH pool expires.
+    // Live state drifts; pinning makes the boundary math reproducible.
+    uint256 constant FORK_BLOCK = 24_700_000;
+
     function setUp() public {
-        vm.createSelectFork(vm.envString("MAINNET_RPC_URL"));
+        vm.createSelectFork(vm.envString("MAINNET_RPC_URL"), FORK_BLOCK);
         periphery = new EulerSwapPeriphery();
 
         // Cache current oracle prices for underlying tokens

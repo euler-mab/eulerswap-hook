@@ -34,19 +34,35 @@ echo "Running the hook fork tests against the local anvil. This exercises the fu
 echo "deploy + install path against real mainnet state."
 echo
 
-# GOTCHA: this repo has TWO fork-test styles in the same suite:
-#   - DynamicFeeAuctionHook.fork.t.sol → no createSelectFork; relies on --fork-url
-#   - HealthAtBoundary.fork.t.sol      → vm.createSelectFork(envString("MAINNET_RPC_URL"))
-# We need BOTH redirects to point at the local anvil. --fork-url alone doesn't override
-# the env var, and overriding the env var alone leaves tests without a fork URL.
+# Scope to DynamicFeeAuctionHook.fork.t.sol — the canonical "does the hook
+# deploy, install, quote, swap, recenter, auction on real mainnet state"
+# demonstration. HealthAtBoundary.fork.t.sol is power-user territory: it
+# pushes swaps to the exact getLimits() boundary, which is sensitive to the
+# tiniest live-state drift even at a pinned block. Run that one via
+# `make fork-test` if you want it.
 #
-# ETHERSCAN_API_KEY is dummied because foundry.toml's [etherscan] block resolves it
-# eagerly even for test runs — but anvil doesn't need it.
+# Two tests in the file depend on specific live LP account state and are
+# skipped here:
+#   - test_fork_surcharge_no_overflow: a 2%-of-reserves swap that pushes the
+#     fork account past EVK liquidity. Overflow case is unit-tested instead.
+#   - test_fork_continuous_recenter: expects pre-existing high exposure on the
+#     LP account to drive a specific auction/recenter sequence; at a fresh
+#     pinned block the account isn't that loaded.
+# Both still run via `make fork-test`; they're not demo-quality reliable.
+#
+# GOTCHA: tests use vm.createSelectFork(vm.envString("MAINNET_RPC_URL"), BLOCK)
+# so they fork FROM THE ENV VAR, not from `forge test --fork-url`. Override
+# the env var so they hit local anvil. --fork-url is kept for tests that
+# don't call createSelectFork.
+#
+# ETHERSCAN_API_KEY is dummied because foundry.toml's [etherscan] block
+# resolves it eagerly even for test runs — but anvil doesn't need it.
 cd contracts && \
   MAINNET_RPC_URL="http://localhost:$ANVIL_PORT" \
   ETHERSCAN_API_KEY="${ETHERSCAN_API_KEY:-unused}" \
   forge test \
-    --match-path "test/*.fork.t.sol" \
+    --match-path "test/DynamicFeeAuctionHook.fork.t.sol" \
+    --no-match-test "test_fork_surcharge_no_overflow|test_fork_continuous_recenter" \
     --fork-url "http://localhost:$ANVIL_PORT" \
     -vv
 

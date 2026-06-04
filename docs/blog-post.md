@@ -80,7 +80,7 @@ The four mechanisms above are entirely public — anyone can simulate the fee fr
 
 The hook exposes an opt-in `setBuilderFee(fee)` that lets anyone — in practice the block builder, since they control transaction ordering — raise the quoted fee above the public floor for the current block. `getFee` returns `max(publicFee, builderFee)`, so the public floor is preserved by construction. A configurable share of the bumped delta accrues to the bumper as revenue split. Trustless: the floor can never be lowered; griefing (setting an unprofitable bump) costs gas with no return; self-trade bumps are net negative.
 
-This is **off by default** (`builderFeeShareBps = 0`) and not enabled on the deployed example pool. Operators can opt in if they want to share rev with builders for the extra fee precision. Full design: [docs/builder-fee-design.md](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/builder-fee-design.md).
+**If this works in the wild** — it's untested today — it makes the other mechanisms less load-bearing. The fee compass and asymmetric-fee formula become a *public floor that solvers can simulate*, while a sophisticated builder bids the actual market-clearing fee on top. Auctions and surcharges still rebalance the position and protect recenters, but the per-swap fee-setting moves from "best public approximation" to "private signal capped by the public floor." Right now, with `builderFeeShareBps = 0` on the deployed example pool, the public mechanisms are doing all the work. Full design: [docs/builder-fee-design.md](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/builder-fee-design.md).
 
 ## Live numbers
 

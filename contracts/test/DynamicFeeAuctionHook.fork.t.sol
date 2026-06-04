@@ -67,7 +67,15 @@ contract DynamicFeeAuctionHookForkTest is Test {
     uint8 dec0;
     uint8 dec1;
 
+    // Pin a known-good mainnet block where both deployed pools are alive and the
+    // live LP account is reasonably fresh. ~March 20 2026, a few days after both
+    // pools deployed, with weeks of headroom before the USDC/WETH pool expires.
+    // Tests against a moving target are noisy; pinning makes the demo deterministic.
+    uint256 constant FORK_BLOCK = 24_700_000;
+
     function setUp() public {
+        vm.createSelectFork(vm.envString("MAINNET_RPC_URL"), FORK_BLOCK);
+
         // Read pool state
         IEulerSwap.StaticParams memory sp = pool.getStaticParams();
         asset0 = IEVault(sp.supplyVault0).asset();
