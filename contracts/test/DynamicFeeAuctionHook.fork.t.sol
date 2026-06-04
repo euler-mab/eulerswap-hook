@@ -142,6 +142,9 @@ contract DynamicFeeAuctionHookForkTest is Test {
         d.equilibriumReserve1 = r1;
         d.minReserve0 = _computeMinReserve(r0, d.concentrationX);
         d.minReserve1 = _computeMinReserve(r1, d.concentrationY);
+        // The live pool's expiration may have passed since the test was written;
+        // refresh it so SwapLib's Expired() check passes against current timestamp.
+        d.expiration = type(uint40).max;
 
         evc.call(
             address(pool),
@@ -678,6 +681,102 @@ contract DynamicFeeAuctionHookForkTest is Test {
         (uint64 lastExp,, uint128 nav) = hook.getExposureState();
         console.log("After 10 swaps - lastExposure:", uint256(lastExp), "nav:", uint256(nav));
         assertTrue(nav > 0, "NAV should remain positive");
+    }
+
+    // ===================================================================
+    // Test: builderFee end-to-end against the live mainnet pool
+    // ===================================================================
+    function test_fork_builder_fee_e2e() public {
+        vm.roll(block.number + 60);
+        vm.prank(EULER_ACCOUNT);
+        hook.setBuilderFeeShareBps(5000);
+
+        address builder = address(0xBADDB10C);
+        uint64 publicFee = _runBumpedSwap(builder);
+        if (publicFee == 0) return; // SKIP path
+
+        _verifyAccrualAndWithdraw(builder, publicFee);
+        _verifyBumpDoesNotPersist(builder);
+    }
+
+    function _runBumpedSwap(address builder) internal returns (uint64 publicFee) {
+        (uint112 r0, uint112 r1,) = pool.getReserves();
+        publicFee = hook.getFee(true, r0, r1, false);
+        assertTrue(publicFee < MAX_FEE, "deploy surcharge should have decayed");
+        console.log("Public fee:", uint256(publicFee));
+
+        vm.prank(builder);
+        hook.setBuilderFee(MAX_FEE);
+        assertEq(hook.getFee(true, r0, r1, false), MAX_FEE, "bumped fee in effect");
+
+        uint256 swapInRaw = uint256(r0) / 1000;
+        if (swapInRaw == 0) swapInRaw = 1;
+        uint256 expectedOut = pool.computeQuote(asset0, asset1, swapInRaw, true);
+        if (expectedOut == 0) {
+            console.log("SKIP: swap quote zero");
+            return 0;
+        }
+
+        SwapCallback callback = new SwapCallback(asset0, swapInRaw);
+        deal(asset0, address(callback), swapInRaw);
+        vm.prank(address(callback));
+        pool.swap(0, expectedOut, address(callback), abi.encode(swapInRaw));
+    }
+
+    function _verifyAccrualAndWithdraw(address builder, uint64 publicFee) internal {
+        uint256 accrued = hook.builderShareAccrued(builder, asset0);
+        console.log("Accrued to builder (asset0):", accrued);
+        assertTrue(accrued > 0, "builder should have accrued share");
+
+        // Withdraw: fund the hook, then pull.
+        deal(asset0, address(hook), accrued);
+        uint256 balBefore = IERC20(asset0).balanceOf(builder);
+        vm.prank(builder);
+        uint256 paid = hook.withdrawBuilderShare(asset0);
+        assertEq(paid, accrued, "paid == accrued");
+        assertEq(IERC20(asset0).balanceOf(builder) - balBefore, accrued, "tokens received");
+        assertEq(hook.builderShareAccrued(builder, asset0), 0, "ledger cleared");
+        // Suppress unused-warning while keeping the value documented above.
+        publicFee;
+    }
+
+    function _verifyBumpDoesNotPersist(address builder) internal {
+        vm.roll(block.number + 1);
+        (uint112 r0, uint112 r1,) = pool.getReserves();
+        uint64 nextBlockFee = hook.getFee(true, r0, r1, false);
+        assertTrue(nextBlockFee < MAX_FEE, "bump must not persist across blocks");
+        console.log("Next-block fee:", uint256(nextBlockFee));
+        builder; // unused
+    }
+
+    // ===================================================================
+    // Test: builderFee defaults to dormant (shareBps = 0)
+    // ===================================================================
+    function test_fork_builder_fee_dormant_by_default() public {
+        // shareBps is 0 immediately after construction.
+        assertEq(hook.builderFeeShareBps(), 0, "dormant at deploy");
+
+        vm.roll(block.number + 60);
+
+        address builder = address(0xBADDB10C);
+        vm.prank(builder);
+        hook.setBuilderFee(MAX_FEE);
+
+        (uint112 r0, uint112 r1,) = pool.getReserves();
+        uint256 swapInRaw = uint256(r0) / 2000;
+        if (swapInRaw == 0) swapInRaw = 1;
+        uint256 expectedOut = pool.computeQuote(asset0, asset1, swapInRaw, true);
+        if (expectedOut == 0) return;
+
+        SwapCallback callback = new SwapCallback(asset0, swapInRaw);
+        deal(asset0, address(callback), swapInRaw);
+        vm.prank(address(callback));
+        pool.swap(0, expectedOut, address(callback), abi.encode(swapInRaw));
+
+        // Even though the swap paid the bumped fee, no share accrues — owner hasn't
+        // opted the pool into rev-share with builders.
+        uint256 accrued = hook.builderShareAccrued(builder, asset0);
+        assertEq(accrued, 0, "no accrual when shareBps = 0");
     }
 
     // ===================================================================
