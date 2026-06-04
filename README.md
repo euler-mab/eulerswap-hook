@@ -8,15 +8,7 @@ The "active" framing means concrete things: **single operator per pool** (one Eu
 
 This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHook.sol) contract, calibration tooling, and deploy scripts needed to launch your own pool. For routing your pool through aggregators and intent systems, see the separate [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) repo. Narrative-style overview in [`docs/blog-post.md`](docs/blog-post.md).
 
-## About the substrate
-
-**EulerSwap is an [extensively audited](https://github.com/euler-xyz/euler-swap/tree/master/audits) AMM primitive that has processed billions in cumulative volume in production.** It's been quietly under-marketed since launch — the protocol team lost key contributors and had to prioritise other work, which slowed broader adoption — but the mechanics are battle-tested and the substrate is mature. It sits on top of the equally well-audited Euler Vault Kit (EVK) and Ethereum Vault Connector (EVC), which together back most of Euler's lending TVL. This repo is one way to put that infrastructure back to work.
-
-> ## ⚠️ The hook in this repo is experimental and unaudited
->
-> The distinction matters: **EulerSwap, EVC, and EVK are audited and battle-tested**, but the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHook.sol) on top of them is not. It's a personal-research reference implementation that has been **battle-tested in production by its author only**, on a single small pool ([USDC/USDT](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8), ~$500 NAV).
->
-> Use it as a starting point for your own designs — fork it, learn from it, but **do not deploy unmodified code with significant capital** without an independent security review of the hook contract and the deploy script you actually run. The author makes no warranty and accepts no liability for losses arising from use of this code.
+> ⚠️ **The hook in this repo is experimental and unaudited.** The Euler substrate underneath (EulerSwap, EVK, EVC) is audited and battle-tested — this isn't. Fork it, learn from it, **get a security review before deploying with real capital**. No warranty.
 
 ---
 
