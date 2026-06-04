@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
+import {Vm} from "forge-std/Vm.sol";
 import {EulerSwapTestBase} from "../eulerswap/test/EulerSwapTestBase.t.sol";
 import {IEulerSwap, EulerSwap} from "../eulerswap/src/EulerSwap.sol";
 import {IEVC} from "evc/interfaces/IEthereumVaultConnector.sol";
@@ -951,9 +952,156 @@ contract DynamicFeeAuctionHookTest is EulerSwapTestBase {
         hook.setBuilderFeeShareBps(5000);
     }
 
-    function test_setBuilderFeeShareBps_rejects_above_100pct() public {
-        vm.expectRevert(bytes("shareBps > 100%"));
-        hook.setBuilderFeeShareBps(10001);
+    function test_setBuilderFeeShareBps_rejects_above_cap() public {
+        // Audit L-01: capped at 80% so LP always retains >= 20% of bumped delta.
+        vm.expectRevert(bytes("shareBps > 80%"));
+        hook.setBuilderFeeShareBps(8001);
+    }
+
+    function test_setBuilderFeeShareBps_at_cap_accepted() public {
+        hook.setBuilderFeeShareBps(8000);
+        assertEq(hook.builderFeeShareBps(), 8000, "80% cap is accepted");
+    }
+
+    function test_setBuilderFee_rejects_zero() public {
+        // Audit L-03: zero-fee bumps would silently cancel real bumps and pollute
+        // the slot. Reject them at the entry point.
+        vm.expectRevert(bytes("builder fee == 0"));
+        hook.setBuilderFee(0);
+    }
+
+    event BuilderFeeBelowFloor(address indexed payee, uint64 bumpedFee, uint64 publicFee);
+
+    function test_builderFeeBelowFloor_event_emitted() public {
+        // Audit I-02: when a bump is set but the public floor is higher, we emit
+        // BuilderFeeBelowFloor so off-chain monitors can detect ineffective bumps.
+        _advanceBlocks(60);
+        hook.setBuilderFeeShareBps(5000);
+        // Elevate the public fee via oracle skew
+        mockUniPool.setSqrtPriceX96(_wadToSqrtPriceX96(1.1e18));
+
+        address bumper = address(0xB1);
+        vm.prank(bumper);
+        hook.setBuilderFee(BASE_FEE); // below the elevated public fee
+
+        vm.recordLogs();
+        _fundAndSwap(address(0xCAFE), false, 1e18);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        bytes32 sig = keccak256("BuilderFeeBelowFloor(address,uint64,uint64)");
+        bool found;
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].topics.length > 0 && logs[i].topics[0] == sig) {
+                found = true;
+                assertEq(
+                    address(uint160(uint256(logs[i].topics[1]))),
+                    bumper,
+                    "payee indexed correctly"
+                );
+                break;
+            }
+        }
+        assertTrue(found, "BuilderFeeBelowFloor event must fire");
+    }
+
+    function test_batchSettleBuilderShare_pays_known_payees() public {
+        // Audit M-03: operator can settle outstanding claims before a hook migration.
+        _setupBuilderFeeBlock();
+
+        address bumperA = address(0xB1);
+        address bumperB = address(0xB2);
+
+        // Bumper A accrues
+        vm.prank(bumperA);
+        hook.setBuilderFee(MAX_FEE);
+        _fundAndSwap(address(0xCAFE), true, 5e17);
+        uint256 accruedA = hook.builderShareAccrued(bumperA, address(assetTST));
+        assertTrue(accruedA > 0);
+
+        // Roll, bumper B accrues in a new block
+        _advanceBlocks(1);
+        vm.prank(bumperB);
+        hook.setBuilderFee(MAX_FEE);
+        _fundAndSwap(address(0xCAFE2), true, 5e17);
+        uint256 accruedB = hook.builderShareAccrued(bumperB, address(assetTST));
+        assertTrue(accruedB > 0);
+
+        // Fund the hook and have the owner batch-settle both
+        assetTST.mint(address(hook), accruedA + accruedB);
+        address[] memory payees = new address[](2);
+        payees[0] = bumperA;
+        payees[1] = bumperB;
+        hook.batchSettleBuilderShare(payees, address(assetTST));
+
+        assertEq(hook.builderShareAccrued(bumperA, address(assetTST)), 0, "A cleared");
+        assertEq(hook.builderShareAccrued(bumperB, address(assetTST)), 0, "B cleared");
+        assertEq(assetTST.balanceOf(bumperA), accruedA, "A paid");
+        assertEq(assetTST.balanceOf(bumperB), accruedB, "B paid");
+    }
+
+    function test_batchSettleBuilderShare_onlyOwner() public {
+        address[] memory payees = new address[](1);
+        payees[0] = address(0xB1);
+        vm.prank(address(0xBAD));
+        vm.expectRevert();
+        hook.batchSettleBuilderShare(payees, address(assetTST));
+    }
+
+    function test_withdraw_handles_nonstandard_erc20_no_return() public {
+        // Audit H-01: USDT-style ERC-20s don't return a bool. Use a mock that mimics
+        // that and verify the withdraw path still works.
+        NonStandardERC20 weird = new NonStandardERC20();
+        _setupBuilderFeeBlock();
+
+        // Inject a synthetic accrual against the weird token
+        address bumper = address(0xB1);
+        // Use a direct storage manipulation via a helper since we can't accrue
+        // against a non-pool asset through the normal flow.
+        // Instead, fund the hook with the weird token and credit the ledger via
+        // a workaround: the test verifies the transfer path, not the accrual path.
+        // We do this by giving the hook balance and forging a withdraw expectation.
+        weird.mint(address(hook), 1000);
+
+        // The ledger is empty for this asset -> withdraw is a no-op.
+        // To test the actual transfer path, we'd need to write to the ledger.
+        // Use vm.store as a precise targeted poke: builderShareAccrued[bumper][weird] = 500
+        bytes32 outerSlot = keccak256(abi.encode(bumper, uint256(_builderShareAccruedSlot())));
+        bytes32 innerSlot = keccak256(abi.encode(address(weird), outerSlot));
+        vm.store(address(hook), innerSlot, bytes32(uint256(500)));
+
+        assertEq(hook.builderShareAccrued(bumper, address(weird)), 500, "ledger poked");
+
+        vm.prank(bumper);
+        uint256 paid = hook.withdrawBuilderShare(address(weird));
+        assertEq(paid, 500, "USDT-style transfer succeeds");
+        assertEq(weird.balanceOf(bumper), 500, "tokens delivered");
+        assertEq(hook.builderShareAccrued(bumper, address(weird)), 0, "ledger cleared");
+    }
+
+    function test_withdraw_reverts_on_erc20_returning_false() public {
+        // A token that returns `false` from transfer should cause withdrawBuilderShare
+        // to revert (and via revert, restore the ledger entry).
+        AlwaysFalseERC20 mean = new AlwaysFalseERC20();
+        address bumper = address(0xB1);
+
+        bytes32 outerSlot = keccak256(abi.encode(bumper, uint256(_builderShareAccruedSlot())));
+        bytes32 innerSlot = keccak256(abi.encode(address(mean), outerSlot));
+        vm.store(address(hook), innerSlot, bytes32(uint256(500)));
+
+        vm.prank(bumper);
+        vm.expectRevert(bytes("transfer failed"));
+        hook.withdrawBuilderShare(address(mean));
+
+        // Ledger remains intact (revert undid the zeroing)
+        assertEq(hook.builderShareAccrued(bumper, address(mean)), 500, "ledger restored on revert");
+    }
+
+    /// @dev Storage slot for `builderShareAccrued` mapping. Verified via
+    /// `forge inspect DynamicFeeAuctionHook storage-layout`. Update this if the
+    /// contract's storage layout changes (specifically: the ordering of state
+    /// variables before this mapping).
+    function _builderShareAccruedSlot() internal pure returns (uint256) {
+        return 12;
     }
 
     function test_getFee_returns_max_of_public_and_builder() public {
@@ -1238,5 +1386,35 @@ contract DynamicFeeAuctionHookTest is EulerSwapTestBase {
 
         // Expect accrued80 ~= 2x accrued40 (within 10% — pool state drifts slightly)
         assertApproxEqRel(accrued80, accrued40 * 2, 0.1e18, "share scales with bps");
+    }
+}
+
+/// @dev USDT-style ERC-20: `transfer` succeeds and returns no data.
+contract NonStandardERC20 {
+    mapping(address => uint256) public balanceOf;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function transfer(address to, uint256 amount) external {
+        require(balanceOf[msg.sender] >= amount, "insufficient");
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        // Deliberately no return value — mimics USDT pre-2024.
+        assembly { return(0, 0) }
+    }
+}
+
+/// @dev Hostile ERC-20: `transfer` returns false instead of reverting.
+contract AlwaysFalseERC20 {
+    mapping(address => uint256) public balanceOf;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function transfer(address, uint256) external pure returns (bool) {
+        return false;
     }
 }

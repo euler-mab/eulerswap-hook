@@ -159,6 +159,7 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     event BuilderFeeShareBpsUpdated(uint16 shareBps);
     event BuilderShareAccrued(address indexed payee, address indexed asset, uint256 amount);
     event BuilderShareWithdrawn(address indexed payee, address indexed asset, uint256 amount);
+    event BuilderFeeBelowFloor(address indexed payee, uint64 bumpedFee, uint64 publicFee);
 
     // --- Constructor param structs ---
     struct OracleConfig {
@@ -362,8 +363,15 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     /// @notice Raise the fee for the current block. Permissionless — caller becomes
     /// payee of the bumped-delta share. `getFee` returns `max(publicFee, fee)`, so
     /// the public floor is never lowered. Stale slots (from prior blocks) are
-    /// ignored automatically. See docs/builder-fee-design.md.
+    /// ignored automatically.
+    ///
+    /// @dev Smart-contract callers become the payee and are responsible for being
+    /// able to call `withdrawBuilderShare(asset)` and receive ERC-20 tokens. Share
+    /// accrued to a contract with no withdraw path is permanently orphaned.
+    ///
+    /// See docs/builder-fee-design.md.
     function setBuilderFee(uint64 fee) external {
+        require(fee > 0, "builder fee == 0");
         require(fee <= maxFee, "builder fee > maxFee");
         builderFeeSlot = BuilderFeeSlot({
             blockNumber: uint64(block.number),
@@ -375,23 +383,51 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
 
     /// @notice Withdraw accrued builder-fee share for a given asset. Reverts if the
     /// hook lacks sufficient balance; the operator is responsible for topping up
-    /// from the LP's fee accruals.
+    /// from the LP's fee accruals. Handles non-standard ERC-20s (e.g. USDT) that
+    /// do not return a bool from `transfer`.
     function withdrawBuilderShare(address asset) external returns (uint256 amount) {
         amount = builderShareAccrued[msg.sender][asset];
         if (amount == 0) return 0;
         builderShareAccrued[msg.sender][asset] = 0;
-        require(IERC20Minimal(asset).transfer(msg.sender, amount), "transfer failed");
+        _safeTransfer(asset, msg.sender, amount);
         emit BuilderShareWithdrawn(msg.sender, asset, amount);
+    }
+
+    /// @dev USDT-safe ERC-20 transfer: tolerates tokens that return no data (USDT)
+    /// or a `bool` (compliant tokens). Reverts on call failure or on `false` return.
+    function _safeTransfer(address token, address to, uint256 amount) internal {
+        (bool ok, bytes memory data) =
+            token.call(abi.encodeWithSelector(IERC20Minimal.transfer.selector, to, amount));
+        require(ok && (data.length == 0 || abi.decode(data, (bool))), "transfer failed");
     }
 
     // =========================================================================
     // Owner management
     // =========================================================================
 
+    /// @notice Settle outstanding builder share for a batch of payees and an asset.
+    /// Intended as a migration helper: before swapping the hook out, the operator
+    /// can pay out known claims so they aren't orphaned in the old contract.
+    /// Reverts on any single transfer failure (atomic; rerun with a smaller batch).
+    function batchSettleBuilderShare(address[] calldata payees, address asset)
+        external
+        onlyOwner
+    {
+        for (uint256 i; i < payees.length; ++i) {
+            uint256 amt = builderShareAccrued[payees[i]][asset];
+            if (amt == 0) continue;
+            builderShareAccrued[payees[i]][asset] = 0;
+            _safeTransfer(asset, payees[i], amt);
+            emit BuilderShareWithdrawn(payees[i], asset, amt);
+        }
+    }
+
     /// @notice Set the share of bumped-fee revenue paid to the bumper.
     /// Setting to 0 disables the mechanism (no payee will bother bumping).
+    /// Capped at 80% so the LP always retains at least 20% of the bumped delta
+    /// — guards against operator misconfiguration that would forfeit all bump value.
     function setBuilderFeeShareBps(uint16 shareBps) external onlyOwner {
-        require(shareBps <= 10000, "shareBps > 100%");
+        require(shareBps <= 8000, "shareBps > 80%");
         builderFeeShareBps = shareBps;
         emit BuilderFeeShareBpsUpdated(shareBps);
     }
@@ -476,6 +512,8 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
 
         try IEulerSwap(pool).reconfigure(d, IEulerSwap.InitialState(r0, r1)) {
             auctionActive = false;
+            auctionStartBlock = 0;
+            auctionStartingFee = 0;
             emit Recentered(uint64(block.number));
             _cacheVaultState(uniPrice);
             surchargeStartBlock = uint64(block.number);
@@ -517,8 +555,14 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
         uint256 shareBps = uint256(builderFeeShareBps);
         if (shareBps == 0) return;
 
+        // EulerSwap swaps are unidirectional: exactly one of amount0In/amount1In is
+        // non-zero. The fee accounting below assumes this; assert defensively.
+        require(
+            (amount0In == 0) != (amount1In == 0),
+            "non-unidirectional swap"
+        );
+
         // Reconstruct pre-swap reserves: post = pre + amountIn - amountOut.
-        // Use signed math via int256 to handle bidirectional swaps cleanly.
         uint256 preR0 = uint256(reserve0) + amount0Out - amount0In;
         uint256 preR1 = uint256(reserve1) + amount1Out - amount1In;
         if (preR0 > type(uint112).max || preR1 > type(uint112).max) return;
@@ -528,16 +572,21 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
 
         uint256 bumped = uint256(slot.fee);
         if (bumped > uint256(maxFee)) bumped = uint256(maxFee);
-        if (bumped <= publicFee) return;
+        if (bumped <= publicFee) {
+            emit BuilderFeeBelowFloor(slot.payee, uint64(bumped), uint64(publicFee));
+            return;
+        }
 
         uint256 delta = bumped - publicFee;
 
         // The fee was paid in the input asset; bumped portion of the total fee
         // collected = totalFee * delta / bumped. Then payee gets shareBps of that.
+        // Use FullMath.mulDiv for the final division so that small-swap precision
+        // isn't lost.
         uint256 totalFee = asset0IsInput ? fee0 : fee1;
         if (totalFee == 0) return;
 
-        uint256 share = (totalFee * delta * shareBps) / (bumped * 10000);
+        uint256 share = totalFee.mulDiv(delta * shareBps, bumped * 10000);
         if (share == 0) return;
 
         address asset = asset0IsInput ? asset0 : asset1;
@@ -831,6 +880,8 @@ contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
 
         try IEulerSwap(pool).reconfigure(d, IEulerSwap.InitialState(reserve0, reserve1)) {
             auctionActive = false;
+            auctionStartBlock = 0;
+            auctionStartingFee = 0;
             emit Recentered(uint64(block.number));
             _cacheVaultState(uniPrice);
 
