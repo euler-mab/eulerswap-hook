@@ -1,65 +1,65 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" font-family="Inter, system-ui, -apple-system, Segoe UI, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="440" viewBox="0 0 720 440" font-family="Inter, system-ui, -apple-system, Segoe UI, sans-serif">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#0E1117"/>
       <stop offset="1" stop-color="#070809"/>
     </linearGradient>
-    <marker id="ar" markerWidth="14" markerHeight="14" refX="11" refY="6" orient="auto">
-      <path d="M0,0 L12,6 L0,12 z" fill="#4D9FF5"/>
+    <marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L9,5 L0,10 z" fill="#4D9FF5"/>
     </marker>
   </defs>
-  <rect width="1200" height="720" fill="url(#bg)"/>
+  <rect width="720" height="440" fill="url(#bg)"/>
 
   <!-- Title -->
-  <text x="60" y="78" fill="#FFFFFF" font-size="38" font-weight="700">Quoting $247M of depth from $500 of equity</text>
-  <text x="60" y="116" fill="#8A93A0" font-size="22">Virtual reserves on EulerSwap are amplified by the lending vaults</text>
+  <text x="32" y="48" fill="#FFFFFF" font-size="20" font-weight="700">$247M of depth from $500 of equity</text>
+  <text x="32" y="72" fill="#8A93A0" font-size="13">Virtual reserves on EulerSwap are amplified by the lending vaults</text>
 
   <!-- Stage 1: Real equity -->
-  <rect x="60" y="200" width="280" height="280" rx="14" fill="#11151B" stroke="#243040" stroke-width="2"/>
-  <text x="80" y="246" fill="#8A93A0" font-size="13" letter-spacing="2" font-weight="700">STAGE 1</text>
-  <text x="80" y="282" fill="#FFFFFF" font-size="22" font-weight="700">Real LP equity</text>
-  <text x="80" y="334" fill="#D7DEE6" font-size="28" font-weight="700" font-family="ui-monospace, monospace">~$500</text>
-  <text x="80" y="372" fill="#8A93A0" font-size="16">$382 USDC + $119 USDT</text>
-  <text x="80" y="404" fill="#6B7480" font-size="15">What you actually risk —</text>
-  <text x="80" y="426" fill="#6B7480" font-size="15">net of vault debt.</text>
+  <rect x="32" y="110" width="180" height="200" rx="10" fill="#11151B" stroke="#243040" stroke-width="1.5"/>
+  <text x="50" y="138" fill="#8A93A0" font-size="9" letter-spacing="2" font-weight="700">STAGE 1</text>
+  <text x="50" y="162" fill="#FFFFFF" font-size="14" font-weight="700">Real equity</text>
+  <text x="50" y="206" fill="#D7DEE6" font-size="22" font-weight="700" font-family="ui-monospace, monospace">~$500</text>
+  <text x="50" y="232" fill="#8A93A0" font-size="12">$382 USDC + $119 USDT</text>
+  <text x="50" y="266" fill="#6B7480" font-size="11">What you actually risk —</text>
+  <text x="50" y="282" fill="#6B7480" font-size="11">net of vault debt.</text>
 
   <!-- Arrow 1 -->
-  <g transform="translate(360, 340)">
-    <line x1="0" y1="0" x2="80" y2="0" stroke="#4D9FF5" stroke-width="3" marker-end="url(#ar)"/>
-    <text x="40" y="-14" fill="#4D9FF5" font-size="13" text-anchor="middle" font-weight="600">borrow against</text>
-    <text x="40" y="22" fill="#8A93A0" font-size="12" text-anchor="middle">96% LTV stable-on-stable</text>
+  <g transform="translate(228, 210)">
+    <line x1="0" y1="0" x2="36" y2="0" stroke="#4D9FF5" stroke-width="2.5" marker-end="url(#ar)"/>
+    <text x="18" y="-8" fill="#4D9FF5" font-size="9" text-anchor="middle" font-weight="600">borrow</text>
+    <text x="18" y="18" fill="#8A93A0" font-size="8" text-anchor="middle">96% LTV</text>
   </g>
 
   <!-- Stage 2: Vault credit -->
-  <rect x="460" y="200" width="280" height="280" rx="14" fill="#0F1721" stroke="#4D9FF5" stroke-width="2"/>
-  <text x="480" y="246" fill="#4D9FF5" font-size="13" letter-spacing="2" font-weight="700">STAGE 2</text>
-  <text x="480" y="282" fill="#FFFFFF" font-size="22" font-weight="700">Vault credit (looped)</text>
-  <text x="480" y="334" fill="#D7DEE6" font-size="28" font-weight="700" font-family="ui-monospace, monospace">~50×</text>
-  <text x="480" y="372" fill="#8A93A0" font-size="16">supply → borrow → loop</text>
-  <text x="480" y="404" fill="#6B7480" font-size="15">Same dollars do double</text>
-  <text x="480" y="426" fill="#6B7480" font-size="15">duty as collateral + inventory.</text>
+  <rect x="280" y="110" width="180" height="200" rx="10" fill="#0F1721" stroke="#4D9FF5" stroke-width="1.5"/>
+  <text x="298" y="138" fill="#4D9FF5" font-size="9" letter-spacing="2" font-weight="700">STAGE 2</text>
+  <text x="298" y="162" fill="#FFFFFF" font-size="14" font-weight="700">Vault credit</text>
+  <text x="298" y="206" fill="#D7DEE6" font-size="22" font-weight="700" font-family="ui-monospace, monospace">~50×</text>
+  <text x="298" y="232" fill="#8A93A0" font-size="12">looped supply / borrow</text>
+  <text x="298" y="266" fill="#6B7480" font-size="11">Same dollars are collateral</text>
+  <text x="298" y="282" fill="#6B7480" font-size="11">and swap inventory.</text>
 
   <!-- Arrow 2 -->
-  <g transform="translate(760, 340)">
-    <line x1="0" y1="0" x2="80" y2="0" stroke="#4D9FF5" stroke-width="3" marker-end="url(#ar)"/>
-    <text x="40" y="-14" fill="#4D9FF5" font-size="13" text-anchor="middle" font-weight="600">concentrate</text>
-    <text x="40" y="22" fill="#8A93A0" font-size="12" text-anchor="middle">1-tick band around peg</text>
+  <g transform="translate(476, 210)">
+    <line x1="0" y1="0" x2="36" y2="0" stroke="#4D9FF5" stroke-width="2.5" marker-end="url(#ar)"/>
+    <text x="18" y="-8" fill="#4D9FF5" font-size="9" text-anchor="middle" font-weight="600">concentrate</text>
+    <text x="18" y="18" fill="#8A93A0" font-size="8" text-anchor="middle">1-tick band</text>
   </g>
 
   <!-- Stage 3: Virtual reserves -->
-  <rect x="860" y="200" width="280" height="280" rx="14" fill="#0F1A17" stroke="#2EE6A8" stroke-width="2"/>
-  <text x="880" y="246" fill="#2EE6A8" font-size="13" letter-spacing="2" font-weight="700">STAGE 3</text>
-  <text x="880" y="282" fill="#FFFFFF" font-size="22" font-weight="700">Virtual reserves</text>
-  <text x="880" y="334" fill="#D7DEE6" font-size="22" font-weight="700" font-family="ui-monospace, monospace">$247M / $242M</text>
-  <text x="880" y="372" fill="#8FBAAE" font-size="16">USDC / USDT</text>
-  <text x="880" y="404" fill="#8FBAAE" font-size="15">What the curve quotes</text>
-  <text x="880" y="426" fill="#8FBAAE" font-size="15">against — depth retail sees.</text>
+  <rect x="528" y="110" width="160" height="200" rx="10" fill="#0F1A17" stroke="#2EE6A8" stroke-width="1.5"/>
+  <text x="546" y="138" fill="#2EE6A8" font-size="9" letter-spacing="2" font-weight="700">STAGE 3</text>
+  <text x="546" y="162" fill="#FFFFFF" font-size="14" font-weight="700">Virtual reserves</text>
+  <text x="546" y="204" fill="#D7DEE6" font-size="15" font-weight="700" font-family="ui-monospace, monospace">$247M</text>
+  <text x="546" y="226" fill="#D7DEE6" font-size="15" font-weight="700" font-family="ui-monospace, monospace">$242M</text>
+  <text x="546" y="246" fill="#8FBAAE" font-size="11">USDC / USDT</text>
+  <text x="546" y="276" fill="#8FBAAE" font-size="11">What the curve</text>
+  <text x="546" y="290" fill="#8FBAAE" font-size="11">quotes against.</text>
 
-  <!-- Big highlighted result row -->
-  <rect x="60" y="540" width="1080" height="100" rx="14" fill="#0F1A17" stroke="#2EE6A8" stroke-width="2"/>
-  <text x="600" y="588" fill="#2EE6A8" font-size="36" font-weight="700" text-anchor="middle" font-family="ui-monospace, monospace">~490,000×</text>
-  <text x="600" y="618" fill="#8FBAAE" font-size="18" text-anchor="middle">effective depth multiplier — quoting nine figures from three figures of equity</text>
+  <!-- Big result row -->
+  <rect x="32" y="338" width="656" height="60" rx="10" fill="#0F1A17" stroke="#2EE6A8" stroke-width="1.5"/>
+  <text x="360" y="368" fill="#2EE6A8" font-size="22" font-weight="700" text-anchor="middle" font-family="ui-monospace, monospace">~490,000×</text>
+  <text x="360" y="386" fill="#8FBAAE" font-size="11" text-anchor="middle">effective depth multiplier · quoting nine figures from three figures of equity</text>
 
-  <!-- Footer -->
-  <text x="600" y="690" fill="#6B7480" font-size="15" text-anchor="middle">$98k of daily volume on $500 NAV; ~196× daily turnover. Fees roughly equal vault borrow carry — running flat.</text>
+  <text x="360" y="426" fill="#6B7480" font-size="11" text-anchor="middle">$98k of daily volume on $500 NAV. Fees ≈ vault borrow carry — running flat.</text>
 </svg>
