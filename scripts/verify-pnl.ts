@@ -14,9 +14,28 @@ import { createPublicClient, http, formatUnits, parseAbiItem, type Address } fro
 import { mainnet } from "viem/chains";
 
 // ─── Config ─────────────────────────────────────────────────────────
-// Defaults to the live USDC/WETH pool the author runs. Override via env vars
-// to analyze a different pool.
-const POOL = (process.env.POOL_ADDRESS ?? "0x4311031739918Aba578C3C667DA3028A12Ce28A8") as Address;
+// Defaults to the USDC/WETH pool. When overriding POOL_ADDRESS, you MUST also
+// set UNI_POOL_ADDRESS, EULER_ACCOUNT, POOL_DEPLOY_BLOCK, DECIMALS_0 and
+// DECIMALS_1 — otherwise the script silently uses USDC/WETH constants and
+// produces wrong P&L numbers.
+const DEFAULT_POOL = "0x4311031739918Aba578C3C667DA3028A12Ce28A8";
+const POOL = (process.env.POOL_ADDRESS ?? DEFAULT_POOL) as Address;
+const POOL_OVERRIDDEN = process.env.POOL_ADDRESS !== undefined
+  && process.env.POOL_ADDRESS.toLowerCase() !== DEFAULT_POOL.toLowerCase();
+if (POOL_OVERRIDDEN) {
+  const required = ["UNI_POOL_ADDRESS", "EULER_ACCOUNT", "POOL_DEPLOY_BLOCK", "DECIMALS_0", "DECIMALS_1"];
+  const missing = required.filter(k => !process.env[k]);
+  if (missing.length > 0) {
+    console.error(
+      `POOL_ADDRESS overridden without [${missing.join(", ")}].\n` +
+      `Default config is for USDC/WETH; analyzing any other pool requires all of\n` +
+      `${required.join(", ")} set explicitly. Otherwise the P&L decomposition\n` +
+      `silently uses the wrong oracle / decimals / account / starting block.`
+    );
+    process.exit(1);
+  }
+}
+
 const EULER_ACCOUNT = (process.env.EULER_ACCOUNT ?? "0x2909bCc87c17d8Be263621bF087bC806BA313BFE") as Address;
 const DEPLOY_BLOCK = BigInt(process.env.POOL_DEPLOY_BLOCK ?? "24591724");
 const UNI_POOL = (process.env.UNI_POOL_ADDRESS ?? "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640") as Address;

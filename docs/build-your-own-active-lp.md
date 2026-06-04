@@ -262,7 +262,7 @@ And do a tiny test swap (e.g. \$1) through Euler's swap UI ([app.euler.finance](
 
 An active-LP pool with no flow is just an arb magnet. The good news: most major aggregators are already integrated with EulerSwap — either directly or via V4 hook compatibility (1inch, CoW Protocol, Tycho-consuming routers, etc). Any V4-aware aggregator sees your pool the moment it's deployed.
 
-For Euler-integrating aggregators specifically, run [`RegisterPools.s.sol`](../contracts/script/RegisterPools.s.sol) — env-driven, comma-separated `POOLS` and `EULER_ACCOUNTS` lists of equal length, plus an optional `BOND_WEI` (defaults to 0.001 ether). If env vars are omitted, the script falls back to the author's mainnet defaults (the live USDC/WETH and USDC/USDT pools).
+For Euler-integrating aggregators specifically, run [`RegisterPools.s.sol`](../contracts/script/RegisterPools.s.sol) — env-driven, comma-separated `POOLS` and `EULER_ACCOUNTS` lists of equal length, plus an optional `BOND_WEI` (defaults to 0.001 ether). If env vars are omitted, the script falls back to the author's mainnet defaults (the deployed USDC/WETH and USDC/USDT pools).
 
 ```bash
 PRIVATE_KEY=0x... \
@@ -298,7 +298,7 @@ POOL_ADDRESS=0xYourPool \
   npx tsx scripts/verify-pnl.ts
 ```
 
-`analyze-hook.ts` and `verify-pnl.ts` default to the live USDC/WETH pool — override the pool/oracle env vars to point at your own. See [scripts/README.md](../scripts/README.md) for the full env-var list.
+`analyze-hook.ts` and `verify-pnl.ts` default to the USDC/WETH pool — override the pool/oracle env vars to point at your own. See [scripts/README.md](../scripts/README.md) for the full env-var list.
 
 All parameters except oracle target are owner-updatable — re-tune as your understanding of the pair's flow improves.
 

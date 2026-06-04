@@ -222,7 +222,7 @@ contract DeployHookUSDCUSDT is Script {
     // ─── Reconfigure ─────────────────────────────────────────────────────
 
     function _reconfigurePool(
-        EulerSwap pool,
+        EulerSwap /* pool */,
         IEulerSwap.DynamicParams memory d,
         address hook,
         uint80 marketPriceY,

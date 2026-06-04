@@ -90,7 +90,7 @@ DEPLOY_SURCHARGE=...
 
 Paste it into your shell, then run `forge script contracts/script/DeployHook.s.sol`.
 
-Both `analyze-hook.ts` and `verify-pnl.ts` default to the live USDC/WETH pool. To analyze a different pool, override via env vars:
+Both `analyze-hook.ts` and `verify-pnl.ts` default to the USDC/WETH pool (`0x4311...28A8`) — the pool is decommissioned on-chain (`dParams.expiration` in the past) but its historical Swap events are still readable, which is what the scripts analyze. To analyze a different pool, override via env vars:
 
 ```bash
 RPC_URL=https://... \

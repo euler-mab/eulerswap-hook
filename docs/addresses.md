@@ -26,7 +26,7 @@ Per-chain reference for the contracts this repo interacts with. See [README](../
 | Contract | Address | Notes |
 |---|---|---|
 | Uniswap V4 PoolManager | [`0x000000000004444c5dc75cB358380D2e3dE08A90`](https://etherscan.io/address/0x000000000004444c5dc75cB358380D2e3dE08A90) | Read via `extsload` for V4-backed fee-compass reads. See [uniswap-fee-compass.md](uniswap-fee-compass.md). |
-| Uniswap V3 USDC/WETH 0.05% pool | [`0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640`](https://etherscan.io/address/0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640) | Oracle source for the USDC/WETH active-LP pool. Sample V3 reference; substitute the appropriate fee-tier pool for your pair. |
+| Uniswap V3 USDC/WETH 0.05% pool | [`0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640`](https://etherscan.io/address/0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640) | Was the fee compass for the decommissioned USDC/WETH deployment. Sample V3 reference; substitute the appropriate fee-tier pool for your own pair. |
 
 ### Live active-LP deployments
 

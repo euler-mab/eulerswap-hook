@@ -82,7 +82,7 @@ USDC borrowed: 6,850.15
 NAV (both ≈ $1): ~$499.30
 ```
 
-So the LP currently holds ~\$7,950 USDT and owes ~\$7,460 USDC against ~\$489 of net equity — a directional position that the auction system clears back to delta-neutral when exposure builds enough.
+So the LP currently holds ~\$7,950 USDT and owes ~\$7,460 USDC against ~\$483 of net equity — a directional position that the auction system clears back to delta-neutral when exposure builds enough.
 
 **Volume distribution over the ~90-day life:**
 

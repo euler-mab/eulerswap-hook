@@ -46,7 +46,7 @@ EulerSwap is the substrate. Each Euler account is its own AMM, with the same col
 
 ![Credit-backed amplification — \$500 NAV supports ~\$10k of per-trade inventory and tens of $k/day of cumulative throughput on busy days because the auction cycles direction many times per day](../assets/2-credit-backed-depth.png)
 
-The live USDC/USDT example: ~\$500 of equity in a sub-account (\$382 USDC + \$119 USDT). Per-trade capacity is order \$10k. The curve has virtual reserves of \$247M / \$242M which give very tight pricing within that capacity — but the \$247M number is a slippage-curve parameter, not a depth claim. The actually-interesting number is **daily turnover**: when flow is active, the auction recycles direction multiple times a day, taking volume well into multiples of equity. The pool's averaged ~\$46k/day over the last week on \$489 NAV (~95×). Flow is bursty — quiet days drop to zero, busy days exceed \$100k.
+The live USDC/USDT example: ~\$500 of equity in a sub-account (\$382 USDC + \$119 USDT). Per-trade capacity is order \$10k. The curve has virtual reserves of \$247M / \$242M which give very tight pricing within that capacity — but the \$247M number is a slippage-curve parameter, not a depth claim. The actually-interesting number is **daily turnover**: when flow is active, the auction recycles direction multiple times a day, taking volume well into multiples of equity. The pool's averaged ~\$46k/day over the last week on \$483 NAV (~95×). Flow is bursty — quiet days drop to zero, busy days exceed \$100k.
 
 Every swap that adds inventory deposits to the supply vault or repays debt; every swap that drains inventory borrows from the borrow vault or withdraws supply. The pool's "real" footprint is small and directional. Auctions are what keep it from getting stuck.
 
@@ -90,13 +90,13 @@ The author runs one of these on Ethereum mainnet:
 |---|---|
 | Pool | [`0x71...68A8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8) |
 | Hook | [`0x99...4e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41) |
-| LP equity (NAV) | ~\$489 |
+| LP equity (NAV) | ~\$483 (started at \$501) |
 | Volume (7d avg) | ~\$46k/day (bursty: \$0 – \$100k) |
 | Daily turnover (7d avg) | ~95× |
 | Lifetime volume | ~\$810k (187 swaps over ~90 days) |
 | Lifetime fees collected | ~\$24 |
-| Lifetime auctions (started / ended) | 52 / 51 |
-| P&L since live (~90 days) | -\$12 (-2.4%) |
+| Lifetime auctions (started / cleared) | 52+ / all clearing |
+| P&L since live (~90 days) | -\$18 (-3.6%) |
 
 The pool's running a small loss — quiet stretches accrue more borrow carry than the busy stretches' fees recover. At 10× equity the same mechanism would be net positive; at 100×, meaningful. The proof-of-principle here is that the *mechanism* works at all, not that \$500 is the right size to capture the upside.
 

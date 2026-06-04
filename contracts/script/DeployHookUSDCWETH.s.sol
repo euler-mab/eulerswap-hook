@@ -194,7 +194,7 @@ contract DeployHookUSDCWETH is Script {
         console.log("Reserves:", uint256(finalR0), uint256(finalR1));
 
         // hook-specific state
-        (uint64 lastExp, int128 baseNet, uint128 cachedNav) = hook.getExposureState();
+        (uint64 lastExp, , uint128 cachedNav) = hook.getExposureState();
         console.log("");
         console.log("=== Exposure state ===");
         console.log("lastExposure:", uint256(lastExp));
