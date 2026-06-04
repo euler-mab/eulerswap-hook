@@ -54,7 +54,7 @@ When the LP's net base-asset position drifts past a threshold (a configurable fr
 
 ![Auction lifecycle — shift creates a known arb, fee decays until an arber takes it, the clearing swap recenters the pool](https://raw.githubusercontent.com/euler-mab/eulerswap-hook/main/assets/3-auction-timeline.png)
 
-The clever bit is that **the rebalance is paid for by the arber**, not by the LP. A traditional LP would have to sell directional inventory on an external venue — eating slippage and the bid-ask. Here the arb spread _is_ the rebalance, and the LP just chooses how much to charge for capturing it. Higher startingFee = more LP capture, longer wait. Lower decay rate = same shape, faster clear.
+The clever bit is that **the rebalance is paid for by the arber**, not by the LP. A traditional LP would have to sell directional inventory on an external venue — eating slippage and the bid-ask. Here the arb spread _is_ the rebalance, and the LP just chooses how much to charge for capturing it. Higher startingFee = more LP capture, longer wait. Higher decay rate = same shape, faster clear.
 
 Convergence is measured on price (marginal vs oracle), not reserves — a direct read on whether the arb has been consumed. A `minAuctionBlocks` floor prevents the auction from clearing before the fee has had time to decay; otherwise the very first swap after the shift would clear at the starting fee, defeating the auction.
 
@@ -136,7 +136,7 @@ This is experimental, unaudited reference code:
 
 If you're using this as a template, fork it, read it, get a security review of the hook contract and the exact deploy script you'll run. Don't deploy unmodified code with significant capital.
 
----
+## Summary
 
 That's the design as it stands. The individual primitives — Dutch auctions, spot oracles, asymmetric fees, additive surcharges — aren't new. What's interesting is the integration: one autonomous hook that quotes directionally, deepens via vault credit, rebalances by letting an arber take a decaying spread, and leaves a permissionless door (`builderFee`) for a sophisticated bidder to price information the public formula can't see. All on-chain, all rule-based, no bot.
 
