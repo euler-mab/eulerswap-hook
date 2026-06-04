@@ -160,7 +160,7 @@ To achieve Yield Basis–style IL elimination in EulerSwap:
 
 1. **Dynamic releverage**: Adjust `bXL` (and thus `x₀`) on every swap based on oracle price. This is a new contract-level mechanism — the current static model doesn't support it.
 
-2. **Compounding leverage accounting**: Replace `V = xr × bXL` with `V ∝ (Vc)^L`. This changes the fundamental value function and requires new math throughout.
+2. **Compounding leverage accounting**: Replace `V = xr × bXL` with `V ∝ (Vc)^L`. This changes the fundamental value function and requires new maths throughout.
 
 3. **Flash loan integration for rebalancing**: Yield Basis uses flash loans to atomically adjust leverage. Euler vaults could serve this role, but the swap-time accounting would need redesign.
 
@@ -317,7 +317,7 @@ contract ReleverageHook is IEulerSwapHookTarget {
 
 5. **Flash loan integration**: Yield Basis uses flash loans to rebalance vault collateral during deposits/withdrawals. The `afterSwap` hook could potentially use Euler flash loans for this, but the interaction between the EulerSwap pool's own vault positions and flash loan repayment needs careful design.
 
-6. **Compounding vs linear leverage**: The fundamental math question remains. EulerSwap's curve shape with `cx` interpolation may not produce the exact `(Vc)^L` value function that Yield Basis achieves. Even with per-swap `x₀` adjustment, the EulerSwap curve `fX(x) = y₀ + (px/py)(x₀-x)(cx + (1-cx)(x₀/x))` is not the same as Curve Cryptoswap's invariant. The IL elimination proof depends on the specific relationship between the underlying LP's value function and the leverage exponent.
+6. **Compounding vs linear leverage**: The fundamental maths question remains. EulerSwap's curve shape with `cx` interpolation may not produce the exact `(Vc)^L` value function that Yield Basis achieves. Even with per-swap `x₀` adjustment, the EulerSwap curve `fX(x) = y₀ + (px/py)(x₀-x)(cx + (1-cx)(x₀/x))` is not the same as Curve Cryptoswap's invariant. The IL elimination proof depends on the specific relationship between the underlying LP's value function and the leverage exponent.
 
 ### Feasibility Assessment
 
@@ -330,7 +330,7 @@ contract ReleverageHook is IEulerSwapHookTarget {
 | Oracle price read | Hook can call any external contract | Easy |
 | Vault debt adjustment | Possible from `afterSwap` (lock released) | Medium |
 | Curve verification constraint | Must ensure `verify(newParams, reserves)` | Medium |
-| Correct value function `(Vc)^L` | Requires new math — EulerSwap curve ≠ Cryptoswap | Hard |
+| Correct value function `(Vc)^L` | Requires new maths — EulerSwap curve ≠ Cryptoswap | Hard |
 | Flash loan rebalancing | Euler flash loans available but integration complex | Hard |
 
 ## Formal Proof: IL Elimination via Compounding Leverage
@@ -519,11 +519,11 @@ The optimal configuration for a hook-based IL-elimination strategy:
 
 ## Simulation: Compounding vs Simple Leverage
 
-**Implemented in**: `src/lib/yieldBasisSim.ts` (engine), `src/lib/yieldBasisSim.test.ts` (21 tests), `src/components/ComparisonChart.tsx` (interactive visualization).
+**Implemented in**: `src/lib/yieldBasisSim.ts` (engine), `src/lib/yieldBasisSim.test.ts` (21 tests), `src/components/ComparisonChart.tsx` (interactive visualisation).
 
 The simulation runs three strategies on the same GBM price path, isolating the impact of leverage type:
 
-| Strategy | Equity per step | IL behavior | Fee model |
+| Strategy | Equity per step | IL behaviour | Fee model |
 |----------|----------------|-------------|-----------|
 | **Static EulerSwap** | Standard AMM (existing `runSimulation`) | IL ∝ √p drag | Fees from `computeX0` virtual reserves |
 | **Discrete releverage** | `E × (2√r − 1)` — simple leverage | Residual IL ≈ σ²T/4 | Re-centered L=2 virtual liquidity |
@@ -588,7 +588,7 @@ Net advantage = (fee boost from L=2 + re-centering) − residual IL − borrow c
 
 At vol ≥ 0.5 with 30bps fees, the fee boost dominates. At very low vol (< 0.2) with high borrow rates, static EulerSwap can be more economical.
 
-### Interactive visualization
+### Interactive visualisation
 
 The "Yield Basis" tab in the app (`ComparisonChart` component) shows all three strategies on the same price path with controls for volatility, drift, duration, fee, borrow rate, and seed. Five chart panels: Price, Total Return, Equity, Fees & IL, and Borrow Cost.
 
@@ -672,7 +672,7 @@ where `s` = time since last re-centering, `τ` = decay time constant (e.g. 60 se
 
 ### What it doesn't fix
 
-**Residual IL (σ²T/4)**: The fee doesn't change the leverage math. The hook still rebalances after the swap. Higher fee revenue *offsets* the residual IL but doesn't eliminate it.
+**Residual IL (σ²T/4)**: The fee doesn't change the leverage maths. The hook still rebalances after the swap. Higher fee revenue *offsets* the residual IL but doesn't eliminate it.
 
 **CurveLib.verify constraint**: Structural — unrelated to fees.
 
@@ -741,7 +741,7 @@ The formal proof and simulation together resolve the open questions:
 
 - Egorov, M. (2025). "Eliminating impermanent loss by leveraged liquidity." Yield Basis whitepaper.
 - Yield Basis docs: https://docs.yieldbasis.com/user/how-it-works
-- EulerSwap math specification: `src/lib/math.ts` header (lines 1–156)
+- EulerSwap maths specification: `src/lib/math.ts` header (lines 1–156)
 - EulerSwap hook interface: `contracts/eulerswap/src/interfaces/IEulerSwapHookTarget.sol`
 - EulerSwap swap flow: `contracts/eulerswap/src/libraries/SwapLib.sol`
 - EulerSwap reconfigure: `contracts/eulerswap/src/EulerSwapManagement.sol`

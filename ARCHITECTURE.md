@@ -64,7 +64,7 @@ A constant-function AMM with a **single LP** (your sub-account). Curve parameter
 | `priceX, priceY` | The reference price the curve is centered around |
 | `concentrationX/Y` | 0 = constant-product, 1 = constant-sum, intermediate values interpolate |
 
-Concentration set to 0 with a wide range gives Uniswap-V2-style behavior; high concentration with a narrow range gives Curve/V3-style behavior. Same contract, same swap path.
+Concentration set to 0 with a wide range gives Uniswap-V2-style behaviour; high concentration with a narrow range gives Curve/V3-style behaviour. Same contract, same swap path.
 
 Pool storage is locked during `swap()` to prevent reentrancy, then **unlocked during the `afterSwap` hook callback**. That's the window where the hook can call `reconfigure()` and recenter the pool.
 
@@ -74,7 +74,7 @@ Implements `IEulerSwapHookTarget` — three optional callbacks:
 
 | Callback | Flag | When called | What the hook does |
 |---|---|---|---|
-| `beforeSwap` | `0x01` | Before the curve math | Not used |
+| `beforeSwap` | `0x01` | Before the curve maths | Not used |
 | `getFee` | `0x02` | When quoting the swap fee | Reads Uniswap spot, returns dynamic fee |
 | `afterSwap` | `0x04` | After the swap settles, pool unlocked | Updates exposure, runs auction state machine, recenters |
 
@@ -155,4 +155,4 @@ EulerSwap's `swap()` holds the pool's internal lock during the swap and releases
 
 ## Where to read more
 
-See the **Documentation map** in [README.md](README.md) — every doc, one-line description, organized by what you're trying to do. The two source files most worth reading top-to-bottom are [`DynamicFeeAuctionHook.sol`](contracts/src/DynamicFeeAuctionHook.sol) (the hook) and [`MinimalHook.sol`](contracts/src/MinimalHook.sol) (the ~50-line starter you can fork).
+See the **Documentation map** in [README.md](README.md) — every doc, one-line description, organised by what you're trying to do. The two source files most worth reading top-to-bottom are [`DynamicFeeAuctionHook.sol`](contracts/src/DynamicFeeAuctionHook.sol) (the hook) and [`MinimalHook.sol`](contracts/src/MinimalHook.sol) (the ~50-line starter you can fork).

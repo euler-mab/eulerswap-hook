@@ -5,13 +5,13 @@
 > **Deploy script**: [`DeployHookUSDCUSDT.s.sol`](../contracts/script/DeployHookUSDCUSDT.s.sol)
 > **Live since**: 2026-03-15 (~90 days at time of writing)
 
-A live mainnet pool with \$500 of equity quoting \$100k of daily volume. Numbers below are on-chain at the time of writing — re-run [`scripts/analyze-hook.ts`](../scripts/analyze-hook.ts) for current state.
+A live mainnet pool with \$500 of equity quoting \$100k of daily volume. Numbers below are on-chain at the time of writing — re-run [`scripts/analyze-hook.ts`](../scripts/analyse-hook.ts) for current state.
 
 ---
 
 ## At a glance
 
-Snapshot at the time of writing (~90 days live). Re-run [`scripts/analyze-hook.ts`](../scripts/analyze-hook.ts) for current state.
+Snapshot at the time of writing (~90 days live). Re-run [`scripts/analyze-hook.ts`](../scripts/analyse-hook.ts) for current state.
 
 | Metric | Value |
 |---|---|
@@ -48,7 +48,7 @@ Full list lives in [`DeployHookUSDCUSDT.s.sol`](../contracts/script/DeployHookUS
 | Parameter | Value | Why |
 |---|---|---|
 | `baseFee` | **0.05 bps** | Undercut the V4 USDC/USDT pool's 0.08 bps to win retail routing |
-| `externalFee` | 0.08 bps | The V4 reference fee — used in attract/capture math |
+| `externalFee` | 0.08 bps | The V4 reference fee — used in attract/capture maths |
 | `captureRate` | 80% | Take 80% of any arb surplus, leave 20% as MEV incentive |
 | `attractRate` | 50% | Quote at half the discount-to-V4 needed for routing parity |
 | `gasCoeff` | 0 | Mainnet gas at ~0.4 gwei is negligible vs the tight quotes |
@@ -74,7 +74,7 @@ The deploy surcharge of 5 bps is huge relative to the 0.05 bps base. That's inte
 
 ## What the data says
 
-Re-running [`scripts/analyze-hook.ts`](../scripts/analyze-hook.ts) at time of writing:
+Re-running [`scripts/analyze-hook.ts`](../scripts/analyse-hook.ts) at time of writing:
 
 ```
 USDT supplied: 7,349.45
@@ -154,7 +154,7 @@ Returns `(reserve0, reserve1, status)`. `reserve0` is USDC (6 decimals), `reserv
 
 ### 2. Full lifetime analysis
 
-The same script that produced the lifetime volume, fee, P&L, and exposure numbers in this case study lives at [`scripts/analyze-hook.ts`](../scripts/analyze-hook.ts):
+The same script that produced the lifetime volume, fee, P&L, and exposure numbers in this case study lives at [`scripts/analyze-hook.ts`](../scripts/analyse-hook.ts):
 
 ```bash
 RPC_URL=https://... \

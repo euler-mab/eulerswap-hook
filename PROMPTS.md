@@ -22,11 +22,11 @@ Expected: agent reads README, AGENTS, ARCHITECTURE, and produces a grounded summ
 
 ---
 
-### Run the live-state analyzer
+### Run the live-state analyser
 
-> "Run [scripts/analyze-hook.ts](scripts/analyze-hook.ts) against the default USDC/WETH pool. Summarize lifetime volume, fees collected, fee capture %, and the worst/best swaps. (The script auto-detects asset symbols + decimals from chain; only `MAINNET_RPC_URL` needs to be set.)"
+> "Run [scripts/analyse-hook.ts](scripts/analyse-hook.ts) against the default USDC/WETH pool. Summarize lifetime volume, fees collected, fee capture %, and the worst/best swaps. (The script auto-detects asset symbols + decimals from chain; only `MAINNET_RPC_URL` needs to be set.)"
 
-Expected: agent sets the RPC env var, runs the analyzer, summarizes the on-chain history. The default USDC/WETH pool is decommissioned now but its historical Swap events are still readable, which is what the script analyzes. V4-oracle pools (USDC/USDT) error out cleanly because historical V4 sqrtPrice reads via extsload aren't yet implemented.
+Expected: agent sets the RPC env var, runs the analyser, summarises the on-chain history. The default USDC/WETH pool is decommissioned now but its historical Swap events are still readable, which is what the script analyses. V4-oracle pools (USDC/USDT) error out cleanly because historical V4 sqrtPrice reads via extsload aren't yet implemented.
 
 ---
 
@@ -34,13 +34,13 @@ Expected: agent sets the RPC env var, runs the analyzer, summarizes the on-chain
 
 > "Run `make demo` to deploy the USDC/WETH hook against a forked mainnet. Show me the deployed addresses and whether the post-deploy fork tests pass."
 
-Expected: agent runs the anvil demo, summarizes results.
+Expected: agent runs the anvil demo, summarises results.
 
 ---
 
 ### Adapt for a new pair
 
-> "I want to deploy this hook for [token A] / [token B] on Ethereum mainnet. Walk me through what I need: vault addresses, oracle pool, calibration profile. Then generate a `scripts/profiles/[name].json` and a worked-example deploy script modeled on [DeployHookUSDCWETH.s.sol](contracts/script/DeployHookUSDCWETH.s.sol)."
+> "I want to deploy this hook for [token A] / [token B] on Ethereum mainnet. Walk me through what I need: vault addresses, oracle pool, calibration profile. Then generate a `scripts/profiles/[name].json` and a worked-example deploy script modelled on [DeployHookUSDCWETH.s.sol](contracts/script/DeployHookUSDCWETH.s.sol)."
 
 Expected: agent identifies vault addresses (Euler clusters), checks for a deep Uniswap reference pool, generates the calibration profile, generates the deploy script, asks clarifying questions only on genuinely ambiguous choices.
 

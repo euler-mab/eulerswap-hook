@@ -773,7 +773,7 @@ The trigger fires when **either** of two conditions is met:
    if reserve_E < triggerLow  → short exposure → auction to buy asset E
    ```
 
-   No oracle read, no vault read, no accumulator math in the hot path.
+   No oracle read, no vault read, no accumulator maths in the hot path.
 
    **Why this works**: reserves and vault positions move together via swap deltas.
    A reserve displacement of Δ from equilibrium corresponds to approximately Δ of

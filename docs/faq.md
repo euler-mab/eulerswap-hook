@@ -22,7 +22,7 @@ You have three options. **(1)** If the pair has a Uniswap **V4** pool, read its 
 
 ## How do I use the V4 oracle instead of V3?
 
-Set the `v4PoolId` field in `OracleConfig` to a non-zero pool ID — the hook detects this and switches to the V4 extsload path automatically (V3 `slot0()` calls are skipped). See [DeployHookUSDCUSDT.s.sol](../contracts/script/DeployHookUSDCUSDT.s.sol) for the full call: pool manager `0x000000000004444c5dc75cB358380D2e3dE08A90`, pool ID `0x395f91b34aa34a477ce3bc6505639a821b286a62b1a164fc1887fa3a5ef713a5`. Read [uniswap-fee-compass.md](uniswap-fee-compass.md) for the rationale and the slot-derivation math. Token ordering inside the V4 pool may differ from your EulerSwap pool — handle the inversion in the deploy script, not inside the hook.
+Set the `v4PoolId` field in `OracleConfig` to a non-zero pool ID — the hook detects this and switches to the V4 extsload path automatically (V3 `slot0()` calls are skipped). See [DeployHookUSDCUSDT.s.sol](../contracts/script/DeployHookUSDCUSDT.s.sol) for the full call: pool manager `0x000000000004444c5dc75cB358380D2e3dE08A90`, pool ID `0x395f91b34aa34a477ce3bc6505639a821b286a62b1a164fc1887fa3a5ef713a5`. Read [uniswap-fee-compass.md](uniswap-fee-compass.md) for the rationale and the slot-derivation maths. Token ordering inside the V4 pool may differ from your EulerSwap pool — handle the inversion in the deploy script, not inside the hook.
 
 ## Can I run multiple pools from the same EOA?
 

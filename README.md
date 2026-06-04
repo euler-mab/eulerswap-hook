@@ -36,7 +36,7 @@ Recentering can be round-tripped by an attacker who anticipates it. The hook add
 
 Permissionless `setBuilderFee(fee)` lets any party — in practice the block builder — raise the quoted fee for the current block above the public floor. `getFee` returns `max(publicFee, builderFee)`. A configurable share of the bumped delta is accrued to the bumper as revenue split. Solves "the public formula leaves the builder's information edge on the table" — a builder with a private CEX-DEX signal can bid just above floor on swaps they predict will still go through, capturing some of the spread for the LP. Closest cousin in the propAMM family, but inverted: instead of a builder-coordinated AMM streaming signed quotes, the AMM is fully public and the builder is invited to _opt in_ via revenue share if they have an edge.
 
-Mechanisms 1–4 are **layered LVR defenses** — each closes a different leak (directional toxicity, accumulated exposure, recenter round-trips, mispriced initial deploy). `builderFee` would add a fifth layer covering the leak the public formula can't see: a builder's private CEX-DEX signal. If it works in the wild, **some of the public-formula parameters could be relaxed** (lower `captureRate`, looser `attractRate`) because the builder is already pricing in that information — but the auction, surcharge, and base floor remain load-bearing. They're not redundant; they're complementary. **Disabled by default** (`builderFeeShareBps = 0`) and **untested in the wild** — no builder has integrated yet. Design: [docs/builder-fee-design.md](docs/builder-fee-design.md).
+Mechanisms 1–4 are **layered LVR defences** — each closes a different leak (directional toxicity, accumulated exposure, recenter round-trips, mispriced initial deploy). `builderFee` would add a fifth layer covering the leak the public formula can't see: a builder's private CEX-DEX signal. If it works in the wild, **some of the public-formula parameters could be relaxed** (lower `captureRate`, looser `attractRate`) because the builder is already pricing in that information — but the auction, surcharge, and base floor remain load-bearing. They're not redundant; they're complementary. **Disabled by default** (`builderFeeShareBps = 0`) and **untested in the wild** — no builder has integrated yet. Design: [docs/builder-fee-design.md](docs/builder-fee-design.md).
 
 Mechanisms 1–4 are autonomous; #5 is a permissionless add-on a pool operator can opt into. Full mechanism derivations live in [docs/uniswap-fee-compass.md](docs/uniswap-fee-compass.md), [docs/dynamic-fee-model.md](docs/dynamic-fee-model.md), [docs/auction-walkthrough.md](docs/auction-walkthrough.md), [docs/additive-boost-derivation.md](docs/additive-boost-derivation.md), and [docs/builder-fee-design.md](docs/builder-fee-design.md).
 
@@ -80,7 +80,7 @@ A few approaches sit in between, each making different trade-offs:
 
 **EulerSwap is the primitive that makes these accessible.** Each Euler account becomes its own AMM with curve, fee schedule, rebalancing strategy, and _vault choice_ all configurable:
 
-1. **Three vault configurations.** The vaults you wire to a pool decide its behavior:
+1. **Three vault configurations.** The vaults you wire to a pool decide its behaviour:
    - **Pass-through escrow.** Inventory sits as a custodial balance — no lending, no borrowing. A vanilla AMM with isolated deposits.
    - **Yield-bearing inventory.** Deposits sit in a lending vault and earn interest while quoting. No leverage, but inventory keeps working.
    - **Credit-amplified (optional).** On top of yield-bearing, the pool can _borrow_ against its own collateral to source inventory per-swap — deepening per-trade capacity by up to ~25× on stable pairs. This is what the live USDC/USDT example uses.
@@ -91,7 +91,7 @@ A few approaches sit in between, each making different trade-offs:
 
 If you're exploring the broader space, EulerSwap can host other designs too:
 
-- **Yield-basis-style IL elimination.** Configure the LP's net position to track the base asset (WETH-neutral instead of USDC-neutral) by borrowing against the deposited base to short the IL exposure. The math and Monte Carlo trade-offs are in [docs/yield-basis-analysis.md](docs/yield-basis-analysis.md) and [docs/yield-basis-comparison.md](docs/yield-basis-comparison.md) — both honest about where it works and where it doesn't.
+- **Yield-basis-style IL elimination.** Configure the LP's net position to track the base asset (WETH-neutral instead of USDC-neutral) by borrowing against the deposited base to short the IL exposure. The maths and Monte Carlo trade-offs are in [docs/yield-basis-analysis.md](docs/yield-basis-analysis.md) and [docs/yield-basis-comparison.md](docs/yield-basis-comparison.md) — both honest about where it works and where it doesn't.
 - **Fluid-style shared yield-and-liquidity.** Skip the single-LP framing — multiple parties can share Euler vaults and the borrowing capacity. Not implemented in this repo, but the primitive supports it.
 - **Pure JIT.** A `MinimalHook` deployment with very tight `recenterRange` and active off-chain monitoring approximates Uniswap-V3-style JIT, with credit substituting for cash inventory.
 
@@ -205,7 +205,7 @@ scripts/
 | [docs/dynamic-fee-model.md](docs/dynamic-fee-model.md)                 | See the full dynamic-fee formula with derivations                    |
 | [docs/auction-walkthrough.md](docs/auction-walkthrough.md)             | Trace a single auction cycle step by step                            |
 | [docs/builder-fee-design.md](docs/builder-fee-design.md)               | See the optional 5th mechanism — opportunistic builder-side fee bump |
-| [docs/additive-boost-derivation.md](docs/additive-boost-derivation.md) | Read the math behind h=1-at-boundary boost calibration               |
+| [docs/additive-boost-derivation.md](docs/additive-boost-derivation.md) | Read the maths behind h=1-at-boundary boost calibration               |
 
 ### Tuning
 
@@ -253,7 +253,7 @@ The wider Euler stack this repo sits on. **Audited substrates** the reference im
 | Repo                                                                          | What it is                                                    |
 | ----------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | [euler-sdk](https://github.com/euler-xyz/euler-sdk)                           | TypeScript SDK — vaults, swap, exec, markets, liquidation     |
-| [euler-swap-jslib](https://github.com/euler-xyz/euler-swap-jslib)             | Lightweight JS library with EulerSwap curve math (viem-based) |
+| [euler-swap-jslib](https://github.com/euler-xyz/euler-swap-jslib)             | Lightweight JS library with EulerSwap curve maths (viem-based) |
 | [euler-orderflow-router](https://github.com/euler-xyz/euler-orderflow-router) | Orderflow routing API for EulerSwap pools                     |
 
 **UIs to fork:**

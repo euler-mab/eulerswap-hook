@@ -90,7 +90,7 @@ MAINNET_RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 3. [docs/build-your-own-active-lp.md](docs/build-your-own-active-lp.md) — operating procedure
 4. [docs/faq.md](docs/faq.md) — common newcomer questions
 5. [contracts/src/DynamicFeeAuctionHook.sol](contracts/src/DynamicFeeAuctionHook.sol) — the hook source, top-to-bottom
-6. [docs/auction-walkthrough.md](docs/auction-walkthrough.md) — step-by-step trace of one auction cycle, with the math behind each step
+6. [docs/auction-walkthrough.md](docs/auction-walkthrough.md) — step-by-step trace of one auction cycle, with the maths behind each step
 
 ## Pitfalls
 
@@ -98,4 +98,4 @@ MAINNET_RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 - **Fork tests fail without `MAINNET_RPC_URL`**: expected. Use `--no-match-path "test/*.fork.t.sol"` for unit-only runs (or `make test`).
 - **`npx tsx` not found**: run `npm install` in `scripts/` first.
 - **`DeployPool` reverts with `Unauthorized()`**: the factory requires `_msgSender() == eulerAccount`. The script wraps in `evc.call` so sub-account deploys work. Don't bypass.
-- **Calibration `--env` output missing `EQ0`/`EQ1`/`MIN0`/`MIN1`/`PRICE_X`/`PRICE_Y`**: by design — these are deploy-time inputs (boost math + oracle read), not calibration outputs. The walkthrough Step 5 shows where to supply them.
+- **Calibration `--env` output missing `EQ0`/`EQ1`/`MIN0`/`MIN1`/`PRICE_X`/`PRICE_Y`**: by design — these are deploy-time inputs (boost maths + oracle read), not calibration outputs. The walkthrough Step 5 shows where to supply them.

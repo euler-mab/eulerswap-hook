@@ -5,14 +5,14 @@
 Both Yield Basis (YB) and EulerSwap solve the same fundamental problem: **how to rebalance a leveraged LP position without external swaps**. They use the same core mechanism (arb-driven rebalancing) but package it differently — and target different users:
 
 - **YB**: BTC holders deposit BTC → protocol borrows USD, LPs at 2× leverage → position tracks BTC 1:1 (neutral in BTC terms). The depositor earns yield on BTC without IL.
-- **EulerSwap**: Stablecoin holders deposit USDC → pool borrows ETH via Euler vaults → hook recenters to minimize exposure (neutral in USD terms). The LP earns fees without directional risk.
+- **EulerSwap**: Stablecoin holders deposit USDC → pool borrows ETH via Euler vaults → hook recenters to minimise exposure (neutral in USD terms). The LP earns fees without directional risk.
 
 The neutrality direction (BTC vs USD) is a product decision. The mechanism question — how efficiently each system recaptures LVR during rebalancing — is what this analysis measures.
 
 | | Yield Basis | EulerSwap |
 |---|---|---|
 | **Product** | Vault: deposit BTC, receive ybBTC, earn yield | Pool: LP configures params, hook manages exposure |
-| **Neutrality** | BTC-neutral (IL eliminated via 2× leverage) | USD-neutral (exposure minimized via recentering) |
+| **Neutrality** | BTC-neutral (IL eliminated via 2× leverage) | USD-neutral (exposure minimised via recentering) |
 | **Architecture** | Two AMMs: base pool (CryptoSwap) + separate releverage AMM | Single AMM with hooks (getFee + afterSwap) |
 | **Curve** | Releverage AMM is xy=k | Piecewise concentration-weighted blend |
 | **Leverage** | L=2 fixed (2× equity) | Variable via LLTV boost (e.g. 466× at rx=5%, LLTV=0.84) |
@@ -101,7 +101,7 @@ Where `r_loss` ≈ \$1,450/month = 1.74% annualized at 60% vol.
 | 30 bps | \$2,941 | \$6,388 | 466 | \$3,447 |
 | 5 bps | \$827 | \$7,355 | 676 | \$6,528 |
 
-The 70 bps fee is indeed optimal: it minimizes net cost. Higher fees mean fewer arbs can profitably trade (wider no-arb band), so fewer recenters occur. But fewer recenters means the pool accumulates more exposure between updates, leading to more LVR when arbs finally do trade.
+The 70 bps fee is indeed optimal: it minimises net cost. Higher fees mean fewer arbs can profitably trade (wider no-arb band), so fewer recenters occur. But fewer recenters means the pool accumulates more exposure between updates, leading to more LVR when arbs finally do trade.
 
 ### 3. YB's Fixed Fee Eliminates Retail
 
@@ -168,7 +168,7 @@ For the releverage mechanism alone:
 The YB paper's value proposition is about the base pool (CryptoSwap) returns amplified by leverage, minus the releverage cost. EulerSwap achieves something similar but with:
 - Much higher leverage (vault-backed)
 - Integrated retail flow
-- Dynamic fee optimization
+- Dynamic fee optimisation
 - Auction-based rebalancing (less frequent but capital-efficient)
 
 ## The Two-AMM Architecture

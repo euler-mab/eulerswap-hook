@@ -6,7 +6,7 @@ A practical playbook for choosing optimal parameters when deploying a new EulerS
 
 **Related docs** (referenced throughout, not duplicated):
 - [`docs/dynamic-fee-model.md`](dynamic-fee-model.md) -- Full fee formula spec
-- [`docs/additive-boost-derivation.md`](additive-boost-derivation.md) -- Boost math (BX/BY formulas)
+- [`docs/additive-boost-derivation.md`](additive-boost-derivation.md) -- Boost maths (BX/BY formulas)
 - [`docs/auction-walkthrough.md`](auction-walkthrough.md) -- Auction mechanism, step by step
 - [`docs/calibration-guide.md`](calibration-guide.md) -- Per-parameter derivation
 - [`docs/per-lp-architecture.md`](per-lp-architecture.md) -- Why each Euler account is its own AMM

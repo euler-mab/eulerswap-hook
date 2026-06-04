@@ -2,7 +2,7 @@
 
 **Status:** implemented in [DynamicFeeAuctionHook.sol](../contracts/src/DynamicFeeAuctionHook.sol). 20 unit tests in [DynamicFeeAuctionHook.t.sol](../contracts/test/DynamicFeeAuctionHook.t.sol) cover the threat-model table below. **Disabled by default** (`builderFeeShareBps = 0`) and **untested in the wild** — no builder has integrated yet.
 
-## How this fits with the other mechanisms — layered LVR defense
+## How this fits with the other mechanisms — layered LVR defence
 
 The hook's five mechanisms each close a different LVR leak. They're not alternatives competing for "the fee" — they're complementary layers:
 
@@ -19,7 +19,7 @@ The properties that stay invariant either way:
 - Solvers can always simulate `publicFee` from chain state for routing without talking to any builder.
 - Auctions still clear directional exposure; surcharges still protect post-recenter curves.
 
-So if `builderFee` proves itself, mechanisms 1–2 don't get *removed* — they get *parameterized down*, because the builder is closing the same LVR leak more precisely. Mechanisms 3–4 stay where they are. The point is layered defense across distinct leaks, not redundant defenses against one.
+So if `builderFee` proves itself, mechanisms 1–2 don't get *removed* — they get *parameterized down*, because the builder is closing the same LVR leak more precisely. Mechanisms 3–4 stay where they are. The point is layered defence across distinct leaks, not redundant defences against one.
 
 ## Problem
 
@@ -166,7 +166,7 @@ In each case the existing mechanism remains the **lower bound** on the fee. Noth
 ## Open questions
 
 1. **Share calibration.** What's the right `builderFeeShareBps`? Too low and no builder bothers; too high and the LP gives away most of the surplus. Probably needs to be measured on a live deployment with a sweep.
-2. **Should `setBuilderFee` accept a deadline?** If a builder bumps in block N intending it for a specific swap but their tx gets re-orged into block N+1, the bump applies to a different set of swaps. Trivial defense: pass `(targetBlockNumber, fee)` and require `targetBlockNumber == block.number`. Costs one calldata word.
+2. **Should `setBuilderFee` accept a deadline?** If a builder bumps in block N intending it for a specific swap but their tx gets re-orged into block N+1, the bump applies to a different set of swaps. Trivial defence: pass `(targetBlockNumber, fee)` and require `targetBlockNumber == block.number`. Costs one calldata word.
 3. **Should the share be paid in-kind or in the input/output asset?** Cleanest is to keep the fee accounting unchanged (fees stay in the pool's accounting) and pay the share out of the pool's accumulated fee balance on a periodic basis. Avoids one external transfer per swap. Slight bookkeeping cost.
 4. **Interaction with non-EulerSwap swaps?** This mechanism is hook-local; no global state. Other pools running other hooks see no effect.
 
@@ -187,5 +187,5 @@ Total: ~70 LOC of hook code, ~280 LOC of tests (20 cases covering the threat-mod
 ## Operational notes
 
 - **Defaults to dormant.** `builderFeeShareBps` is 0 at deploy. Nobody can earn share until the owner enables it. Once enabled, anyone can bump.
-- **Funding the hook.** The hook accrues share to a ledger but does not pull tokens from the pool — fees stay in the LP's accruals. To honor `withdrawBuilderShare`, the LP owner must transfer the corresponding asset balance into the hook contract. A practical pattern is to top up the hook periodically based on emitted `BuilderShareAccrued` events.
+- **Funding the hook.** The hook accrues share to a ledger but does not pull tokens from the pool — fees stay in the LP's accruals. To honour `withdrawBuilderShare`, the LP owner must transfer the corresponding asset balance into the hook contract. A practical pattern is to top up the hook periodically based on emitted `BuilderShareAccrued` events.
 - **Disable in emergencies.** Setting `builderFeeShareBps = 0` halts new accruals immediately. Existing accrued balances remain claimable.

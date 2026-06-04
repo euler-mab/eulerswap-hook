@@ -47,7 +47,7 @@ Pooled vaults need machinery to handle:
 - Token reduction (burning shares to keep staker value constant during positive yield)
 - Admin fee splits that interact with all of the above
 
-Each of these is a source of bugs. Per-LP pools have none of this — the LP's equity is their vault deposits minus their vault debts, computed by Euler's existing vault infrastructure. No custom share math required.
+Each of these is a source of bugs. Per-LP pools have none of this — the LP's equity is their vault deposits minus their vault debts, computed by Euler's existing vault infrastructure. No custom share maths required.
 
 ### Permissionless innovation
 
@@ -78,7 +78,7 @@ The per-LP model is worse when:
 EulerSwap sits at the infrastructure layer. It provides the pool contracts, the hook interface, and the integration with Euler's lending vaults. It does not take an opinionated stance on what strategy LPs should run.
 
 This means EulerSwap can support multiple strategy types simultaneously:
-- Static fee pools (no hooks, simple xy=k-like behavior)
+- Static fee pools (no hooks, simple xy=k-like behaviour)
 - Oracle-reactive fee pools (dynamic fees based on price mismatch)
 - Autonomous recentering pools (continuous exposure management)
 - Auction-based clearing pools (fee-decay auctions for equity rebalancing)
