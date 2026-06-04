@@ -119,7 +119,7 @@ Pool was dormant for the first ~60 days, then orderflow picked up. Recent activi
 
 If you want to copy the setup with your own capital:
 
-1. Read [docs/build-your-own-propamm.md](build-your-own-propamm.md) end to end.
+1. Read [docs/build-your-own-active-lp.md](build-your-own-active-lp.md) end to end.
 2. Open [`DeployHookUSDCUSDT.s.sol`](../contracts/script/DeployHookUSDCUSDT.s.sol) — the constants block at the top is the full parameter set.
 3. Re-run [`scripts/calibrate-hook-params.ts`](../scripts/calibrate-hook-params.ts) with your equity figure. **Do not copy the eq reserves directly** — they're a function of equity, LTV, and range. The calibration script will give you the right numbers.
 4. Deploy:

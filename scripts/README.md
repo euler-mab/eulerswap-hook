@@ -1,6 +1,6 @@
 # scripts/
 
-On-chain analysis and calibration scripts for the propAMM hook.
+On-chain analysis and calibration scripts for the DynamicFeeAuctionHook.
 
 ## Setup
 

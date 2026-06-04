@@ -2,7 +2,7 @@
 
 A reference hook for **active single-LP liquidity provision** on [EulerSwap](https://github.com/euler-xyz/euler-swap) — one operator per pool, dynamic fees set against a Uniswap-spot oracle, Dutch fee-decay auctions for autonomous rebalancing. All on-chain. No off-chain bot for the core loop.
 
-The hook is **adjacent in goal** to a propAMM (single operator, capture arb economics, asymmetric fees) but **different in mechanism**. Most propAMMs in 2026 are **builder-coordinated**: an off-chain market maker streams signed quotes to the block builder, who matches incoming orderflow against the freshest quote inside the block before it lands. The private fair-value signal lives with the maker; the builder provides sequencing. This hook has no builder integration, no off-chain quoter, no per-block mempool advantage. Just public formulas, every block, on-chain. See [Where this sits in the design space](#where-this-sits-in-the-design-space) for placement against Fluid DEX, Yield Basis, and Uniswap V3 JIT.
+The "active" framing means three concrete things: (1) **single operator per pool** — one Euler account owns the position, not a shared LP curve; (2) **fee-oracle-driven asymmetric fees** — the hook reads a Uniswap-spot reference and quotes higher for the direction that's arbing the pool, lower for the direction that's bringing retail flow; (3) **autonomous Dutch-auction rebalancing** — when inventory drifts off-neutral, the hook offers a known arb that decays in price until someone takes it. All in public Solidity, runnable inside `getFee` and `afterSwap`. No off-chain quoter, no private orderflow, no builder integration. See [Where this sits in the design space](#where-this-sits-in-the-design-space) for placement against Fluid DEX, Yield Basis, and Uniswap V3 JIT.
 
 This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHook.sol) contract, calibration tooling, and deploy scripts needed to launch your own pool. For routing your pool through aggregators and intent systems, see the separate [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) repo.
 
@@ -42,7 +42,7 @@ Per-trade capacity is order $10k (bounded by collateral × LTV); the curve's vir
 Active LP designs sit between two extremes:
 
 - **Passive multi-LP AMMs** (Uniswap V2/V3, Curve) — shared liquidity, public curve, no operator discretion. Anyone can LP; nobody manages quotes.
-- **Builder-coordinated propAMMs** — an off-chain market maker streams signed quotes to a block builder, who sequences taker flow against the freshest quote inside the block. Captures spread + MEV at block-build time. Private signal, builder-gated, off-chain quoter.
+- **Off-chain quoters / builder-coordinated AMMs** (the "propAMM" family — Titan, Sorella Angstrom, Arrakis HOT, Solana pAMMs) — a single operator runs an off-chain price model and streams signed quotes to a block builder, who sequences taker flow against the freshest quote inside the block. High execution quality, but private signal, builder-gated, and off-chain by design.
 
 A few approaches sit in between, each making different trade-offs:
 
@@ -60,7 +60,7 @@ A few approaches sit in between, each making different trade-offs:
 3. **Any curve, any range.** A `concentration` parameter interpolates between constant-product (Uniswap V2), constant-sum (Curve-style for stables), and range-bound liquidity (Uniswap V3). Set per-side and per-pool.
 4. **Hooks.** EulerSwap exposes `getFee` and `afterSwap` hook points. The hook controls fee dynamics and can call `reconfigure()` from inside `afterSwap` to rebalance — no off-chain bot required for the core loop.
 
-This repo implements **one configuration**: a single-LP, credit-backed AMM with autonomous fee modulation and Dutch fee auctions for rebalancing. It shares the goal of a propAMM (single operator captures arb economics, asymmetric fees), but the mechanism is fundamentally different from a builder-coordinated propAMM — **rule-based, not model-based, on-chain not builder-side**. Fees and shifts are public formulas a swapper can simulate before they trade. That's the right shape for an on-chain venue (gas, transparency, manipulation resistance) but it's a distinction worth naming, because the two designs share a vocabulary without sharing a machinery.
+This repo implements **one configuration**: a single-LP, credit-backed AMM with autonomous fee modulation and Dutch fee auctions for rebalancing. "Proprietary" in the limited sense that one Euler account owns the position and tunes the fee schedule via a public oracle — not in the off-chain-quoter, private-orderflow sense some readers will hear in "propAMM". Fees and shifts are public formulas a swapper can simulate before they trade; the right shape for an on-chain venue (gas, transparency, manipulation resistance).
 
 ### Other configurations the same substrate supports
 
@@ -115,12 +115,12 @@ The live USDC/USDT pool at ~$500 NAV doing tens of $k/day on busy days is what t
 
 ## Quickstart
 
-Full walkthrough — including the prerequisite EulerSwap factory deploy and sub-account setup — in [**docs/build-your-own-propamm.md**](docs/build-your-own-propamm.md).
+Full walkthrough — including the prerequisite EulerSwap factory deploy and sub-account setup — in [**docs/build-your-own-active-lp.md**](docs/build-your-own-active-lp.md).
 
 ```bash
 # 1. Clone + init submodules
-git clone <this-repo> eulerswap-propamm
-cd eulerswap-propamm
+git clone <this-repo> eulerswap-hook
+cd eulerswap-hook
 git submodule update --init --recursive
 
 # 2. Build + test
@@ -200,10 +200,10 @@ scripts/
 ### Getting started
 | Doc | Read it when you want to… |
 |---|---|
-| [docs/build-your-own-propamm.md](docs/build-your-own-propamm.md) | Walk through deploying your own active-LP pool end-to-end |
+| [docs/build-your-own-active-lp.md](docs/build-your-own-active-lp.md) | Walk through deploying your own active-LP pool end-to-end |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | See how account + pool + hook + oracle + orderflow fit together |
 | [docs/blog-post.md](docs/blog-post.md) | Read the narrative version of the design (Medium-style post, with diagrams) |
-| [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md) | See the live $500-NAV / $100k-day pool with actual on-chain numbers |
+| [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md) | See the live ~$500-NAV pool with actual on-chain numbers (volume, P&L, auctions) |
 | [docs/faq.md](docs/faq.md) | Get quick answers to common newcomer questions (sub-accounts, minimum equity, oracle choice, …) |
 | [docs/addresses.md](docs/addresses.md) | Look up canonical contract addresses per chain (EVC, registry, vaults, oracles, live pools) |
 

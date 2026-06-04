@@ -4,7 +4,7 @@ Coding-agent quickstart for this repo. Humans should start at [README.md](README
 
 ## What this repo is
 
-A single Solidity hook contract for [EulerSwap](https://github.com/euler-xyz/euler-swap) (`DynamicFeeAuctionHook`), plus calibration tooling and deploy scripts. The hook does dynamic fee modulation, Dutch fee-decay auctions for rebalancing, and autonomous recentering — all on-chain. Active single-LP design: adjacent in goal to a propAMM (single operator captures arb economics) but rule-based and on-chain, not a builder-coordinated design where an off-chain maker streams signed quotes to a block builder. See [ARCHITECTURE.md](ARCHITECTURE.md) for the mental model.
+A single Solidity hook contract for [EulerSwap](https://github.com/euler-xyz/euler-swap) (`DynamicFeeAuctionHook`), plus calibration tooling and deploy scripts. The hook does dynamic fee modulation against a Uniswap-spot oracle, Dutch fee-decay auctions for rebalancing, and autonomous recentering — all on-chain. Single-LP design: one Euler account owns the position; the hook reads a public price reference and runs the whole loop inside `getFee` / `afterSwap`. No off-chain quoter, no private orderflow. See [ARCHITECTURE.md](ARCHITECTURE.md) for the mental model.
 
 ## First-time setup
 
@@ -51,7 +51,7 @@ RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 | `contracts/script/EnableCollateral.s.sol` | EVC sub-account setup helper |
 | `scripts/calibrate-hook-params.ts` | Param calibration with `--env` output mode |
 | `scripts/profiles/` | Per-pool JSON profiles (add new ones here) |
-| `docs/build-your-own-propamm.md` | Full deploy walkthrough (operating manual) |
+| `docs/build-your-own-active-lp.md` | Full deploy walkthrough (operating manual) |
 | `docs/rebalance-auction-design.md` | Long design rationale (~1560 lines, historical) |
 
 ## Conventions
@@ -72,7 +72,7 @@ RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 ## Common tasks
 
 - **Add a pool profile**: drop a JSON file in `scripts/profiles/`. Required fields are the `PoolProfile` interface at the top of `scripts/calibrate-hook-params.ts`. Runtime validation rejects malformed profiles with a clear error.
-- **Deploy on a new pair**: see [docs/build-your-own-propamm.md](docs/build-your-own-propamm.md). Order: EnableCollateral → deposit equity → calibrate → DeployPool → DeployHook → RegisterPools.
+- **Deploy on a new pair**: see [docs/build-your-own-active-lp.md](docs/build-your-own-active-lp.md). Order: EnableCollateral → deposit equity → calibrate → DeployPool → DeployHook → RegisterPools.
 - **Bind hook to an existing pool**: `forge script script/DeployHook.s.sol` with all 22 env vars. Use `npx tsx calibrate-hook-params.ts <profile> --env > .env.hook && source .env.hook` to populate them.
 - **Anvil dry-run**: see "Dry-run deploys against a forked mainnet" in [scripts/README.md](scripts/README.md). Anvil pre-funds the well-known test key; iterate against real mainnet state without spending real ETH.
 
@@ -88,7 +88,7 @@ RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 
 1. [README.md](README.md) — design-space framing + live pool numbers + experimental/unaudited disclaimer
 2. [ARCHITECTURE.md](ARCHITECTURE.md) — five-component diagram + end-to-end swap walkthrough
-3. [docs/build-your-own-propamm.md](docs/build-your-own-propamm.md) — operating procedure
+3. [docs/build-your-own-active-lp.md](docs/build-your-own-active-lp.md) — operating procedure
 4. [docs/faq.md](docs/faq.md) — common newcomer questions
 5. [contracts/src/DynamicFeeAuctionHook.sol](contracts/src/DynamicFeeAuctionHook.sol) — the hook source, top-to-bottom
 6. [docs/rebalance-auction-design.md](docs/rebalance-auction-design.md) — long-form design rationale (historical doc with a note at the top)

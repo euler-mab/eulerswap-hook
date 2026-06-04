@@ -66,8 +66,8 @@ Key relationships:
 | Funded EOA | ~0.05 ETH for deploys + initial deposits |
 
 ```bash
-git clone <this-repo> eulerswap-propamm
-cd eulerswap-propamm
+git clone <this-repo> eulerswap-hook
+cd eulerswap-hook
 git submodule update --init --recursive
 cd contracts && forge build && cd ..
 ```

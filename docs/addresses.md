@@ -26,9 +26,9 @@ Per-chain reference for the contracts this repo interacts with. See [README](../
 | Contract | Address | Notes |
 |---|---|---|
 | Uniswap V4 PoolManager | [`0x000000000004444c5dc75cB358380D2e3dE08A90`](https://etherscan.io/address/0x000000000004444c5dc75cB358380D2e3dE08A90) | Read via `extsload` for V4-backed oracles. See [uniswap-oracle-pattern.md](uniswap-oracle-pattern.md). |
-| Uniswap V3 USDC/WETH 0.05% pool | [`0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640`](https://etherscan.io/address/0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640) | Oracle source for the USDC/WETH propAMM pool. Sample V3 reference; substitute the appropriate fee-tier pool for your pair. |
+| Uniswap V3 USDC/WETH 0.05% pool | [`0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640`](https://etherscan.io/address/0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640) | Oracle source for the USDC/WETH active-LP pool. Sample V3 reference; substitute the appropriate fee-tier pool for your pair. |
 
-### Live propAMM deployments
+### Live active-LP deployments
 
 | Pool | Hook | Sub-account |
 |---|---|---|
@@ -55,7 +55,7 @@ This repo has no Base deploy scripts; you'd need to write your own using the mai
 
 ## How to find your vaults
 
-The propAMM pool needs a **supply vault** (where deposits sit as collateral) and a **borrow vault** (where the directional leg is borrowed from) for each side of the pair. To find the right ones for your assets:
+The pool needs a **supply vault** (where deposits sit as collateral) and a **borrow vault** (where the directional leg is borrowed from) for each side of the pair. To find the right ones for your assets:
 
 1. **app.euler.finance** is the easiest path. Open the cluster you want to use (Prime, Yield, Stablecoin, etc.), pick your asset, and copy the vault address from the contract details panel. The same UI shows current LTVs, which you need for calibration ([calibration-guide.md](calibration-guide.md)).
 2. **Query the EVK factory directly** via `cast` — the EVK factory exposes enumeration methods like `getProxyListSlice(start, end)` that return all deployed vault proxies. You can then call `asset()` on each to find the one matching your token. Interfaces are in [contracts/euler-interfaces/](../contracts/euler-interfaces).

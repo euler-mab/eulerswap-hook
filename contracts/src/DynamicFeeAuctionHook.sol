@@ -30,7 +30,7 @@ interface IExtsload {
 }
 
 /// @title DynamicFeeAuctionHook — Oracle-reactive fees + Dutch fee-decay auctions
-/// @notice Autonomous hook for an EulerSwap propAMM. Four mechanisms:
+/// @notice Autonomous hook for a single-LP EulerSwap pool. Four mechanisms:
 ///   1. Oracle-reactive fee from Uniswap V3 slot0 or V4 extsload (fee-only,
 ///      never below baseFee — safe against spot manipulation).
 ///   2. Routing-aware asymmetry: attract retail flow, capture arbs.

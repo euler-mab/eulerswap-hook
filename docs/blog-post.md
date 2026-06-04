@@ -6,7 +6,7 @@ Most AMM LPs lose to arbs. The textbook complaint — "you're just paying LVR" �
 
 This repo is one way out of that. It's an EulerSwap hook — a single ~1000-line Solidity contract — that runs **active single-LP liquidity provision**: one operator per pool, dynamic fees set against a Uniswap-spot oracle, Dutch fee-decay auctions for autonomous rebalancing. All on-chain, no off-chain bot for the core loop.
 
-It's **adjacent in goal** to a propAMM — single operator captures arb economics with asymmetric fees — but the mechanism is different. Most propAMMs in 2026 are **builder-coordinated**: an off-chain market maker streams signed quotes to the block builder, who matches incoming orderflow against the freshest quote inside the block before it lands. The private fair-value signal lives with the maker; the builder provides sequencing. This hook has no builder integration and no off-chain quoter; it's rule-based, public formulas, every block, on-chain. Worth naming because the two designs share a vocabulary without sharing a machinery.
+"Single operator, asymmetric fees, capture arb economics" is also the goal of the propAMM family (Titan, Sorella Angstrom, Arrakis HOT, Solana pAMMs) — but the machinery is different. Those are off-chain quoters streaming signed prices to a block builder, with private fair-value models and per-block sequencing. This hook has no off-chain quoter, no private orderflow, no builder integration. Just a fee oracle and a public state machine, run inside `getFee` and `afterSwap`. Naming the difference up front so the rest of the post doesn't have to keep relitigating it.
 
 Four mechanisms compound. None is novel in isolation — what's interesting is that together they let a single LP autonomously price-discriminate by direction, source per-trade inventory ~25× their equity via credit, rebalance without an off-chain bot, and live alongside Fluid DEX and Egorov's Yield Basis in the broader space of credit-backed active LP designs on-chain.
 
@@ -112,7 +112,7 @@ The hook, deploy scripts, calibration tooling, and design docs are at:
 
 → **[github.com/euler-mab/eulerswap-hook](https://github.com/euler-mab/eulerswap-hook)**
 
-The deploy flow is env-driven end-to-end. Calibration takes a JSON profile and outputs paste-ready env vars; `DeployPool.s.sol` deploys the EulerSwap pool itself; `DeployHook.s.sol` deploys the hook and binds it; `RegisterPools.s.sol` opts you into Euler's orderflow router. The walkthrough at [`docs/build-your-own-propamm.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/build-your-own-propamm.md) covers every step end-to-end, including an anvil dry-run recipe so you can test the whole sequence against a forked mainnet without spending real ETH.
+The deploy flow is env-driven end-to-end. Calibration takes a JSON profile and outputs paste-ready env vars; `DeployPool.s.sol` deploys the EulerSwap pool itself; `DeployHook.s.sol` deploys the hook and binds it; `RegisterPools.s.sol` opts you into Euler's orderflow router. The walkthrough at [`docs/build-your-own-active-lp.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/build-your-own-active-lp.md) covers every step end-to-end, including an anvil dry-run recipe so you can test the whole sequence against a forked mainnet without spending real ETH.
 
 ## Be honest about the risks
 
