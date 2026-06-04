@@ -317,6 +317,179 @@ All parameters except oracle target are owner-updatable — re-tune as your unde
 
 ---
 
+## WBTC/USDC end-to-end example
+
+The walkthrough above is generic. This subsection is a single, copy-pasteable
+trace of the same flow for a fresh **WBTC/USDC** pool — picked because the
+ordering flips: WBTC's address (`0x2260...`) is smaller than USDC's
+(`0xA0b8...`), so the on-chain `token0` is the BASE asset, not the quote.
+Every "USDC = token0" reflex from the USDC/WETH and USDC/USDT examples is
+wrong here. The Phase-1 tooling catches that mistake at three different
+checkpoints (calibrator, oracle helper, hook deploy script), and the recipe
+below exercises each one.
+
+Targets:
+
+- Pair: WBTC (8 dp, `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599`) /
+  USDC (6 dp, `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`)
+- Initial equity: \$8,000 (token-split is your call — the calibration only
+  needs the total quote-value).
+- Cluster: **Prime** (same as the live USDC/WETH and USDC/USDT pools), governor
+  `0x060DB084bF41872861f175d83f3cb1B5566dfEA3`.
+- Oracle: Uniswap V3 WBTC/USDC 0.3% pool
+  `0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35`. Picked over the 0.05% pool
+  (`0x9a772018FbD77fcD2d25657e5C547BAfF3Fd7D16`) because at the current block
+  its in-range liquidity is ~16x higher (1.08e12 vs 6.69e10) — verify yourself
+  with `cast call <pool> "liquidity()(uint128)"` before broadcasting.
+
+### 1. Find the Prime-cluster EVK vaults
+
+```bash
+MAINNET_RPC_URL=$MAINNET_RPC_URL \
+  ASSET=0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599 \
+  npx tsx scripts/find-vaults.ts
+```
+
+There are 16 WBTC vaults on mainnet at the moment. The Prime one is
+`eWBTC-3` (`0x998D761eC1BAdaCeb064624cc3A1d37A46C88bA4`) — governor matches
+the Prime address above. Rerun with `ASSET=0xA0b8...` to pick the
+matching Prime USDC vault (`eUSDC-2`, `0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9`).
+
+### 2. Compute the oracle prices
+
+```bash
+MAINNET_RPC_URL=$MAINNET_RPC_URL \
+  UNI_POOL_ADDRESS=0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35 \
+  ASSET0=0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599 \
+  ASSET1=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
+  npx tsx scripts/compute-pool-prices.ts
+```
+
+The script reads `slot0` from the V3 pool, verifies its `token0()` matches
+`ASSET0` (auto-inverts if it disagrees — a check the old hand-rolled
+`priceY = priceX * WAD / uniPrice` formula skipped), and prints a paste-ready
+two-line block:
+
+```
+PRICE_X=1000000000000000000
+PRICE_Y=1587848399926295        # ~63,000 USDC per WBTC at current block
+```
+
+If you flipped `ASSET0` and `ASSET1` the script rejects the call up front
+with `EulerSwap orders pool tokens by address — flip them.`
+
+### 3. Calibrate
+
+The profile is already in this repo at
+[`scripts/profiles/wbtc-usdc.json`](../scripts/profiles/wbtc-usdc.json). It
+uses the new `asset0` / `asset1` fields, so the calibrator's ordering check
+fires immediately if you swap them:
+
+```bash
+make calibrate profile=wbtc-usdc > .env.hook
+```
+
+You'll get the usual block:
+
+```
+DECAY_PER_BLOCK=339273554673902              # σ₁ at σ_annual = 55%
+RECENTER_RANGE=50000000000000000             # 5% — BTC-class default per the calibration guide
+MAX_SHIFT_MAGNITUDE=15000000000000000        # 150 bps cap
+DEPLOY_SURCHARGE=50000000000000000           # 5% — protects the cold-start arb window
+EXTERNAL_FEE=3000000000000000                # 30 bps — undercut from baseFee=5 bps
+…
+```
+
+To confirm the ordering check is actually load-bearing, temporarily swap
+`asset0` and `asset1` in the profile and rerun — you'll get:
+
+```
+Profile field "asset0" (the eq0 units) is NOT the on-chain token0. By
+address ordering, token0 is 0x2260fac5e5542a773aa44fbcfedf7c193bc2c599.
+```
+
+Swap them back.
+
+### 4. Dry-run on a forked anvil
+
+In a fresh shell (one long command, broken across lines for readability):
+
+```bash
+# Terminal A: spin up a forked-mainnet anvil
+anvil --fork-url $MAINNET_RPC_URL --port 8545 --silent &
+
+# Terminal B: deploy + bind in three calls against the fork
+export RPC_URL=http://localhost:8545
+export PRIVATE_KEY=0x...             # any anvil-funded EOA
+export EULER_ACCOUNT=0x...           # your sub-account (last byte = 0x01)
+export FACTORY=0x...                 # current EulerSwap factory — see addresses.md
+export SUPPLY_VAULT_0=0x998D761eC1BAdaCeb064624cc3A1d37A46C88bA4   # eWBTC-3
+export SUPPLY_VAULT_1=0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9   # eUSDC-2
+export BORROW_VAULT_0=$SUPPLY_VAULT_0
+export BORROW_VAULT_1=$SUPPLY_VAULT_1
+
+# 4a. Enable collateral + controller on the sub-account
+COLLATERAL_VAULTS=$SUPPLY_VAULT_0,$SUPPLY_VAULT_1 \
+  CONTROLLER_VAULT=$BORROW_VAULT_1 \
+  forge script script/EnableCollateral.s.sol:EnableCollateral \
+  --rpc-url $RPC_URL --broadcast --slow -vvvv
+
+# 4b. Deposit equity (numbers picked for an $8k starting split — adjust to taste)
+AMOUNT=6350000   ASSET=0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599 \
+  forge script script/AddCapital.s.sol:AddCapital \
+  --rpc-url $RPC_URL --broadcast --slow -vvvv
+AMOUNT=4000000000 ASSET=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
+  forge script script/AddCapital.s.sol:AddCapital \
+  --rpc-url $RPC_URL --broadcast --slow -vvvv
+
+# 4c. Deploy the pool — PRICE_X/PRICE_Y from step 2, EQ0/EQ1 from the profile
+#     scaled to raw token units (eq0 ≈ 9.91 WBTC * 1e8 ≈ 991_000_000;
+#                                  eq1 ≈ 624_000 USDC * 1e6 ≈ 624_000_000_000).
+source .env.hook   # PRICE_X / PRICE_Y aren't in here — paste them from step 2
+PRICE_X=1000000000000000000 PRICE_Y=1587848399926295 \
+EQ0=991000000  EQ1=624000000000 \
+MIN0=...       MIN1=...           \   # derived: eq / sqrt(1 + recenterRange)
+  forge script script/DeployPool.s.sol:DeployPool \
+  --rpc-url $RPC_URL --broadcast --slow -vvvv
+
+# 4d. Deploy + bind the hook
+export POOL=0x...   # logged by step 4c
+ORACLE_TARGET=0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35 \
+ORACLE_TOKEN0=0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599 \
+  forge script script/DeployHook.s.sol:DeployHook \
+  --rpc-url $RPC_URL --broadcast --slow -vvvv
+```
+
+For a single-shot mainnet deploy (when you're ready, after a clean dry-run)
+use the worked-example script
+[`DeployHookWBTCUSDC.s.sol`](../contracts/script/DeployHookWBTCUSDC.s.sol)
+instead of `DeployHook.s.sol` — it hardcodes the same calibrated values, the
+oracle pool, and a runtime assert that the pool's `token0` is WBTC. Fill in
+the `POOL` and `EULER_ACCOUNT` constants from step 4c and the
+`PRIVATE_KEY=0x... forge script ... --broadcast` invocation is one line.
+
+### Total command count and time
+
+- **Setup (one-time, mainnet reads only)**: 1× `find-vaults`, 1×
+  `compute-pool-prices`, 1× `make calibrate` — ~30–60s total, mostly the
+  vault enumerator's multicall fan-out.
+- **Dry-run (anvil)**: 4× `forge script --broadcast` (steps 4a–4d) — ~20s
+  per script on a forked mainnet, so ~1.5 min end-to-end including the fork
+  spin-up. Total: ~6 commands, ~2.5 minutes wall-clock.
+- **Mainnet broadcast**: same 4 forge invocations against your live RPC,
+  plus the optional [`RegisterPools.s.sol`](../contracts/script/RegisterPools.s.sol).
+  Allow ~5 min for inclusion + confirmations.
+
+The Phase-1 guards (calibrator's `asset0` check, `compute-pool-prices`'s
+`ASSET0 < ASSET1` assertion, `AddCapital`'s auto-detected token side,
+`DeployHookWBTCUSDC`'s `_requireWbtcIsToken0`, `RegisterPools`'s
+`EULER_ACCOUNTS` length check) are each engaged exactly once in the flow
+above — if you skip a step or paste a swapped pair, the script that runs
+next fails fast with a one-line message instead of silently deploying a
+mis-priced pool.
+
+---
+
 ## Where to go next
 
 - [docs/auction-walkthrough.md](auction-walkthrough.md) — step-by-step trace of one auction cycle

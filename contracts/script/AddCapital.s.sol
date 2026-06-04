@@ -20,23 +20,22 @@ interface IERC20Min {
 /// @dev Usage (env-driven):
 ///   PRIVATE_KEY=0x...                                          \
 ///   AMOUNT=1000000                                             \
+///   ASSET=0x...                                                \
 ///   POOL=0x...           # optional, defaults to USDC/WETH pool \
 ///   EULER_ACCOUNT=0x...  # optional                            \
-///   ASSET_VAULT=0x...    # optional                            \
-///   ASSET=0x...          # optional                            \
 ///     forge script script/AddCapital.s.sol:AddCapital \
 ///     --rpc-url $RPC_URL --broadcast --slow -vvvv
 ///
 /// AMOUNT is required and is denominated in the asset's smallest unit (e.g. 6 decimals for
-/// USDC). The script assumes ASSET is token0 of POOL; reserves scale around token0.
+/// USDC). ASSET is one of the two pool assets (whichever you want to add capital in); the
+/// script picks the matching supply vault from the pool's static params. Reserves scale
+/// around whichever side ASSET is (token0 or token1).
 contract AddCapital is Script {
     IEVC constant evc = IEVC(0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383);
 
     // --- Author defaults (USDC/WETH pool) ---
     address constant DEFAULT_POOL = 0x4311031739918Aba578C3C667DA3028A12Ce28A8;
     address constant DEFAULT_EULER_ACCOUNT = 0x2909bCc87c17d8Be263621bF087bC806BA313BFE;
-    address constant DEFAULT_ASSET_VAULT = 0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9;
-    address constant DEFAULT_ASSET = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48; // USDC
 
     struct Cfg {
         address pool;
@@ -44,6 +43,7 @@ contract AddCapital is Script {
         address assetVault;
         address asset;
         uint256 amount;
+        bool assetIsToken0;
     }
 
     struct Scaled {
@@ -75,10 +75,38 @@ contract AddCapital is Script {
     function _readCfg() internal view returns (Cfg memory cfg) {
         cfg.pool = vm.envOr("POOL", DEFAULT_POOL);
         cfg.eulerAccount = vm.envOr("EULER_ACCOUNT", DEFAULT_EULER_ACCOUNT);
-        cfg.assetVault = vm.envOr("ASSET_VAULT", DEFAULT_ASSET_VAULT);
-        cfg.asset = vm.envOr("ASSET", DEFAULT_ASSET);
         cfg.amount = vm.envUint("AMOUNT"); // required, no default
         require(cfg.amount > 0, "AMOUNT must be > 0");
+
+        // Auto-detect ASSET_VAULT from POOL: look up the pool's two supply vaults,
+        // read each underlying asset, and pick whichever matches ASSET. Removes the
+        // wrong-default footgun where ASSET_VAULT silently mismatches POOL.
+        IEulerSwap.StaticParams memory sp = EulerSwap(cfg.pool).getStaticParams();
+        address asset0 = IEVault(sp.supplyVault0).asset();
+        address asset1 = IEVault(sp.supplyVault1).asset();
+
+        address asset = vm.envOr("ASSET", address(0));
+        if (asset == address(0)) {
+            console.log("ASSET env var not set. Pool assets are:");
+            console.log("  token0:", asset0, "(supplyVault0:", sp.supplyVault0);
+            console.log("  token1:", asset1, "(supplyVault1:", sp.supplyVault1);
+            revert("ASSET must be set to one of the pool's two assets");
+        }
+
+        if (asset == asset0) {
+            cfg.asset = asset0;
+            cfg.assetVault = sp.supplyVault0;
+            cfg.assetIsToken0 = true;
+        } else if (asset == asset1) {
+            cfg.asset = asset1;
+            cfg.assetVault = sp.supplyVault1;
+            cfg.assetIsToken0 = false;
+        } else {
+            console.log("ASSET", asset, "does not match either pool asset:");
+            console.log("  token0:", asset0);
+            console.log("  token1:", asset1);
+            revert("ASSET does not match pool's token0 or token1");
+        }
     }
 
     function _logCfg(Cfg memory cfg, address deployer) internal view {
@@ -101,12 +129,20 @@ contract AddCapital is Script {
         console.log("Current reserves:", uint256(r0), uint256(r1));
         console.log("Current eq:", uint256(d.equilibriumReserve0), uint256(d.equilibriumReserve1));
 
-        // Scale factor: (eq0 + amount) / eq0, in 1e18 fixed-point
-        uint256 ratio = (uint256(d.equilibriumReserve0) + cfg.amount) * 1e18 / d.equilibriumReserve0;
+        // Scale factor: (eqSide + amount) / eqSide where eqSide is the equilibrium
+        // reserve of whichever side ASSET corresponds to. Scaling the opposite side
+        // by the same ratio preserves the curve's price and range.
+        uint256 eqSide = cfg.assetIsToken0 ? uint256(d.equilibriumReserve0) : uint256(d.equilibriumReserve1);
+        uint256 ratio = (eqSide + cfg.amount) * 1e18 / eqSide;
         console.log("Scale ratio (1e18=1x):", ratio);
 
-        s.eq0 = uint112(d.equilibriumReserve0 + cfg.amount);
-        s.eq1 = uint112(uint256(d.equilibriumReserve1) * ratio / 1e18);
+        if (cfg.assetIsToken0) {
+            s.eq0 = uint112(uint256(d.equilibriumReserve0) + cfg.amount);
+            s.eq1 = uint112(uint256(d.equilibriumReserve1) * ratio / 1e18);
+        } else {
+            s.eq0 = uint112(uint256(d.equilibriumReserve0) * ratio / 1e18);
+            s.eq1 = uint112(uint256(d.equilibriumReserve1) + cfg.amount);
+        }
         s.min0 = uint112(uint256(d.minReserve0) * ratio / 1e18);
         s.min1 = uint112(uint256(d.minReserve1) * ratio / 1e18);
         s.r0 = uint112(uint256(r0) * ratio / 1e18);

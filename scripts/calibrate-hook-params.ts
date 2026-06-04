@@ -34,9 +34,23 @@ interface PoolProfile {
   name: string;
   /** Actual equity in quote asset (USD terms) */
   equity: number;
-  /** Virtual eq reserve 0 (human units, quote asset) */
+  /**
+   * Virtual eq reserve for token0 (human units).
+   *
+   * Convention: eq0 / eq1 are expressed in the pool's ON-CHAIN token0 / token1
+   * units. EulerSwap (like Uniswap V3) orders tokens by ADDRESS — the smaller
+   * 20-byte address is token0. The pair's "quote/base" identity is unrelated:
+   * for USDC/WETH the quote (USDC) happens to be token0, but for e.g.
+   * WBTC/USDC the base (WBTC) is token0 by address.
+   *
+   * If you set the optional `asset0` / `asset1` fields below, the calibrator
+   * validates that `asset0` is the smaller address (i.e. matches eq0). The
+   * leverage figure (`eq0 / equity`) is only meaningful when eq0 is in the
+   * same units as `equity`; the address check catches the silent 10^N error
+   * caused by swapping them.
+   */
   eq0: number;
-  /** Virtual eq reserve 1 (human units, base asset) */
+  /** Virtual eq reserve for token1 (human units). See `eq0` for ordering rules. */
   eq1: number;
   /** Concentration X (0-1, typically 0 for range-based) */
   cx: number;
@@ -54,6 +68,17 @@ interface PoolProfile {
   auctionTriggerThreshold: number;
   /** Range parameter (WAD) */
   recenterRange: number;
+  /**
+   * Optional. 0x-prefixed ERC20 address corresponding to `eq0`. When both
+   * `asset0` and `asset1` are present, the calibrator verifies (lowercase
+   * lexicographic compare) that `asset0` is the smaller address — i.e. the
+   * on-chain token0 under EulerSwap / Uniswap V3 ordering. Mismatch is a
+   * hard error: silently calibrating against swapped reserves produces a
+   * leverage figure that is off by ~10^(decimals1 - decimals0).
+   */
+  asset0?: string;
+  /** Optional. 0x-prefixed ERC20 address corresponding to `eq1`. See `asset0`. */
+  asset1?: string;
 }
 
 // ─── Profile loading + validation ──────────────────────────────────────
@@ -101,6 +126,42 @@ function validateProfile(raw: unknown, source: string): PoolProfile {
   for (const key of ["cx", "cy"]) {
     const v = r[key] as number;
     if (v < 0 || v > 1) throw new Error(`${source}: field "${key}" must be in [0, 1]`);
+  }
+
+  // ── Optional asset0 / asset1 address-ordering check ──────────────────
+  // EulerSwap (and Uniswap V3) order pool tokens by address: the smaller
+  // 20-byte address is token0. The profile's eq0 must be in token0 units.
+  // If the caller supplied both asset addresses, verify ordering matches.
+  const hasAsset0 = "asset0" in r && r.asset0 !== undefined && r.asset0 !== null;
+  const hasAsset1 = "asset1" in r && r.asset1 !== undefined && r.asset1 !== null;
+  if (hasAsset0 !== hasAsset1) {
+    throw new Error(
+      `${source}: "asset0" and "asset1" must be set together (or both omitted)`,
+    );
+  }
+  if (hasAsset0 && hasAsset1) {
+    const isHexAddress = (v: unknown): v is string =>
+      typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v);
+    if (!isHexAddress(r.asset0)) {
+      throw new Error(`${source}: field "asset0" must be a 0x-prefixed 20-byte hex address`);
+    }
+    if (!isHexAddress(r.asset1)) {
+      throw new Error(`${source}: field "asset1" must be a 0x-prefixed 20-byte hex address`);
+    }
+    const a0 = (r.asset0 as string).toLowerCase();
+    const a1 = (r.asset1 as string).toLowerCase();
+    if (a0 === a1) {
+      throw new Error(`${source}: "asset0" and "asset1" must be different addresses`);
+    }
+    const smaller = a0 < a1 ? a0 : a1;
+    if (a0 !== smaller) {
+      throw new Error(
+        `${source}: Profile field "asset0" (the eq0 units) is NOT the on-chain token0. ` +
+          `By address ordering, token0 is ${smaller}. ` +
+          `Either swap eq0 ↔ eq1 in the profile (and matching asset0 ↔ asset1) ` +
+          `OR re-derive the calibration in token0 units.`,
+      );
+    }
   }
 
   return r as unknown as PoolProfile;

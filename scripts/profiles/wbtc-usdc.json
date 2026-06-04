@@ -1,0 +1,16 @@
+{
+  "name": "WBTC/USDC",
+  "equity": 8000,
+  "eq0": 9.91,
+  "eq1": 624000,
+  "cx": 0,
+  "cy": 0,
+  "oracle": "v3",
+  "oracleFeeBps": 30,
+  "volatility": "moderate",
+  "annualVol": 0.55,
+  "auctionTriggerThreshold": 0.5,
+  "recenterRange": 0.05,
+  "asset0": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+  "asset1": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+}

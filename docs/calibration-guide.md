@@ -23,6 +23,30 @@ Run `scripts/calibrate-hook-params.ts` before every deployment or parameter upda
 
 ## 1. Inputs Required
 
+### 1.1 Cluster Selection
+
+An Euler **cluster** is a set of EVK vaults that share a single `governorAdmin` address. The governor controls per-vault risk parameters (LTVs, oracle, caps, interest-rate model) for every vault in the cluster, so vaults inside the same cluster are designed to interoperate — you can borrow one against another at the LTV the governor has set.
+
+A hook only borrows from the vaults named in its `StaticParams` (`borrowVault0`, `borrowVault1`), but both legs of an EulerSwap pool must live in the **same cluster** — otherwise the cross-LTV the calibration relies on does not exist and the vault wiring will not authorise the borrow.
+
+**Find a vault's cluster.** Call `governorAdmin()` on the vault. The returned address is the cluster governor. Two vaults are in the same cluster iff they return the same `governorAdmin`.
+
+```bash
+cast call $VAULT "governorAdmin()(address)" --rpc-url $MAINNET_RPC_URL
+```
+
+**Find other vaults in the same cluster.** Use the helper script with the cluster governor address:
+
+```bash
+CLUSTER_GOV=0x... npx tsx scripts/find-vaults.ts
+```
+
+This enumerates every vault whose `governorAdmin()` matches `CLUSTER_GOV`, prints the underlying asset, current LTVs, and the supply/borrow caps — exactly the inputs you need for calibration.
+
+**Live deployments.** Both production pools (USDC/USDT and USDC/WETH) use the Euler **Prime** cluster. See [addresses.md](addresses.md) for the current live pool, hook, and vault addresses — this guide intentionally does not pin them so it remains stable across redeployments.
+
+### 1.2 Required Inputs
+
 Before calibrating, gather:
 
 | Input | Where to find it | Example |
@@ -34,6 +58,18 @@ Before calibrating, gather:
 | Oracle fee tier | Pool fee | 5 bps (V3), 0.08 bps (V4) |
 | Concentration (c) | Pool's curve shape | 0 (range-based), 0.5, etc. |
 | Gas cost | Current gas × swap gas × ETH price | ~\$0.30 at 0.4 gwei |
+
+### 1.3 Volatility Classes
+
+`σ_annual` drives `decayPerBlock`, `kMarginBlocks`, surcharge sizing, and the recenter range. Use the historical realised vol for the pair (or the dominant asset against USD for pegged pairs). The classes below cover the assets the hook currently targets:
+
+| Class | Examples | σ_annual | Daily 1σ | Suggested `recenterRange` | Suggested `auctionTriggerThreshold` |
+|-------|----------|----------|----------|---------------------------|-------------------------------------|
+| Stable | USDC/USDT, USDC/DAI | 0.0005 – 0.002 | ~0.3 bps | 1 bps (1e14) | 50% of NAV |
+| ETH-class | WETH/USDC, stETH/USDC | 0.60 – 0.80 | ~3 – 4% | 5% (0.05e18) | 50% of NAV |
+| BTC-class | WBTC/USDC, cbBTC/USDC | 0.50 – 0.65 | ~3 – 4% | 5 – 10% (0.05 – 0.10e18) | 50% of NAV |
+
+BTC's daily realised vol sits a touch below ETH, so the ETH-class recenterRange (5%) is a safe starting point. Widen toward 10% if the pool's cross-LTV is lower (e.g. 0.80 vs 0.86) and you want extra solvency headroom, or tighten toward 5% if you want recenter cadence closer to the ETH pool.
 
 ---
 
@@ -47,14 +83,7 @@ The range controls leverage, trading capacity, and health at the boundary.
 minReserve = eq / sqrt(1 + r / (1 - c))
 ```
 
-**Calibration rule**: Set `r` so that health = 1 at the boundary. This uses the full LTV capacity without risking liquidation.
-
-```
-maxDebt_per_side = eq × (1 - 1/sqrt(1 + r/(1-c)))
-health_at_boundary = collateral × LTV / maxDebt = 1.0
-```
-
-Solve for `r` given cross-LTV and concentration `c`.
+**Calibration rule**: Set `r` against a safety-factored multiple of σ_daily, not at the naive h=1 boundary. The naive boundary formula `r = 1/(1-LTV)² - 1` gives a range that is orders of magnitude too wide for any volatile pair (5000% for LTV = 0.86). See [§7 recenterRange](#recenterrange) for the full derivation, safety factor, and worked numbers.
 
 | Pool | Cross-LTV | r | Leverage |
 |------|-----------|---|----------|
@@ -332,7 +361,29 @@ deploySurcharge = surchargeDecayPerBlock × 100
 
 ### recenterRange
 
-Same as the range parameter `r`. Controls min reserves after recenter. Always use the same formula: h=1 at boundary.
+Same as the range parameter `r`. Controls min reserves after recenter.
+
+**The naive h=1 derivation is far too wide.** Setting health = 1 exactly at the boundary gives
+
+```
+r = 1 / (1 - LTV)² - 1
+```
+
+which for LTV = 0.86 yields `r ≈ 50` (5000%) — five orders of magnitude wider than the 5% the live USDC/WETH pool actually uses. A pool that wide would carry unbounded directional inventory before recentering and would liquidate on the first sharp move.
+
+**Use a safety factor instead.** The live pools pull the boundary well inside the h=1 limit by sizing `r` against the realised volatility of the pair, not against the LTV. Pick `r` so that a worst-case price excursion of `N × σ_daily` still leaves the LP comfortably solvent (typically health ≥ ~1.5–2.0). For ETH-class pools this lands ~**100× tighter than the naive h=1 range**; for stable pairs the gap is wider still because LTVs are higher and σ is tiny.
+
+**Working numbers:**
+
+| Pool | σ_annual | σ_daily (1σ) | recenterRange | r / σ_daily | h=1 range | Safety factor |
+|------|----------|--------------|---------------|-------------|-----------|---------------|
+| USDC/USDT | 0.05% | ~0.3 bps | 1 bps (1e14) | ~5× | ~600% (LTV 0.96) | ~6000× |
+| USDC/WETH | 70% | ~3.7% | 5% (0.05e18) | ~1.4× | ~5000% (LTV 0.86) | ~100× |
+
+For USDC/USDT, `r = 1 bps` is roughly 5× the daily 1σ move — small but multiple sigmas of headroom given how thin stable-pair vol is.
+For USDC/WETH, `r = 5%` is roughly 1.4× the daily 1σ move; the recenter-on-every-swap loop and the surcharge between recenters provide the rest of the safety margin.
+
+For a new pool, start from the [volatility class table](#13-volatility-classes) and verify with the calibration script before deploying.
 
 ### maxRecenterDrift
 
@@ -395,7 +446,7 @@ Target: equal value in both assets.
 
 1. **Vault setup**: Supply vault, borrow vault, and EVC permissions configured for the euler account
 2. **Cross-LTV verified**: Check both directions. Use the lower LTV for range calibration
-3. **Range derived**: h=1 at boundary using cross-LTV and concentration
+3. **Range derived**: safety-factored against σ_daily (see [§7](#7-recenter-parameters)), not naive h=1 at boundary
 4. **Eq reserves computed**: From equity + boost formula (50:50) or current reserves (delta-neutral)
 5. **Min reserves computed**: From eq + range + concentration formula
 6. **σ₁ derived**: From historical annual vol and blocks/year
@@ -421,7 +472,7 @@ Target: equal value in both assets.
 | kMarginBlocks | uint64 | 15 (volatile), 250 (stable) | 15 | 250 |
 | oracleGuardMultiplier | uint64 | 3σ confidence | 3e18 | 3e18 |
 | maxSnapshotInterval | uint64 | 24h (volatile), 72h (stable) | 7200 | 21600 |
-| recenterRange | uint64 | h=1 at boundary | 0.05e18 | 1e14 |
+| recenterRange | uint64 | safety factor on σ_daily (see §7) | 0.05e18 | 1e14 |
 | maxRecenterDrift | uint64 | conservative clamp | 0.03e18 | 1e14 |
 | minRecenterDelta | uint64 | dust prevention | 0 | 5e13 |
 | surchargeDecayPerBlock | uint64 | deploySurcharge / 100 | 10e14 | 5e12 |

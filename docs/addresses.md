@@ -2,7 +2,9 @@
 
 Per-chain reference for the contracts this repo interacts with. See [README](../README.md) for the project overview and [case-study-usdc-usdt.md](case-study-usdc-usdt.md) for the live deployment that uses these.
 
-> **Note:** Addresses change with redeployments. Always verify against the source repos ([euler-swap](https://github.com/euler-xyz/euler-swap), [euler-vault-kit](https://github.com/euler-xyz/euler-vault-kit), [evk-periphery](https://github.com/euler-xyz/evk-periphery)) and on a block explorer before relying on them for a real deploy. The values below are a snapshot at the time of this commit.
+> **Source of truth:** Canonical addresses live in [`contracts/euler-interfaces/addresses/1/EulerSwapAddresses.json`](../contracts/euler-interfaces/addresses/1/EulerSwapAddresses.json) (and the sibling `CoreAddresses.json`, `PeripheryAddresses.json`, etc.) — that's the auto-installed submodule the deploy scripts read. The tables below mirror those files for human reference; if they ever drift, the JSON wins.
+>
+> **Note:** Addresses change with redeployments. Always verify against the source repos ([euler-swap](https://github.com/euler-xyz/euler-swap), [euler-vault-kit](https://github.com/euler-xyz/euler-vault-kit), [evk-periphery](https://github.com/euler-xyz/evk-periphery)) and on a block explorer before relying on them for a real deploy.
 
 ---
 
@@ -16,10 +18,16 @@ Per-chain reference for the contracts this repo interacts with. See [README](../
 
 ### EulerSwap
 
+All values mirror [`EulerSwapAddresses.json`](../contracts/euler-interfaces/addresses/1/EulerSwapAddresses.json).
+
 | Contract | Address | Notes |
 |---|---|---|
+| EulerSwap V2 Factory | [`0xD05213331221fAB8a3C387F2affBb605Bb04DF5F`](https://etherscan.io/address/0xD05213331221fAB8a3C387F2affBb605Bb04DF5F) | The current mainnet factory. Pools deployed via this factory show up as the `sender` of the `PoolDeployed` event — e.g. on the [USDC/USDT pool](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8). |
+| EulerSwap V2 Implementation | [`0x8B0E044E364F2cE913799d53b300e15A6974DC97`](https://etherscan.io/address/0x8B0E044E364F2cE913799d53b300e15A6974DC97) | Implementation behind the EIP-1167 proxies the factory clones. |
+| EulerSwap V2 Periphery | [`0xD3a349EE0A21eA0A7E9513ac236ae614b5FD513E`](https://etherscan.io/address/0xD3a349EE0A21eA0A7E9513ac236ae614b5FD513E) | Quoting / convenience helpers. |
+| EulerSwap V2 Protocol Fee Config | [`0x5171Aed04Fa9551DB484F07c853F252Bc6F53b63`](https://etherscan.io/address/0x5171Aed04Fa9551DB484F07c853F252Bc6F53b63) | Protocol fee recipient and rate. |
 | EulerSwap Registry | [`0x5FcCB84363F020c0cADE052C9c654aABF932814A`](https://etherscan.io/address/0x5FcCB84363F020c0cADE052C9c654aABF932814A) | Used by [RegisterPools.s.sol](../contracts/script/RegisterPools.s.sol). Pools must register here to be discoverable by integrators. |
-| EulerSwap Factory | *not statically pinned in this repo* | The mainnet factory is deployed by the EVK periphery infrastructure rather than a fixed address checked into source. See the [euler-swap repo](https://github.com/euler-xyz/euler-swap) for the current factory, or look up the `PoolDeployed` event sender for any known mainnet pool (e.g. [USDC/USDT pool](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8)). |
+| EulerSwap V1 Factory | [`0xb013be1D0D380C13B58e889f412895970A2Cf228`](https://etherscan.io/address/0xb013be1D0D380C13B58e889f412895970A2Cf228) | Legacy V1 factory; included for completeness — new pools deploy via the V2 factory above. |
 
 ### Uniswap (used as fee compass source)
 

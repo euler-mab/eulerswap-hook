@@ -22,6 +22,12 @@ import {IEVC} from "evc/interfaces/IEthereumVaultConnector.sol";
 ///
 /// If POOLS / EULER_ACCOUNTS / BOND_WEI are unset, the author's mainnet defaults are
 /// used (USDC/WETH and USDC/USDT pools, 0.001 ether bond).
+///
+/// @dev Footgun guard: if POOLS is unset, the script would otherwise silently fall back
+/// to the author's live mainnet pools. To prevent an accidental broadcast that bonds
+/// the caller's ETH against pools they do not own, this script reverts unless the
+/// caller explicitly sets `ACK_AUTHOR_POOLS=yes`. Set `POOLS` to your own
+/// comma-separated list for normal use.
 contract RegisterPools is Script {
     IEVC constant evc = IEVC(0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383);
     IEulerSwapRegistry constant registry = IEulerSwapRegistry(0x5FcCB84363F020c0cADE052C9c654aABF932814A);
@@ -35,6 +41,18 @@ contract RegisterPools is Script {
 
     function run() external {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+
+        // Footgun guard: refuse to fall back to the author's live mainnet pools
+        // unless the caller has explicitly acknowledged it. Runs BEFORE any broadcast.
+        string memory poolsRaw = vm.envOr("POOLS", string(""));
+        if (bytes(poolsRaw).length == 0) {
+            string memory ack = vm.envOr("ACK_AUTHOR_POOLS", string(""));
+            require(
+                _eq(ack, "yes"),
+                "Refusing to register the author's default pools. If this is intentional, set ACK_AUTHOR_POOLS=yes. Otherwise set POOLS to your own comma-separated list."
+            );
+            console.log("WARNING: POOLS unset; using author defaults (ACK_AUTHOR_POOLS=yes).");
+        }
 
         address[] memory pools = _readPools();
         address[] memory accounts = _readAccounts();
@@ -122,6 +140,10 @@ contract RegisterPools is Script {
             acc = acc * 16 + uint160(_hexDigit(uint8(b[i])));
         }
         return address(acc);
+    }
+
+    function _eq(string memory a, string memory b) internal pure returns (bool) {
+        return keccak256(bytes(a)) == keccak256(bytes(b));
     }
 
     function _hexDigit(uint8 c) internal pure returns (uint8) {
