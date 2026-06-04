@@ -11,11 +11,11 @@ A live mainnet pool with $500 of equity quoting $100k of daily volume. Numbers b
 
 ## At a glance
 
+Snapshot at the time of writing (~90 days live). Re-run [`scripts/analyze-hook.ts`](../scripts/analyze-hook.ts) for current state.
+
 | Metric | Value |
 |---|---|
-All numbers below are a snapshot at the time of writing; re-run [`scripts/analyze-hook.ts`](../scripts/analyze-hook.ts) for current state.
-
-| Real LP equity (NAV) | **~$489** |
+| Real LP equity (NAV) | **~$483** (started at $501) |
 | Per-trade capacity (collateral × LTV) | **~$10k** |
 | Curve virtual reserves (slippage-shape parameter, not depth) | ~$247M USDC / $242M USDT |
 | Volume (7-day average) | **~$46k/day** |
@@ -23,10 +23,10 @@ All numbers below are a snapshot at the time of writing; re-run [`scripts/analyz
 | Daily turnover (7-day avg) | **~95× NAV** |
 | Lifetime volume | ~$810k (187 swaps over ~90 days) |
 | Lifetime fees collected | $24.27 |
-| Lifetime auctions started / ended | 52 / 51 (1 currently active) |
-| P&L since live | -$12 (-2.4%) — small loss from quiet periods, not flat |
+| Lifetime auctions started / ended | 52+ / all clearing |
+| P&L since live | **-$18 (-3.6%)** — small loss from carry on quiet days |
 
-Each individual trade is bounded by the pool's per-trade capacity (collateral × LTV ≈ $10k). The reason cumulative volume is much larger than per-trade capacity is the auction loop: when the LP's net inventory builds up in one direction, the auction recycles it back to neutral by paying an arber to trade the opposite way, so the pool's directional position cycles. Volume is **bursty** — heavy days when aggregators route through the pool, quiet days when they route elsewhere — averaging ~$46k/day over the past week. The LP collects fees from each swap but pays vault borrow carry continuously, so quiet periods drag P&L slightly negative; busy periods recover it. Net so far: small loss (~-2.4%) over ~90 days.
+Each individual trade is bounded by the pool's per-trade capacity (collateral × LTV ≈ $10k). The reason cumulative volume is much larger than per-trade capacity is the auction loop: when the LP's net inventory builds up in one direction, the auction recycles it back to neutral by paying an arber to trade the opposite way, so the pool's directional position cycles. Volume is **bursty** — heavy days when aggregators route through the pool, quiet days when they route elsewhere — averaging ~$46k/day over the past week. The LP collects fees from each swap but pays vault borrow carry continuously, so quiet periods drag P&L slightly negative; busy periods recover it. Net so far: small loss (~-3.6%) over ~90 days.
 
 ---
 
@@ -185,7 +185,7 @@ Repeat for the USDT supply and borrow vaults. Sum the assets, subtract the debts
 
 ### 4. Daily volume from `Swap` events
 
-The "~$98k/day" figure is `sum(|amount0In| + |amount0Out|)` over the last 24 hours, in token0 units, divided by `10^6` for USDC. A quick Python recipe using `web3`:
+The 24-hour volume figure is `sum(|amount0In| + |amount0Out|)` over the last 24 hours, in token0 units, divided by `10^6` for USDC. A quick Python recipe using `web3`:
 
 ```bash
 python - <<'PY'

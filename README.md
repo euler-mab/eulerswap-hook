@@ -143,11 +143,13 @@ contracts/
     DynamicFeeAuctionHook.sol         # The hook (~1000 lines, single contract)
     MinimalHook.sol                   # 50-line pedagogical starter
   test/
-    DynamicFeeAuctionHook.t.sol       # 77 unit tests
-    DynamicFeeAuctionHook.fork.t.sol  # 16 mainnet fork tests
-    MinimalHook.t.sol                 # 4 tests
-    walkthrough/                      # Step-by-step auction walkthroughs
-    *.fork.t.sol                      # Mainnet-fork integration tests
+    DynamicFeeAuctionHook.t.sol       # 77 unit tests (mocked V3 oracle)
+    DynamicFeeAuctionHook.fork.t.sol  # 16 mainnet-fork tests (real pool state)
+    HealthAtBoundary.fork.t.sol       # boundary-condition fork tests across pairs
+    ClearingSwap.t.sol                # auction-clearing unit tests
+    EulerSwapAccumulator.t.sol        # accumulator math unit tests
+    MinimalHook.t.sol                 # 4 tests for the pedagogical starter
+    walkthrough/                      # step-by-step auction walkthroughs
   script/
     DeployHook.s.sol                  # Generic env-driven hook deploy + install
     DeployPool.s.sol                  # Generic env-driven EulerSwap pool factory deploy

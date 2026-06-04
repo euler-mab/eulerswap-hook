@@ -136,6 +136,20 @@ A few things people ask about:
 - **No off-chain bot is required.** `DynamicFeeAuctionHook` is fully autonomous. You *can* run a bot for parameter retuning, but the core loop (fees, recenters, auctions) runs purely in `afterSwap`.
 - **The fee compass is not a price oracle for collateral.** Vault collateral pricing uses Euler's [price-oracle](contracts/euler-price-oracle/) system. The Uniswap spot read is *only* for fee modulation — it tells the hook which direction to charge more, never how to value anything.
 
+## Operational considerations
+
+### Stuck-auction recovery
+
+If `pool.reconfigure()` reverts during a clearing attempt (e.g. transient EVC unhealth, oracle returning zero), the hook keeps `auctionActive = true` so the next swap retries the clear. In practice the live pool has self-healed on every stuck auction observed. But there's a worst case: a configuration that *keeps* failing `reconfigure()`. The escape hatch is `endAuction()` — which is `onlyOwner`. **If the owner key is unavailable, an auction that can't self-clear has no permissionless recovery path.** Plan accordingly: keep the owner key recoverable, or accept the operator-trust dependency.
+
+### `builderFee` griefing (when enabled)
+
+The optional `setBuilderFee` mechanism is permissionless. A griefer can call `setBuilderFee(maxFee)` every block to keep the quoted fee at max, blocking swaps regardless of whether `builderFeeShareBps` is zero. The defensive properties of the design still hold — the floor is preserved, the griefer earns no share, the LP doesn't lose funds — but the *liveness* property weakens: swaps may be priced out of routing during the attack. Two mitigations the operator can use: (1) keep `builderFeeShareBps = 0` so there's no incentive for anyone to bump in the first place (the default and current live setting), or (2) if you ever enable share, monitor for griefing patterns and disable via `setBuilderFeeShareBps(0)` if needed (instant — no timelock). The hook can't be configured to make the mechanism mandatory.
+
+### Reentrancy surface
+
+EulerSwap's `swap()` holds the pool's internal lock during the swap and releases it across the `afterSwap` callback specifically so the hook can call back into `reconfigure()`. The pool's own `nonReentrant` protects against same-tx re-entry into `swap()`. The hook adds a separate `nonReentrantBuilderFee` guard on `withdrawBuilderShare()` and `batchSettleBuilderShare()` for the ERC-20 callback case (e.g., ERC-777 receive hooks). The fee compass read is a `staticcall` so it cannot mutate state. There is no known reentrancy path across these layers; if you find one, please open an issue.
+
 ## Where to read more
 
 See the **Documentation map** in [README.md](README.md) — every doc, one-line description, organized by what you're trying to do. The two source files most worth reading top-to-bottom are [`DynamicFeeAuctionHook.sol`](contracts/src/DynamicFeeAuctionHook.sol) (the hook) and [`MinimalHook.sol`](contracts/src/MinimalHook.sol) (the ~50-line starter you can fork).

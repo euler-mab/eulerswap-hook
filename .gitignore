@@ -24,7 +24,7 @@
 **/node_modules/
 *.tsbuildinfo
 
-# legacy / leftover from prior tooling (may exist on author's machine)
+# Never tracked
 /.next/
 /agent/
 /next-env.d.ts
