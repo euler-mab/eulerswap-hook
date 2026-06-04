@@ -115,7 +115,7 @@ The deploy flow is env-driven end-to-end. Calibration takes a JSON profile and o
 
 This is experimental, unaudited reference code:
 
-- **EulerSwap protocol** is [audited](https://github.com/euler-xyz/euler-swap/tree/master/audits) and has processed billions in production. **The hook on top of it is not.** Single-author research code, battle-tested only on the live $500 NAV pool above. An internal audit pass found and fixed eight findings (1 High, 3 Medium, 2 Low, 2 Informational); see the commit history. That's an internal review, not a substitute for an independent one.
+- **EulerSwap protocol** is [audited](https://github.com/euler-xyz/euler-swap/tree/master/audits) and has processed billions in production. **The hook on top of it is not.** Single-author research code, battle-tested only on the live $500 NAV pool above.
 - **Borrow rate volatility** can flip the math: at high vault utilization the carry cost on the directional leg rises and may exceed fee income. Monitor.
 - **Spot oracle safety** assumes the invariant "fee is monotonically non-decreasing in oracle delta" — i.e., the hook only ever raises the fee, never lowers it. If you fork the hook, don't add code paths that lower the quoted fee in response to oracle signals.
 
