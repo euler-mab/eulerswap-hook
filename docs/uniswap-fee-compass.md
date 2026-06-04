@@ -1,6 +1,6 @@
-# Uniswap spot as a fee oracle
+# Uniswap spot as a fee compass
 
-A pattern that's "unsafe" for collateral pricing but **safe and useful for fee modulation**, exploited throughout [DynamicFeeAuctionHook](../contracts/src/DynamicFeeAuctionHook.sol).
+A pattern that's "unsafe" for collateral pricing but **safe and useful for fee modulation**, exploited throughout [DynamicFeeAuctionHook](../contracts/src/DynamicFeeAuctionHook.sol). The name **fee compass** captures the directional intuition: the oracle doesn't price collateral, it just tells the hook *which way* to charge more vs less.
 
 This doc explains what the pattern is, why it works, when it breaks, and how to use it in your own hook.
 
@@ -60,7 +60,7 @@ Now imagine an attacker manipulates the Uniswap pool to push spot in either dire
 
 **There's no direction the attacker can push the oracle that lowers the fee.** Manipulation costs Uniswap-pool fees (their swap to move spot) and increases the fee on the AMM swap they ultimately want to do. It's strictly losing.
 
-The closest thing to a "fee oracle attack" is: push spot toward what the attacker would have to pay normally, making them pay an unjustified extra capture fee. But this requires *first* moving spot, *then* swapping — and the first move requires paying Uniswap fees on a meaningful trade. It's never net-positive.
+The closest thing to a "fee-compass attack" is: push spot toward what the attacker would have to pay normally, making them pay an unjustified extra capture fee. But this requires *first* moving spot, *then* swapping — and the first move requires paying Uniswap fees on a meaningful trade. It's never net-positive.
 
 ---
 
@@ -169,7 +169,7 @@ Starting from [`MinimalHook.sol`](../contracts/src/MinimalHook.sol):
 5. `try/catch` the oracle read and fall back to `baseFee` on failure.
 6. Update the pool's `swapHookedOperations` to include `EULER_SWAP_HOOK_GET_FEE` (the bit is already set on the `MinimalHook` deploy).
 
-That's an oracle-reactive hook in ~150 lines. Add auctions, surcharges, recenters, etc. as separate layers when you need them.
+That's a fee-compass hook in ~150 lines. Add auctions, surcharges, recenters, etc. as separate layers when you need them.
 
 ---
 

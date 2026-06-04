@@ -85,7 +85,7 @@ A malicious actor calls `setBuilderFee(maxFee)` to brick swaps in a block.
 - Benefit: only the bumped revenue share, paid by the swap that uses the bumped fee — which won't happen because the fee is too high.
 - Net: pay gas, get nothing. Per block. Forever.
 
-This is the same economics that protect Uniswap-spot as a fee oracle: a manipulator who inflates the fee pays it on their own swap. Here the manipulator inflates the fee and pays gas instead, but still earns nothing.
+This is the same economics that protect Uniswap-spot as a fee compass: a manipulator who inflates the fee pays it on their own swap. Here the manipulator inflates the fee and pays gas instead, but still earns nothing.
 
 ### 3. Block-controller wins naturally
 

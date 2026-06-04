@@ -33,7 +33,7 @@ How the pieces fit together when you run an active single-LP AMM on EulerSwap.
             │ Uniswap V3   │  │ EulerSwap pool  │
             │ pool or V4   │  │ (same pool —    │
             │ PoolManager  │  │ writes back)    │
-            │ (fee oracle) │  │                 │
+            │ (fee compass)│  │                 │
             └──────────────┘  └─────────────────┘
 
             ┌─────────────────────────────────────┐
@@ -93,7 +93,7 @@ State the hook tracks across swaps (all read/written from within `afterSwap`):
 - `auctionActive`, `auctionStartBlock`, `auctionStartingFee`, `auctionClearAsset0`, `preShiftPriceY` — for the auction state machine
 - `builderFeeSlot`, `builderFeeShareBps`, `builderShareAccrued` — for the optional builder-fee mechanism
 
-### 4. The fee oracle (Uniswap V3 or V4)
+### 4. The fee compass (Uniswap V3 or V4)
 
 The hook reads the **current spot price** from the deepest Uniswap pool for the pair:
 
@@ -134,7 +134,7 @@ A few things people ask about:
 - **No LP token.** Liquidity isn't shared — there's no ERC20 representing pool shares. The single LP is your Euler sub-account.
 - **No rewards program.** There's no emissions logic anywhere in the pool or hook. Fees go straight to the LP via the vault balance growth.
 - **No off-chain bot is required.** `DynamicFeeAuctionHook` is fully autonomous. You *can* run a bot for parameter retuning, but the core loop (fees, recenters, auctions) runs purely in `afterSwap`.
-- **The fee oracle is not a price oracle for collateral.** Vault collateral pricing uses Euler's [price-oracle](contracts/euler-price-oracle/) system. The Uniswap spot read is *only* for fee modulation.
+- **The fee compass is not a price oracle for collateral.** Vault collateral pricing uses Euler's [price-oracle](contracts/euler-price-oracle/) system. The Uniswap spot read is *only* for fee modulation — it tells the hook which direction to charge more, never how to value anything.
 
 ## Where to read more
 

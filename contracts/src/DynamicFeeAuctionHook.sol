@@ -34,10 +34,12 @@ interface IERC20Minimal {
     function balanceOf(address account) external view returns (uint256);
 }
 
-/// @title DynamicFeeAuctionHook — Oracle-reactive fees + Dutch fee-decay auctions
+/// @title DynamicFeeAuctionHook — Fee-compass-driven fees + Dutch fee-decay auctions
 /// @notice Autonomous hook for a single-LP EulerSwap pool. Five mechanisms:
-///   1. Oracle-reactive fee from Uniswap V3 slot0 or V4 extsload (fee-only,
-///      never below baseFee — safe against spot manipulation).
+///   1. Uniswap-spot fee compass: read V3 slot0 or V4 extsload as a direction
+///      signal (not a collateral oracle). Fee-only, never below baseFee — safe
+///      against spot manipulation because the attacker pays any inflated fee
+///      on their own swap. See docs/uniswap-fee-compass.md.
 ///   2. Routing-aware asymmetry: attract retail flow, capture arbs.
 ///   3. Continuous recenter: on every swap that reduces exposure, recenter
 ///      and install a curvature-aware additive surcharge that decays to zero.

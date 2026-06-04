@@ -44,7 +44,7 @@ There are five moving parts. Worth getting them straight before touching code.
                                  ▼
               ┌─────────────────────────────────────┐
               │  Uniswap V3 pool or V4 PoolManager  │
-              │  (fee oracle only)                  │
+              │  (fee compass only)                 │
               └─────────────────────────────────────┘
 ```
 

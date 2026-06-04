@@ -65,7 +65,7 @@ RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 ## Invariants — do not break
 
 - **`clearThreshold < maxShiftMagnitude`.** Enforced in the hook; calibration script enforces it too. Breaking this means auctions never clear and the hook bricks rebalancing.
-- **Fee response is monotone in oracle delta.** The hook only ever *raises* the fee above `baseFee`, never lowers it. This is what makes the Uniswap-spot fee oracle safe under manipulation — see [docs/uniswap-oracle-pattern.md](docs/uniswap-oracle-pattern.md). Don't add code paths that lower the quoted fee.
+- **Fee response is monotone in oracle delta.** The hook only ever *raises* the fee above `baseFee`, never lowers it. This is what makes the Uniswap-spot fee compass safe under manipulation — see [docs/uniswap-fee-compass.md](docs/uniswap-fee-compass.md). Don't add code paths that lower the quoted fee.
 - **Oracle mode select.** `OracleConfig.v4PoolId == bytes32(0)` selects V3 mode (slot0); any non-zero value selects V4 mode (extsload). Don't add a third "auto-detect" path.
 - **Sub-account auth.** `DeployPool.s.sol` wraps `factory.deployPool` in `evc.call(factory, eulerAccount, ...)` because the factory's `_msgSender()` resolves through EVCUtil. Don't bypass — it'll revert with `Unauthorized()` for any pool whose `eulerAccount` isn't the broadcasting EOA.
 

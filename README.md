@@ -4,7 +4,7 @@
 
 A reference hook for **active single-LP liquidity provision** on [EulerSwap](https://github.com/euler-xyz/euler-swap) — one operator per pool, dynamic fees set against a Uniswap-spot oracle, Dutch fee-decay auctions for autonomous rebalancing. All on-chain. No off-chain bot for the core loop.
 
-The "active" framing means concrete things: **single operator per pool** (one Euler account owns the position, not a shared LP curve), **fee-oracle-driven asymmetric fees** (quote higher for arb direction, lower for retail), and **autonomous Dutch-auction rebalancing** (when inventory drifts, the hook offers a known arb that decays in price until someone takes it). All in public Solidity, runnable inside `getFee` and `afterSwap`. No off-chain quoter, no private orderflow, no builder integration required.
+The "active" framing means concrete things: **single operator per pool** (one Euler account owns the position, not a shared LP curve), **fee-compass-driven asymmetric fees** (a Uniswap-spot reference tells the hook which direction is arb vs retail, so it can quote each side differently), and **autonomous Dutch-auction rebalancing** (when inventory drifts, the hook offers a known arb that decays in price until someone takes it). All in public Solidity, runnable inside `getFee` and `afterSwap`. No off-chain quoter, no private orderflow, no builder integration required.
 
 This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHook.sol) contract, calibration tooling, and deploy scripts needed to launch your own pool. For routing your pool through aggregators and intent systems, see the separate [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) repo. Narrative-style overview in [`docs/blog-post.md`](docs/blog-post.md).
 
@@ -16,9 +16,9 @@ This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHo
 
 [DynamicFeeAuctionHook.sol](contracts/src/DynamicFeeAuctionHook.sol) is autonomous — once deployed, it runs without any off-chain bot. **Five mechanisms** compound inside the hook, each solving a specific failure mode of naïve constant-product LPing:
 
-### 1. Uniswap-spot-as-fee-oracle — *direction signal*
+### 1. Uniswap spot as a fee compass — *direction signal*
 
-The hook reads spot from the deepest Uniswap pool for the pair (V3 `slot0()` or V4 `extsload`). Spot is unsafe as a *collateral* oracle but **safe for fee bumping**: the hook only ever raises the fee above `baseFee`, never lowers it. A manipulator pays the inflated fee on their own swap. Full analysis: [docs/uniswap-oracle-pattern.md](docs/uniswap-oracle-pattern.md).
+The hook reads spot from the deepest Uniswap pool for the pair (V3 `slot0()` or V4 `extsload`) and uses it as a **fee compass** — a direction signal, not a collateral oracle. Spot is unsafe for pricing collateral but **safe for fee bumping**: the hook only ever raises the fee above `baseFee`, never lowers it. A manipulator pays the inflated fee on their own swap. Full analysis: [docs/uniswap-fee-compass.md](docs/uniswap-fee-compass.md).
 
 ### 2. Routing-aware asymmetric fees — *price-discriminate by direction*
 
@@ -192,7 +192,7 @@ scripts/
 ### Mechanisms
 | Doc | Read it when you want to… |
 |---|---|
-| [docs/uniswap-oracle-pattern.md](docs/uniswap-oracle-pattern.md) | Understand the spot-as-fee-oracle pattern and why it's safe |
+| [docs/uniswap-fee-compass.md](docs/uniswap-fee-compass.md) | Understand the spot-as-fee-compass pattern and why it's safe |
 | [docs/dynamic-fee-model.md](docs/dynamic-fee-model.md) | See the full dynamic-fee formula with derivations |
 | [docs/auction-walkthrough.md](docs/auction-walkthrough.md) | Trace a single auction cycle step by step |
 | [docs/builder-fee-design.md](docs/builder-fee-design.md) | See the optional 5th mechanism — opportunistic builder-side fee bump |

@@ -6,7 +6,7 @@ Most AMM LPs lose to arbs. The textbook complaint — "you're just paying LVR" �
 
 This repo is one way out of that. It's an EulerSwap hook — a single ~1000-line Solidity contract — that runs **active single-LP liquidity provision**: one operator per pool, dynamic fees set against a Uniswap-spot oracle, Dutch fee-decay auctions for autonomous rebalancing. All on-chain, no off-chain bot for the core loop.
 
-"Single operator, asymmetric fees, capture arb economics" is also the goal of the propAMM family (Titan, Sorella Angstrom, Arrakis HOT, Solana pAMMs) — but the machinery is different. Those are off-chain quoters streaming signed prices to a block builder, with private fair-value models and per-block sequencing. This hook has no off-chain quoter, no private orderflow, no builder integration. Just a fee oracle and a public state machine, run inside `getFee` and `afterSwap`. Naming the difference up front so the rest of the post doesn't have to keep relitigating it.
+"Single operator, asymmetric fees, capture arb economics" is also the goal of the propAMM family (Titan, Sorella Angstrom, Arrakis HOT, Solana pAMMs) — but the machinery is different. Those are off-chain quoters streaming signed prices to a block builder, with private fair-value models and per-block sequencing. This hook has no off-chain quoter, no private orderflow, no builder integration. Just a fee compass and a public state machine, run inside `getFee` and `afterSwap`. Naming the difference up front so the rest of the post doesn't have to keep relitigating it.
 
 Four mechanisms compound, with a fifth available as an optional opt-in. None is novel in isolation — what's interesting is that together they let a single LP autonomously price-discriminate by direction, source per-trade inventory ~25× their equity via credit, rebalance without an off-chain bot, and live alongside Fluid DEX and Egorov's Yield Basis in the broader space of credit-backed active LP designs on-chain.
 
@@ -22,7 +22,7 @@ You can't use spot as a **collateral** oracle — it's manipulable within a bloc
 - an attacker who manipulates spot to inflate the AMM's quoted fee pays that fee on their own swap
 - there's no direction the manipulation can profit them
 
-Spot-as-fee-oracle is the cheap, lazy, completely safe choice — and almost nobody uses it because the "spot is unsafe" framing got generalised too far. Full analysis: [`docs/uniswap-oracle-pattern.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/uniswap-oracle-pattern.md).
+Spot-as-fee-compass is the cheap, lazy, completely safe choice — and almost nobody uses it because the "spot is unsafe" framing got generalised too far. Full analysis: [`docs/uniswap-fee-compass.md`](https://github.com/euler-mab/eulerswap-hook/blob/main/docs/uniswap-fee-compass.md).
 
 ## Routing-aware asymmetric fees
 
