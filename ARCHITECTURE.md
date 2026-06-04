@@ -47,9 +47,9 @@ How the pieces fit together when you run an active single-LP AMM on EulerSwap.
 
 ### 1. Euler sub-account
 
-Holds your LP equity as collateral, takes on debt as the pool swaps. Lives inside Euler's [EVC](https://github.com/euler-xyz/ethereum-vault-connector) (Ethereum Vault Connector), which lets one account span multiple vaults and lets approved operators act on its behalf.
+Holds your LP equity as deposits, and — if you've enabled the credit-amplified configuration — also takes on debt as the pool swaps. Lives inside Euler's [EVC](https://github.com/euler-xyz/ethereum-vault-connector) (Ethereum Vault Connector), which lets one account span multiple vaults and lets approved operators act on its behalf.
 
-The pool itself is one of those operators — `pool.swap()` triggers EVC-authorized debits and credits against your sub-account.
+The pool itself is one of those operators — `pool.swap()` triggers EVC-authorized debits and credits against your sub-account. Whether those credits include vault borrows or just balance moves depends on which vaults you wired up (see [README — Three vault configurations](README.md#where-this-sits-in-the-design-space)).
 
 Using a sub-account (last byte XOR'd from your EOA) isolates pool risk from the rest of your Euler activity.
 
@@ -109,7 +109,10 @@ If the oracle call reverts (paused pool, removed PoolManager state, anything), t
 
 ### 5. Orderflow
 
-An active-LP pool with no order flow is just an arb magnet. Register your pool with Euler's orderflow router (one tx via [`RegisterPools.s.sol`](contracts/script/RegisterPools.s.sol)) and every aggregator that integrates with Euler will see it. Additional channels — UniswapX, CoW Protocol, 1inch Fusion, Tycho — are generic EulerSwap-level integrations and live in [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations).
+An active-LP pool with no order flow is just an arb magnet. Two paths surface your pool to retail flow, and you get most of them for free:
+
+- **EulerSwap is a Uniswap V4 hook.** Any aggregator that routes V4 (and that's most major aggregators today — 1inch, CoW, Tycho-consuming routers) sees your pool the moment it's deployed. No per-pool integration work needed.
+- **Euler's own orderflow router.** Register your pool via the one-tx [`RegisterPools.s.sol`](contracts/script/RegisterPools.s.sol) call and Euler-integrating aggregators surface it directly.
 
 ## A swap, end to end
 

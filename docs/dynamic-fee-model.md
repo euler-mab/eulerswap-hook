@@ -112,7 +112,7 @@ gasCoeff = 2e18 × √(swapGasUnits × 2 / eqReserveWei)
 - At 10 gwei → threshold ≈ 122 bps
 - At 100 gwei → threshold ≈ 386 bps
 
-**USDC/USDT (eq ≈ 1.26 ETH, $2514 pool):** gasCoeff ≈ 9.74e11
+**USDC/USDT (eq ≈ 1.26 ETH, \$2514 pool):** gasCoeff ≈ 9.74e11
 - At 0.4 gwei → threshold ≈ 195 bps (small pool, arb rarely profitable)
 
 The owner updates `gasCoeff` via `setFeeParams()` when pool depth changes materially. Gas price variations are handled automatically by the formula at quote time.

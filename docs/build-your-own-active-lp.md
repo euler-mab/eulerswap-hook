@@ -7,7 +7,7 @@ This guide assumes you've read the [README](../README.md) and want to actually d
 - An Euler sub-account holding your LP equity
 - A configured EulerSwap pool with virtual reserves orders of magnitude bigger than your equity
 - A [DynamicFeeAuctionHook](../contracts/src/DynamicFeeAuctionHook.sol) instance running autonomous fee modulation + Dutch auctions
-- Your pool registered with Euler's orderflow router (with a pointer at the separate [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) repo for additional channels: CoW, 1inch Fusion, UniswapX, Tycho)
+- Your pool registered with Euler's orderflow router (one-tx call; V4-aware aggregators see the pool automatically without this step too)
 
 ---
 
@@ -50,7 +50,7 @@ There are five moving parts. Worth getting them straight before touching code.
 
 Key relationships:
 
-- **Reserves are virtual.** A pool with `eq0 = $247M` USDC and only $382 in real deposits is normal — the curve sees the virtual amount, the vault sees the real one. The virtual reserves are an upper bound on what you could be borrowed against.
+- **Reserves are virtual.** A pool with `eq0 = \$247M` USDC and only \$382 in real deposits is normal — the curve sees the virtual amount, the vault sees the real one. The virtual reserves are an upper bound on what you could be borrowed against.
 - **Each swap moves debt.** A swap that takes USDC out of the pool actually *borrows* USDC from your sub-account's borrow vault. The opposite-direction trade repays it. Only one side typically has debt at a time.
 - **The hook can call `reconfigure()`.** From inside `afterSwap`, the pool is unlocked. The hook owns rebalancing without an off-chain bot.
 
@@ -86,7 +86,7 @@ Before calibrating anything, write down:
 | Cross-LTV | Vault governance config (`liquidationLTV`) | 96% (USDC↔USDT) |
 | Oracle source | Deepest Uniswap V3 or V4 pool for the pair | V4 PoolManager + pool ID |
 | Annualized σ | Historical vol of the pair | 0.05% (stable/stable) |
-| Initial equity | How much LP capital you want to commit | $500 |
+| Initial equity | How much LP capital you want to commit | \$500 |
 
 The calibration is **strictly per-pool**. Never copy parameters from a different pool — see [calibration-guide.md](calibration-guide.md) for why.
 
@@ -127,7 +127,7 @@ IERC20(USDC).approve(supplyVaultUSDC, equityAmount);
 IEVault(supplyVaultUSDC).deposit(equityAmount, poolSubAccount);
 ```
 
-For the live USDC/USDT pool this was $382 USDC + $119 USDT.
+For the live USDC/USDT pool this was \$382 USDC + \$119 USDT.
 
 You don't need to split symmetrically — the hook's calibration handles asymmetric initial deposits. But starting close to the eventual equilibrium reduces the first recenter's surcharge.
 
@@ -248,7 +248,7 @@ cast call $HOOK "getExposureState()(uint64,bool,uint128)" --rpc-url $RPC_URL
 # → (lastExposure, lastNetLongBase, cachedNav). After deploy, exposure=0, NAV ≈ your equity.
 ```
 
-And do a tiny test swap (e.g. $1) through Euler's swap UI ([app.euler.finance](https://app.euler.finance)), or via the [`EulerSwapPeriphery`](../contracts/eulerswap/src/EulerSwapPeriphery.sol) contract:
+And do a tiny test swap (e.g. \$1) through Euler's swap UI ([app.euler.finance](https://app.euler.finance)), or via the [`EulerSwapPeriphery`](../contracts/eulerswap/src/EulerSwapPeriphery.sol) contract:
 
 ```bash
 # Send a tiny amount of asset0 to the pool, then call pool.swap to receive asset1.
@@ -260,11 +260,9 @@ And do a tiny test swap (e.g. $1) through Euler's swap UI ([app.euler.finance](h
 
 ## Step 8 — Get retail flow
 
-An active-LP pool with no flow is just an arb magnet. Plug into the orderflow layer:
+An active-LP pool with no flow is just an arb magnet. The good news: most major aggregators are already integrated with EulerSwap — either directly or via V4 hook compatibility (1inch, CoW Protocol, Tycho-consuming routers, etc). Any V4-aware aggregator sees your pool the moment it's deployed.
 
-### Euler's own orderflow router (easiest)
-
-[`RegisterPools.s.sol`](../contracts/script/RegisterPools.s.sol) is env-driven — pass comma-separated `POOLS` and `EULER_ACCOUNTS` lists of equal length, plus an optional `BOND_WEI` (defaults to 0.001 ether). If env vars are omitted, the script falls back to the author's mainnet defaults (the live USDC/WETH and USDC/USDT pools).
+For Euler-integrating aggregators specifically, run [`RegisterPools.s.sol`](../contracts/script/RegisterPools.s.sol) — env-driven, comma-separated `POOLS` and `EULER_ACCOUNTS` lists of equal length, plus an optional `BOND_WEI` (defaults to 0.001 ether). If env vars are omitted, the script falls back to the author's mainnet defaults (the live USDC/WETH and USDC/USDT pools).
 
 ```bash
 PRIVATE_KEY=0x... \
@@ -274,10 +272,6 @@ BOND_WEI=1000000000000000 \
   forge script script/RegisterPools.s.sol:RegisterPools \
   --rpc-url $RPC_URL --broadcast -vvvv
 ```
-
-### Other channels
-
-UniswapX, CoW Protocol, 1inch Fusion, and Tycho integrations are pool-level (any EulerSwap pool, any hook) and live in the separate [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) repo. That repo has filler/resolver contracts, off-chain bots, and the per-channel onboarding guides.
 
 ---
 

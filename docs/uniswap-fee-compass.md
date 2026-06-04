@@ -24,7 +24,7 @@ A standard concern about using Uniswap's `slot0` as an oracle:
 
 - `slot0` returns the **instantaneous** price after the most recent swap.
 - Anyone can move `slot0` in a single block by trading the pool in either direction.
-- A small Uniswap pool can be pushed 10%+ off true price for ~$50 in capital.
+- A small Uniswap pool can be pushed 10%+ off true price for ~\$50 in capital.
 - A protocol that reads `slot0` and lets you borrow against an inflated collateral value can be drained instantly.
 
 This is the [Aave / Compound spot-vs-TWAP debate](https://blog.uniswap.org/uniswap-v3-oracles). For pricing **collateral**, you want TWAP, Chainlink, Euler's price oracle stack — anything but spot.

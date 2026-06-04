@@ -80,7 +80,6 @@ MAINNET_RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 
 | Looking for | It lives in |
 |---|---|
-| `UniswapXFiller.sol`, `OneInchFusionResolver.sol`, `Arbitrageur.sol`, off-chain filler/resolver bots | [`euler-mab/eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) |
 | EulerSwap protocol, EVC, EVK source | [`euler-xyz/euler-swap`](https://github.com/euler-xyz/euler-swap) (brought in via `contracts/eulerswap/lib/`) |
 | Next.js UI, off-chain agent loop, prior hook iterations | Deleted before the public release. Reachable via earlier git history if you need them. |
 

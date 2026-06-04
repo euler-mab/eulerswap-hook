@@ -69,8 +69,8 @@ Each LP controls their own leverage ratio via Euler vault LTVs. A sophisticated 
 The per-LP model is worse when:
 
 - **The target user is passive.** If users want "deposit BTC, earn yield," a pooled vault with a receipt token is the right product. Not everyone wants to configure pool parameters.
-- **Scale matters for profitability.** If the strategy only works at $100M+ TVL (e.g. because it needs deep liquidity to attract volume), pooling capital is necessary. An individual LP may not have enough capital alone.
-- **Gas costs dominate.** If rebalancing is frequent and expensive, amortizing across depositors is significant. At $50k pool depth, paying $5 per recenter is 1 bps per event — it adds up.
+- **Scale matters for profitability.** If the strategy only works at \$100M+ TVL (e.g. because it needs deep liquidity to attract volume), pooling capital is necessary. An individual LP may not have enough capital alone.
+- **Gas costs dominate.** If rebalancing is frequent and expensive, amortizing across depositors is significant. At \$50k pool depth, paying \$5 per recenter is 1 bps per event — it adds up.
 - **Token distribution is a goal.** Pooled vaults can bootstrap network effects via emissions. Receipt tokens are composable (stake ybBTC in gauges, use as collateral elsewhere). Per-LP positions are less composable.
 
 ## EulerSwap's position

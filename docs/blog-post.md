@@ -44,9 +44,9 @@ Asymmetric by design. Toxic flow pays for itself, retail flow gets a discount, a
 
 EulerSwap is the substrate. Each Euler account is its own AMM, with the same collateral that's earning lending yield doubling as swap liquidity. With LTVs up to 96% on stables, the pool can source per-trade inventory ~25× its equity by looping the vault credit. The curve's "virtual reserves" (eq0/eq1) then shape the slippage *within* that capacity — large virtual reserves with concentration around a peg means near-1:1 pricing for trades inside the band. Per-trade capacity, though, is still ultimately bounded by collateral × LTV.
 
-![Credit-backed amplification — $500 NAV supports ~$10k of per-trade inventory and tens of $k/day of cumulative throughput on busy days because the auction cycles direction many times per day](../assets/2-credit-backed-depth.png)
+![Credit-backed amplification — \$500 NAV supports ~\$10k of per-trade inventory and tens of $k/day of cumulative throughput on busy days because the auction cycles direction many times per day](../assets/2-credit-backed-depth.png)
 
-The live USDC/USDT example: ~$500 of equity in a sub-account ($382 USDC + $119 USDT). Per-trade capacity is order $10k. The curve has virtual reserves of $247M / $242M which give very tight pricing within that capacity — but the $247M number is a slippage-curve parameter, not a depth claim. The actually-interesting number is **daily turnover**: when flow is active, the auction recycles direction multiple times a day, taking volume well into multiples of equity. The pool's averaged ~$46k/day over the last week on $489 NAV (~95×). Flow is bursty — quiet days drop to zero, busy days exceed $100k.
+The live USDC/USDT example: ~\$500 of equity in a sub-account (\$382 USDC + \$119 USDT). Per-trade capacity is order \$10k. The curve has virtual reserves of \$247M / \$242M which give very tight pricing within that capacity — but the \$247M number is a slippage-curve parameter, not a depth claim. The actually-interesting number is **daily turnover**: when flow is active, the auction recycles direction multiple times a day, taking volume well into multiples of equity. The pool's averaged ~\$46k/day over the last week on \$489 NAV (~95×). Flow is bursty — quiet days drop to zero, busy days exceed \$100k.
 
 Every swap that adds inventory deposits to the supply vault or repays debt; every swap that drains inventory borrows from the borrow vault or withdraws supply. The pool's "real" footprint is small and directional. Auctions are what keep it from getting stuck.
 
@@ -90,19 +90,19 @@ The author runs one of these on Ethereum mainnet:
 |---|---|
 | Pool | [`0x71...68A8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8) |
 | Hook | [`0x99...4e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41) |
-| LP equity (NAV) | ~$489 |
-| Volume (7d avg) | ~$46k/day (bursty: $0 – $100k) |
+| LP equity (NAV) | ~\$489 |
+| Volume (7d avg) | ~\$46k/day (bursty: \$0 – \$100k) |
 | Daily turnover (7d avg) | ~95× |
-| Lifetime volume | ~$810k (187 swaps over ~90 days) |
-| Lifetime fees collected | ~$24 |
+| Lifetime volume | ~\$810k (187 swaps over ~90 days) |
+| Lifetime fees collected | ~\$24 |
 | Lifetime auctions (started / ended) | 52 / 51 |
-| P&L since live (~90 days) | -$12 (-2.4%) |
+| P&L since live (~90 days) | -\$12 (-2.4%) |
 
-The pool's running a small loss — quiet stretches accrue more borrow carry than the busy stretches' fees recover. At 10× equity the same mechanism would be net positive; at 100×, meaningful. The proof-of-principle here is that the *mechanism* works at all, not that $500 is the right size to capture the upside.
+The pool's running a small loss — quiet stretches accrue more borrow carry than the busy stretches' fees recover. At 10× equity the same mechanism would be net positive; at 100×, meaningful. The proof-of-principle here is that the *mechanism* works at all, not that \$500 is the right size to capture the upside.
 
 ## Plug into routing for free
 
-An EulerSwap pool is automatically a Uniswap v4 hook. The moment you register your pool with [Euler's orderflow router](https://github.com/euler-mab/eulerswap-hook/blob/main/contracts/script/RegisterPools.s.sol) — a one-tx call — every aggregator that integrates Euler sees your `computeQuote()` function and routes through it on price. UniswapX fillers, 1inch Fusion resolvers, CoW Protocol solvers, Tycho-consuming aggregators — all of them speak EulerSwap (or can via integration code at [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations)).
+An EulerSwap pool is automatically a Uniswap V4 hook, so any V4-aware aggregator sees it the moment it's deployed. Most major aggregators are already integrated — directly with EulerSwap or via V4 — including 1inch, CoW Protocol, and several Tycho-consuming routers. Registering your pool with [Euler's own orderflow router](https://github.com/euler-mab/eulerswap-hook/blob/main/contracts/script/RegisterPools.s.sol) — a one-tx call — surfaces it to Euler-integrating aggregators as well.
 
 The retail flow that makes the attract-side fee profitable comes from this routing layer. Without it, the only counterparties you'd see are arbers.
 
@@ -126,7 +126,7 @@ The deploy flow is env-driven end-to-end. Calibration takes a JSON profile and o
 
 This is experimental, unaudited reference code:
 
-- **EulerSwap protocol** is [audited](https://github.com/euler-xyz/euler-swap/tree/master/audits) and has processed billions in production. **The hook on top of it is not.** Single-author research code, battle-tested only on the live $500 NAV pool above.
+- **EulerSwap protocol** is [audited](https://github.com/euler-xyz/euler-swap/tree/master/audits) and has processed billions in production. **The hook on top of it is not.** Single-author research code, battle-tested only on the live \$500 NAV pool above.
 - **Borrow rate volatility** can flip the math: at high vault utilization the carry cost on the directional leg rises and may exceed fee income. Monitor.
 - **Spot oracle safety** assumes the invariant "fee is monotonically non-decreasing in oracle delta" — i.e., the hook only ever raises the fee, never lowers it. If you fork the hook, don't add code paths that lower the quoted fee in response to oracle signals.
 

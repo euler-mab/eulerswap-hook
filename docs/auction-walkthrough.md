@@ -45,9 +45,9 @@ cx: 0                           cy: 0
 Key derived quantities from the curve:
 
 - **Equilibrium price**: `px/py` = 0.9998 USDT/USDC
-- **Virtual depth**: ~$490M total — this is the curve's "width"
+- **Virtual depth**: ~\$490M total — this is the curve's "width"
 - **Range**: `(eq - min) / eq` ≈ 0.005% (0.5 bps) per side
-- **Price sensitivity**: `2 / eq0` ≈ 0.000081 bps per $1 of trade flow
+- **Price sensitivity**: `2 / eq0` ≈ 0.000081 bps per \$1 of trade flow
   (for c=0 curves, the marginal price changes by `2 * Δreserve / eq0²` per unit)
 
 ### 0b. The Vaults (Real Balance Sheet)
@@ -56,11 +56,11 @@ Completely independently, the Euler vaults hold the pool's actual assets:
 
 | Position | Value |
 |----------|-------|
-| Supply Vault 0 (USDC deposits) | $0 |
-| Supply Vault 1 (USDT deposits) | $7,828.77 |
-| Borrow Vault 0 (USDC debt) | $7,330.89 |
-| Borrow Vault 1 (USDT debt) | $0 |
-| **NAV (deposits − debts)** | **~$500** |
+| Supply Vault 0 (USDC deposits) | \$0 |
+| Supply Vault 1 (USDT deposits) | \$7,828.77 |
+| Borrow Vault 0 (USDC debt) | \$7,330.89 |
+| Borrow Vault 1 (USDT debt) | \$0 |
+| **NAV (deposits − debts)** | **~\$500** |
 
 The vault positions don't tell us where we are on the curve. We could be at
 equilibrium, at the min boundary, or anywhere in between. The curve just provides
@@ -221,8 +221,8 @@ minReserve = eq / √(1 + r / (1 − c))
 
 For c = 0 (range-based curves): `minReserve = eq / √(1 + r)`. A range of 1 bps
 (r = 0.0001) gives `minReserve ≈ eq × 0.99995` — very tight, only 0.005% of eq
-is tradeable. This is what creates the extreme leverage: the pool has $490M of
-virtual depth but only ~$12k of actual trading capacity.
+is tradeable. This is what creates the extreme leverage: the pool has \$490M of
+virtual depth but only ~\$12k of actual trading capacity.
 
 For c = 1 (constant-sum): the denominator `(1 − c)` goes to zero, making the
 inner term infinite, so `minReserve = 0`. Constant-sum pools have no curvature
@@ -247,7 +247,7 @@ leverage = eq0 / NAV = 247,589,086 / 500 ≈ 495,000x
 
 This leverage is the defining characteristic that shapes every parameter choice.
 It means:
-- A $1 swap moves the price by 0.000081 bps (vs ~1.6 bps on a 1x leveraged pool)
+- A \$1 swap moves the price by 0.000081 bps (vs ~1.6 bps on a 1x leveraged pool)
 - The pool can absorb enormous flow before hitting boundaries
 - But tiny price movements correspond to large absolute dollar amounts
 
@@ -352,7 +352,7 @@ positions are linked — when expressed in a common numeraire:
 value(position_0) + value(position_1) = NAV
 ```
 
-So measuring one determines the other. For stablecoin pairs where both assets ≈ $1,
+So measuring one determines the other. For stablecoin pairs where both assets ≈ \$1,
 this simplifies to `position_0 + position_1 ≈ NAV` in native units. For non-stablecoin
 pairs, the conversion requires a price — making NAV itself oracle-dependent (see 2e).
 
@@ -866,7 +866,7 @@ pools.
 
 For pools with significant carry (stablecoins with 5-15% APY), interest drift
 can be material over days or weeks (1-5% of NAV per week on stablecoin pools
-with $7-8k positions and $500 NAV). The reserve-coordinate trigger handles
+with \$7-8k positions and \$500 NAV). The reserve-coordinate trigger handles
 swap-driven exposure, which dominates in active pools; interest-driven drift
 in dormant pools would require an external keeper to call `reconfigure()`
 directly via the EVC. the hook's autonomous loop does not handle this case.
@@ -987,21 +987,21 @@ D = 4.3 bps/block (matched to ETH per-block vol).
 
 | Block | Fee (bps) | Effective (USDC/WETH) | Arber profit per WETH | Action |
 |-------|-----------|----------------------|----------------------|--------|
-| 0 | 50 bps | 2000 − 10 = 1990 | 1990 − 2000 = −$10 | No fill |
-| 5 | 28.5 bps | 2000 − 5.7 = 1994.3 | −$5.70 | No fill |
-| 10 | 7 bps | 2000 − 1.4 = 1998.6 | −$1.40 | No fill (< gas) |
-| 11 | 2.7 bps | 2000 − 0.54 = 1999.5 | −$0.54 | Fill (edge ≈ gas) |
-| 12+ | 1 bps (baseFee floor) | 2000 − 0.2 = 1999.8 | −$0.20 | Floor reached |
+| 0 | 50 bps | 2000 − 10 = 1990 | 1990 − 2000 = −\$10 | No fill |
+| 5 | 28.5 bps | 2000 − 5.7 = 1994.3 | −\$5.70 | No fill |
+| 10 | 7 bps | 2000 − 1.4 = 1998.6 | −\$1.40 | No fill (< gas) |
+| 11 | 2.7 bps | 2000 − 0.54 = 1999.5 | −\$0.54 | Fill (edge ≈ gas) |
+| 12+ | 1 bps (baseFee floor) | 2000 − 0.2 = 1999.8 | −\$0.20 | Floor reached |
 
-**Worked example 2 (stablecoin pair).** USDC/USDT pool (50:50 target) has $250
+**Worked example 2 (stablecoin pair).** USDC/USDT pool (50:50 target) has \$250
 excess USDT exposure, wants to sell USDT for USDC. Auction price = 0.9998 USDC/USDT.
 External market = 0.9998 USDC/USDT. D = 0.001 bps/block (matched to stablecoin vol).
 
-| Block | Fee (bps) | Effective (USDC/USDT) | Arber profit per $1k USDT | Action |
+| Block | Fee (bps) | Effective (USDC/USDT) | Arber profit per \$1k USDT | Action |
 |-------|-----------|----------------------|--------------------------|--------|
-| 0 | 0.5 bps | 0.9998 − 0.00005 = 0.99975 | −$0.05 | No fill |
-| 200 | 0.3 bps | 0.9998 − 0.00003 = 0.99977 | −$0.03 | No fill |
-| 400 | 0.1 bps | 0.9998 − 0.00001 = 0.99979 | −$0.01 | No fill (< gas) |
+| 0 | 0.5 bps | 0.9998 − 0.00005 = 0.99975 | −\$0.05 | No fill |
+| 200 | 0.3 bps | 0.9998 − 0.00003 = 0.99977 | −\$0.03 | No fill |
+| 400 | 0.1 bps | 0.9998 − 0.00001 = 0.99979 | −\$0.01 | No fill (< gas) |
 | 450 | 0.05 bps (baseFee floor) | 0.9998 − 0.000005 = 0.999795 | Fill | Fill |
 
 Stablecoin auctions run for more blocks (lower D) but at negligible price risk
@@ -1253,9 +1253,9 @@ where `priceDepression ≈ 2X / eq0` for a c=0 curve. For leveraged pools, eq0 i
 enormous relative to X, so the price depression is negligible per dollar of
 manipulation. The profit on the original amount is proportionally tiny.
 
-**Example**: USDC/USDT pool (eq0 = 247M). Attacker sells $1000 USDT into pool.
-Price depression ≈ 2×1000 / 247M ≈ 0.0008 bps. Original clearing = $250. Profit ≈
-0.0008 bps × $250 ≈ $0.000002. Not worth the gas.
+**Example**: USDC/USDT pool (eq0 = 247M). Attacker sells \$1000 USDT into pool.
+Price depression ≈ 2×1000 / 247M ≈ 0.0008 bps. Original clearing = \$250. Profit ≈
+0.0008 bps × \$250 ≈ \$0.000002. Not worth the gas.
 
 For less-leveraged pools the attack surface is larger, which is why the **oracle
 guard** (4b) matters — it catches cases where the marginal price has been moved
@@ -1484,7 +1484,7 @@ formula underestimates in edge cases.
 
 **Worked examples:**
 
-*Example 1: WETH/USDC (c=0), $1,000 displacement*
+*Example 1: WETH/USDC (c=0), \$1,000 displacement*
 
 ```
 eq0 = 624,000 USDC,  reserve0 = 623,000 USDC
@@ -1493,11 +1493,11 @@ curvatureComponent = 1.0 × 0.00322 = 0.322% = 32 bps
 surchargeInitial = 32 × 1.25 = 40 bps
 ```
 
-A $1,000 arb right after recenter pays $4 extra surcharge. Before recenter,
+A \$1,000 arb right after recenter pays \$4 extra surcharge. Before recenter,
 the marginal price was 32 bps above equilibrium — that's the edge the arber
 loses. The 40 bps surcharge makes extraction unprofitable.
 
-*Example 2: WETH/USDC (c=0), $6,000 displacement*
+*Example 2: WETH/USDC (c=0), \$6,000 displacement*
 
 ```
 eq0 = 624,000 USDC,  reserve0 = 618,000 USDC
@@ -1507,11 +1507,11 @@ surchargeInitial = 195 × 1.25 = 244 bps
 ```
 
 A 2.44% surcharge fee. High, but the marginal price was 1.95% off — a deep
-displacement on a curved pool. The total extractable value over the full $6k
-is roughly $6,000 × 1.95% / 2 ≈ $58 (average, not marginal). The surcharge
-on a $6k arb would be $146 — well above the extractable value. Conservative.
+displacement on a curved pool. The total extractable value over the full \$6k
+is roughly \$6,000 × 1.95% / 2 ≈ \$58 (average, not marginal). The surcharge
+on a \$6k arb would be \$146 — well above the extractable value. Conservative.
 
-*Example 3: USDC/USDT (c=0), $250 displacement (50% of NAV)*
+*Example 3: USDC/USDT (c=0), \$250 displacement (50% of NAV)*
 
 ```
 eq0 = 247,589,086 USDC,  reserve0 = 247,588,836 USDC
@@ -1520,7 +1520,7 @@ curvatureComponent = 0.0002% = 0.002 bps
 surchargeInitial ≈ 0.003 bps
 ```
 
-Essentially zero. At 495,000× leverage, a $250 displacement is invisible to
+Essentially zero. At 495,000× leverage, a \$250 displacement is invisible to
 the curve — the curvature premium is negligible. For this pool, the surcharge
 is dominated by the price component (oracle price change), not curvature.
 
@@ -1647,7 +1647,7 @@ Values are derived from first principles using `scripts/calibrate-hook-params.ts
 | Property | USDC/WETH (delta-neutral) | USDC/USDT (50:50) |
 |----------|--------------------------|-------------------|
 | **Strategy** | 100% USDC, 0% WETH | 50% USDC, 50% USDT |
-| **Equity (NAV)** | $8,000 | $500 |
+| **Equity (NAV)** | \$8,000 | \$500 |
 | **Virtual depth** | 624k USDC / 301 WETH | 247.6M USDC / 242.3M USDT |
 | **Leverage** | 466× | 495,000× |
 | **Concentration** | c = 0 | c = 0 |
@@ -1701,7 +1701,7 @@ Values are derived from first principles using `scripts/calibrate-hook-params.ts
 
 | Parameter | Description | USDC/WETH | USDC/USDT | Section |
 |-----------|-------------|-----------|-----------|---------|
-| `minRecenterDelta` | Minimum displacement to recenter | $10 | $0.50 | 3a |
+| `minRecenterDelta` | Minimum displacement to recenter | \$10 | \$0.50 | 3a |
 | `rangeParameter` (r) | Trading range width | 30 bps | 1 bps | 0e |
 
 ### Derivation notes

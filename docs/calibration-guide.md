@@ -27,13 +27,13 @@ Before calibrating, gather:
 
 | Input | Where to find it | Example |
 |-------|------------------|---------|
-| LP equity ($) | Vault deposits - debts | $8,000 |
+| LP equity ($) | Vault deposits - debts | \$8,000 |
 | Cross-LTV | EVK governor config | 0.86 (WETH), 0.96 (USDT) |
 | σ_annual | Historical annualized vol | 70% (ETH), 0.05% (USDC/USDT) |
 | Oracle source | Uniswap V3 pool or V4 PoolManager | V3 0.05% USDC/WETH |
 | Oracle fee tier | Pool fee | 5 bps (V3), 0.08 bps (V4) |
 | Concentration (c) | Pool's curve shape | 0 (range-based), 0.5, etc. |
-| Gas cost | Current gas × swap gas × ETH price | ~$0.30 at 0.4 gwei |
+| Gas cost | Current gas × swap gas × ETH price | ~\$0.30 at 0.4 gwei |
 
 ---
 

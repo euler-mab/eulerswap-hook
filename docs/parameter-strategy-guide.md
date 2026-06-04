@@ -74,7 +74,7 @@ Before choosing any parameters, collect:
 | 30-day range | 0.9998-1.0003 (~5 bps total) |
 | Volatility | Negligible (<0.1% annualized) |
 | Competing venues | Uni V4 at 0.08 bps (massive volume), Uni V3 0.01% (1 bps), Curve 1-2 bps |
-| Daily volume | Uni V4 pool: $50M+/day at 0.08 bps |
+| Daily volume | Uni V4 pool: \$50M+/day at 0.08 bps |
 | Euler vaults | USDC vault (94% cross-LTV to USDT), USDT vault (94% cross-LTV to USDC) |
 | Vault rates | ~3-5% supply, ~6-8% borrow (below kink) |
 | Gas | 0.03-0.10 gwei typical |
@@ -350,8 +350,8 @@ Worked examples:
 
 | Pool | Eq reserve (ETH terms) | gasCoeff | Threshold @ 0.04 gwei | Threshold @ 1 gwei |
 |------|----------------------|----------|----------------------|-------------------|
-| USDC/WETH (~$1.4M) | ~320 WETH | 6.54e10 | ~13 bps | ~65 bps |
-| USDC/USDT (~$7k) | ~1.26 ETH equiv | 9.74e11 | ~195 bps | ~974 bps |
+| USDC/WETH (~\$1.4M) | ~320 WETH | 6.54e10 | ~13 bps | ~65 bps |
+| USDC/USDT (~\$7k) | ~1.26 ETH equiv | 9.74e11 | ~195 bps | ~974 bps |
 
 The USDC/USDT gasCoeff is huge because the pool is small in ETH terms -- arb is almost never profitable, so the threshold is very wide. Nearly all USDC/USDT swaps pay just baseFee.
 
@@ -456,7 +456,7 @@ Floor on auction duration before clearing is allowed. Prevents the auction from 
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| Real deposit | ~$3,600 USDC (one-sided) | Delta-neutral at equilibrium |
+| Real deposit | ~\$3,600 USDC (one-sided) | Delta-neutral at equilibrium |
 | eq0 | 714,299 USDC | Additive boost (~198x leverage) |
 | eq1 | 280.41 WETH | Additive boost |
 | priceY | ~1975 | From Euler oracle at last recenter |
@@ -507,10 +507,10 @@ The USDC/USDT pool was deployed with a 100 bps fee and gets **zero volume**. The
 | Venue | Fee | Daily volume |
 |-------|-----|-------------|
 | Binance USDC/USDT | 1-4 bps spread | Billions |
-| Uniswap V4 0.0008% | 0.08 bps | $50M+ |
-| Uniswap V3 0.01% | 1 bps | $10M+ |
-| Curve 3pool | 1-2 bps | $5M+ |
-| **EulerSwap (current)** | **100 bps** | **$0** |
+| Uniswap V4 0.0008% | 0.08 bps | \$50M+ |
+| Uniswap V3 0.01% | 1 bps | \$10M+ |
+| Curve 3pool | 1-2 bps | \$5M+ |
+| **EulerSwap (current)** | **100 bps** | **\$0** |
 
 The pool's fee is 100-1000x above the market clearing price. No rational trader or aggregator will route through it.
 
@@ -530,7 +530,7 @@ The pool's fee is 100-1000x above the market clearing price. No rational trader 
 
 1. **Fee is the bottleneck, not IL.** Price barely moves, so IL is negligible. The entire competition is on fees.
 
-2. **gasCoeff is huge relative to mismatch.** The pool is small in ETH terms (~$7k virtual reserves ≈ 1.26 ETH), so the no-arb zone is massive (195 bps at 0.4 gwei). Almost every swap pays just baseFee. This makes the dynamic fee formula irrelevant -- everything is below threshold.
+2. **gasCoeff is huge relative to mismatch.** The pool is small in ETH terms (~\$7k virtual reserves ≈ 1.26 ETH), so the no-arb zone is massive (195 bps at 0.4 gwei). Almost every swap pays just baseFee. This makes the dynamic fee formula irrelevant -- everything is below threshold.
 
 3. **Interest rate risk dominates.** For stablecoins, the primary risk isn't IL but the carry cost of vault borrowing. The hook addresses this in three layers:
    - **Routing-aware fee asymmetry** — attract flow that reduces directional exposure, capture flow that increases it
@@ -541,13 +541,13 @@ The pool's fee is 100-1000x above the market clearing price. No rational trader 
 
 ### 11.4 The Stablecoin Fee Dilemma
 
-At 0.5 bps baseFee with $7k virtual reserves:
-- Expected daily fee revenue at $10k daily volume: **$0.005/day**
-- Vault borrow cost at 5% APR on $7k: **$0.96/day**
+At 0.5 bps baseFee with \$7k virtual reserves:
+- Expected daily fee revenue at \$10k daily volume: **\$0.005/day**
+- Vault borrow cost at 5% APR on \$7k: **\$0.96/day**
 
 The pool cannot be profitable at this scale. The options:
 
-1. **Scale up:** Larger real deposit -> higher virtual reserves -> attract more volume. Need ~$10M+ daily volume at 0.5 bps to cover interest.
+1. **Scale up:** Larger real deposit -> higher virtual reserves -> attract more volume. Need ~\$10M+ daily volume at 0.5 bps to cover interest.
 2. **Lower vault rates:** Wait for market conditions where stablecoin borrow rates are lower.
 3. **Accept the loss:** Run the pool as a proving ground for the hook technology, not for profit.
 

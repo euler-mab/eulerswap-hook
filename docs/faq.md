@@ -14,7 +14,7 @@ Each EVC account is your EOA with its **last byte XOR'd** with the sub-account n
 
 ## How much equity do I need to start?
 
-There's no protocol-enforced minimum — virtual reserves scale linearly with equity, so a $50 pool quotes the same shape as a $50M pool, just with proportionally shallower depth. In practice, **~$500** is enough for a proof-of-concept (this is what the [live USDC/USDT pool](case-study-usdc-usdt.md) runs on), and you'll start seeing meaningful daily fee income around **$5k–$10k+** of NAV depending on the pair's flow. Gas costs for deploy and reconfigure are fixed, so below ~$500 they start to dominate. See [case-study-usdc-usdt.md](case-study-usdc-usdt.md) for the live numbers at the low end.
+There's no protocol-enforced minimum — virtual reserves scale linearly with equity, so a \$50 pool quotes the same shape as a \$50M pool, just with proportionally shallower depth. In practice, **~\$500** is enough for a proof-of-concept (this is what the [live USDC/USDT pool](case-study-usdc-usdt.md) runs on), and you'll start seeing meaningful daily fee income around **\$5k–\$10k+** of NAV depending on the pair's flow. Gas costs for deploy and reconfigure are fixed, so below ~\$500 they start to dominate. See [case-study-usdc-usdt.md](case-study-usdc-usdt.md) for the live numbers at the low end.
 
 ## What if my pair doesn't have a deep Uniswap V3 pool?
 
@@ -42,7 +42,7 @@ The constructor sets a **deploy surcharge** — an additive fee on top of baseFe
 
 ## Is this audited?
 
-**The EulerSwap protocol itself is audited** ([audit reports here](https://github.com/euler-xyz/euler-swap/tree/master/audits)). **This hook is not.** It's a personal-research reference implementation, battle-tested in production by its author only on a single ~$500 NAV pool. See the [substrate-vs-hook framing in the README](../README.md#about-the-substrate) — do not deploy unmodified code with significant capital without an independent security review of the hook contract and the exact deploy script you'll run.
+**The EulerSwap protocol itself is audited** ([audit reports here](https://github.com/euler-xyz/euler-swap/tree/master/audits)). **This hook is not.** It's a personal-research reference implementation, battle-tested in production by its author only on a single ~\$500 NAV pool. See the [substrate-vs-hook framing in the README](../README.md#about-the-substrate) — do not deploy unmodified code with significant capital without an independent security review of the hook contract and the exact deploy script you'll run.
 
 ## How do I find which Euler vault corresponds to my asset?
 
