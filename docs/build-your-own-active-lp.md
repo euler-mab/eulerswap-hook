@@ -325,9 +325,9 @@ All parameters except oracle target are owner-updatable — re-tune as your unde
 
 ## Where to go next
 
-- [docs/rebalance-auction-design.md](rebalance-auction-design.md) — full design rationale for the auction + surcharge mechanics
-- [docs/calibration-guide.md](calibration-guide.md) — derivation of every parameter
 - [docs/auction-walkthrough.md](auction-walkthrough.md) — step-by-step trace of one auction cycle
+- [docs/calibration-guide.md](calibration-guide.md) — derivation of every parameter
+- [docs/dynamic-fee-model.md](dynamic-fee-model.md) — full fee formula spec
 - [docs/parameter-strategy-guide.md](parameter-strategy-guide.md) — tuning guidance for different pair archetypes
 - [contracts/test/walkthrough/](../contracts/test/walkthrough/) — executable walkthrough tests
 - [contracts/src/DynamicFeeAuctionHook.sol](../contracts/src/DynamicFeeAuctionHook.sol) — the hook itself, top-to-bottom

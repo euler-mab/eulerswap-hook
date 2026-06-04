@@ -52,7 +52,7 @@ MAINNET_RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 | `scripts/calibrate-hook-params.ts` | Param calibration with `--env` output mode |
 | `scripts/profiles/` | Per-pool JSON profiles (add new ones here) |
 | `docs/build-your-own-active-lp.md` | Full deploy walkthrough (operating manual) |
-| `docs/rebalance-auction-design.md` | Long design rationale (~1560 lines, historical) |
+| `docs/auction-walkthrough.md` | Step-by-step trace of one auction cycle |
 
 ## Conventions
 
@@ -82,7 +82,7 @@ MAINNET_RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 |---|---|
 | `UniswapXFiller.sol`, `OneInchFusionResolver.sol`, `Arbitrageur.sol`, off-chain filler/resolver bots | [`euler-mab/eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) |
 | EulerSwap protocol, EVC, EVK source | [`euler-xyz/euler-swap`](https://github.com/euler-xyz/euler-swap) (brought in via `contracts/eulerswap/lib/`) |
-| Older hook versions (V1–V8 lineage), Next.js UI, off-chain agent loop | Deleted before the public release. Reachable via earlier git history if you need them. |
+| Next.js UI, off-chain agent loop, prior hook iterations | Deleted before the public release. Reachable via earlier git history if you need them. |
 
 ## Where to read more, in order
 
@@ -91,7 +91,7 @@ MAINNET_RPC_URL=... POOL_ADDRESS=0x... npx tsx scripts/analyze-hook.ts
 3. [docs/build-your-own-active-lp.md](docs/build-your-own-active-lp.md) — operating procedure
 4. [docs/faq.md](docs/faq.md) — common newcomer questions
 5. [contracts/src/DynamicFeeAuctionHook.sol](contracts/src/DynamicFeeAuctionHook.sol) — the hook source, top-to-bottom
-6. [docs/rebalance-auction-design.md](docs/rebalance-auction-design.md) — long-form design rationale (historical doc with a note at the top)
+6. [docs/auction-walkthrough.md](docs/auction-walkthrough.md) — step-by-step trace of one auction cycle, with the math behind each step
 
 ## Pitfalls
 

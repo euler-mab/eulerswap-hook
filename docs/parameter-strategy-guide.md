@@ -7,7 +7,7 @@ A practical playbook for choosing optimal parameters when deploying a new EulerS
 **Related docs** (referenced throughout, not duplicated):
 - [`docs/dynamic-fee-model.md`](dynamic-fee-model.md) -- Full fee formula spec
 - [`docs/additive-boost-derivation.md`](additive-boost-derivation.md) -- Boost math (BX/BY formulas)
-- [`docs/rebalance-auction-design.md`](rebalance-auction-design.md) -- Auction mechanism design
+- [`docs/auction-walkthrough.md`](auction-walkthrough.md) -- Auction mechanism, step by step
 - [`docs/calibration-guide.md`](calibration-guide.md) -- Per-parameter derivation
 - [`docs/per-lp-architecture.md`](per-lp-architecture.md) -- Why each Euler account is its own AMM
 
@@ -411,7 +411,7 @@ Prevents extreme fees during volatility spikes.
 
 ## 9. Auction Parameters
 
-Dutch fee-decay auctions let the pool autonomously rebalance directional exposure by temporarily shifting `priceY` to expose an arb, then decaying the fee block-by-block until a swap clears it. See [`auction-walkthrough.md`](auction-walkthrough.md) for a step-by-step trace and [`rebalance-auction-design.md`](rebalance-auction-design.md) for the design rationale.
+Dutch fee-decay auctions let the pool autonomously rebalance directional exposure by temporarily shifting `priceY` to expose an arb, then decaying the fee block-by-block until a swap clears it. See [`auction-walkthrough.md`](auction-walkthrough.md) for a step-by-step trace of one cycle.
 
 ### 9.1 When auctions run
 
@@ -635,7 +635,7 @@ Hook:
   captureRate  = 0.8e18  (80%)
   attractRate  = 0.3e18  (30%)
 
-Auction (V2+ hook):
+Auction:
   threshold0/1     = 0 (disabled initially)
   delta            = 100 bps
   startFee         = 200 bps
@@ -686,7 +686,9 @@ Hook:
 
 ## Appendix B: Deployed Pool Registry
 
-| Pool | Address | Hook | Hook Version | baseFee | Status |
-|------|---------|------|-------------|---------|--------|
-| USDC/WETH | `0x4311...28A8` | `0x9572...5048` | V2 (GET_FEE + AFTER_SWAP) | 5 bps | Active |
-| USDC/USDT | `0x7195...68A8` | `0xdC45...0E2c` | V1 (GET_FEE only) | 0.5 bps | Active (needs fee reduction) |
+Canonical authoritative addresses live in [`docs/addresses.md`](addresses.md). Snapshot of the two live pools at time of writing:
+
+| Pool | Pool address | Hook address | Hooked ops | baseFee |
+|------|--------------|--------------|------------|---------|
+| USDC/WETH | `0x4311...28A8` | `0x7bb6...e4FB` | GET_FEE + AFTER_SWAP | 5 bps |
+| USDC/USDT | `0x7195...68A8` | `0x99b9...4e41` | GET_FEE + AFTER_SWAP | 0.05 bps |

@@ -288,8 +288,7 @@ the auction attracts external traders to come to the pool, which is cheaper.
 **Variance drain: the fundamental cost floor.** No mechanism — auction, external
 swap, or continuous recenter — avoids the cost of rebalancing a leveraged pool in
 a volatile market. Each rebalancing cycle buys high and sells low by a small
-amount. Over time, the expected NAV loss from repeated rebalancing is
-(see `docs/rebalance-auction-design.md` §24):
+amount. Over time, the expected NAV loss from repeated rebalancing is:
 
 ```
 NAV(T) = NAV(0) × exp(−L × σ² × T / 8)
@@ -1009,8 +1008,9 @@ Stablecoin auctions run for more blocks (lower D) but at negligible price risk
 because per-block volatility is orders of magnitude lower.
 
 The fee decays to `baseFee`, not zero. Below `baseFee`, the pool still earns
-its minimum fee on every swap — including clearing trades. This prevents the
-V2-era bug where fees decaying to zero turned the auction into a free gift.
+its minimum fee on every swap — including clearing trades. Without this floor
+the clearing arber would get the rebalance for free (zero fee paid on the
+clearing swap).
 
 The fee reduces the USDC the arber receives per WETH purchased. High fee = bad deal
 for arber = no fill. As the fee decays, the effective rate rises toward (and
@@ -1075,7 +1075,7 @@ same D. The calibration script (`scripts/calibrate-hook-params.ts`) can recommen
 value from historical volatility data, but the LP can override based on their own
 risk assessment.
 
-The optimal decay rate is **D ≈ σ₁** (see `docs/rebalance-auction-design.md` §8):
+The optimal decay rate is **D ≈ σ₁**:
 
 - **D >> σ₁**: coarse fee steps — giving away value through granularity. The arber
   gets a price up to D better than the minimum they'd accept.

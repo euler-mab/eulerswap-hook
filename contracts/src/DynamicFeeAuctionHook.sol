@@ -58,7 +58,8 @@ interface IERC20Minimal {
 /// the curvature bonus the recenter exposed.
 ///
 /// Pool sets swapHookedOperations = GET_FEE | AFTER_SWAP (0x06).
-/// See docs/rebalance-auction-design.md (section 22) for the full design.
+/// See docs/auction-walkthrough.md and docs/builder-fee-design.md for the
+/// per-mechanism rationale.
 contract DynamicFeeAuctionHook is IEulerSwapHookTarget {
     using FullMath for uint256;
     using Sqrt for uint256;

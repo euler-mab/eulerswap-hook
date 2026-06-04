@@ -36,7 +36,7 @@ Recentering can be round-tripped by an attacker who anticipates it. The hook add
 
 Permissionless `setBuilderFee(fee)` lets any party — in practice the block builder — raise the quoted fee for the current block above the public floor. `getFee` returns `max(publicFee, builderFee)`. A configurable share of the bumped delta is accrued to the bumper as revenue split. Solves "the public formula leaves the builder's information edge on the table" — a builder with a private CEX-DEX signal can bid just above floor on swaps they predict will still go through, capturing some of the spread for the LP. **Disabled by default** (`builderFeeShareBps = 0`); not enabled on the live USDC/USDT pool. Design: [docs/builder-fee-design.md](docs/builder-fee-design.md).
 
-Mechanisms 1–4 are autonomous; #5 is a permissionless add-on a pool operator can opt into. All five are derived from first principles in [docs/rebalance-auction-design.md](docs/rebalance-auction-design.md) (and the new #5 in [docs/builder-fee-design.md](docs/builder-fee-design.md)).
+Mechanisms 1–4 are autonomous; #5 is a permissionless add-on a pool operator can opt into. Full mechanism derivations live in [docs/uniswap-fee-compass.md](docs/uniswap-fee-compass.md), [docs/dynamic-fee-model.md](docs/dynamic-fee-model.md), [docs/auction-walkthrough.md](docs/auction-walkthrough.md), [docs/additive-boost-derivation.md](docs/additive-boost-derivation.md), and [docs/builder-fee-design.md](docs/builder-fee-design.md).
 
 ---
 
@@ -203,7 +203,6 @@ scripts/
 |---|---|
 | [docs/calibration-guide.md](docs/calibration-guide.md) | Derive every hook parameter from first principles |
 | [docs/parameter-strategy-guide.md](docs/parameter-strategy-guide.md) | Tune parameters for stablecoins, volatile pairs, narrow ranges, etc. |
-| [docs/rebalance-auction-design.md](docs/rebalance-auction-design.md) | Read the full design rationale (~1560 lines, historical doc) |
 
 ---
 
