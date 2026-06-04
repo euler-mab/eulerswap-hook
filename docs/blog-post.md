@@ -76,19 +76,15 @@ The four mechanisms above aren't redundant with `builderFee` — they're **layer
 
 ## Live numbers
 
-The author runs one of these on Ethereum mainnet:
+The author runs one of these on Ethereum mainnet — a USDC/USDT pool, [`0x71...68A8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8), bound to hook [`0x99...4e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41):
 
-|                                       | USDC/USDT                                                                                |
-| ------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Pool                                  | [`0x71...68A8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8) |
-| Hook                                  | [`0x99...4e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41) |
-| LP equity (NAV)                       | ~\$483 (started at \$501)                                                                |
-| Volume (7d avg)                       | ~\$46k/day (bursty: \$0 – \$100k)                                                        |
-| Daily turnover (7d avg)               | ~95×                                                                                     |
-| Lifetime volume                       | ~\$810k (187 swaps over ~90 days)                                                        |
-| Lifetime fees collected               | ~\$24                                                                                    |
-| Lifetime auctions (started / cleared) | 52+ / all clearing                                                                       |
-| P&L since live (~90 days)             | -\$18 (-3.6%)                                                                            |
+- **LP equity (NAV):** ~\$483 (started at \$501)
+- **Volume (7d avg):** ~\$46k/day (bursty: \$0 – \$100k)
+- **Daily turnover (7d avg):** ~95×
+- **Lifetime volume:** ~\$810k (187 swaps over ~90 days)
+- **Lifetime fees collected:** ~\$24
+- **Lifetime auctions (started / cleared):** 52+ / all clearing
+- **P&L since live (~90 days):** -\$18 (-3.6%)
 
 The pool's running a small loss — quiet stretches accrue more borrow carry than the busy stretches' fees recover. The proof-of-principle here is that the _mechanism_ works at all, not that \$500 is the right size to capture the upside. What the breakeven equity actually is — and how it depends on σ, the borrow rate, and the share of incoming flow that's retail vs arb — is an empirical question the live pool doesn't answer (and one of the open problems listed below).
 
