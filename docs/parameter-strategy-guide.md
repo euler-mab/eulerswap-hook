@@ -168,7 +168,7 @@ For volatile pairs (USDC/WETH), one-sided USDC is preferred -- it eliminates pri
 
 ### 4.4 Worked Example: USDC/WETH
 
-Inputs (matching the live USDC/WETH pool, see [`BoostPool.s.sol`](../contracts/script/BoostPool.s.sol)):
+Inputs (matching the initial calibration of the USDC/WETH pool):
 ```
 xr = 3611 USDC,  yr = 0.000394 WETH
 xd = 0,          yd = 0.32 WETH
@@ -188,7 +188,7 @@ x0 = 3611 + 710,746 = 714,357 USDC  (~198x leverage)
 
 Health at boundary: H_XX = 1.000 (barely solvent, by design).
 
-[`BoostPool.s.sol`](../contracts/script/BoostPool.s.sol) computes these values from current vault state and reconfigures the pool on-chain in a single transaction.
+Full derivation of the BX/BY boost formulas: [`docs/additive-boost-derivation.md`](additive-boost-derivation.md). The pattern for applying a boost on-chain (deposit collateral via the EVC, then `reconfigure()` with the boosted equilibrium reserves) is shown in [`AddCapital.s.sol`](../contracts/script/AddCapital.s.sol) — env-driven and generic to any pool.
 
 ---
 

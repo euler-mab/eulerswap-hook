@@ -30,10 +30,10 @@ Per-chain reference for the contracts this repo interacts with. See [README](../
 
 ### Live active-LP deployments
 
-| Pool | Hook | Sub-account |
-|---|---|---|
-| USDC/WETH [`0x4311...28A8`](https://etherscan.io/address/0x4311031739918Aba578C3C667DA3028A12Ce28A8) | [`0x7bb6...e4FB`](https://etherscan.io/address/0x7bb638b9842eA4275901aafB2e34943d9C2Fe4FB) | `0x2909bCc87c17d8Be263621bF087bC806BA313BFE` (sub `0x00`) |
-| USDC/USDT [`0x7195...68A8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8) | [`0x99b9...4e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41) | `0x2909BCc87c17D8be263621bf087Bc806ba313BFf` (sub `0x01`) |
+| Pool | Hook | Sub-account | Status |
+|---|---|---|---|
+| USDC/USDT [`0x7195...68A8`](https://etherscan.io/address/0x719529e99b7b272c5ef4ce07c30d15bc57cd68a8) | [`0x99b9...4e41`](https://etherscan.io/address/0x99b97FD05b4F943899358F90855C0BEE34584e41) | `0x2909BCc87c17D8be263621bf087Bc806ba313BFf` (sub `0x01`) | **Active** |
+| USDC/WETH [`0x4311...28A8`](https://etherscan.io/address/0x4311031739918Aba578C3C667DA3028A12Ce28A8) | [`0x7bb6...e4FB`](https://etherscan.io/address/0x7bb638b9842eA4275901aafB2e34943d9C2Fe4FB) | `0x2909bCc87c17d8Be263621bF087bC806BA313BFE` (sub `0x00`) | Decommissioned (`dParams.expiration` in the past) |
 
 Deployer EOA: `0x2909bCc87c17d8Be263621bF087bC806BA313BFE`. See the [FAQ](faq.md#how-do-i-compute-a-sub-account-address-from-my-eoa) for the sub-account XOR derivation.
 

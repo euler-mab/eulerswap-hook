@@ -163,7 +163,6 @@ contracts/
     DeployHookUSDCUSDT.s.sol          # Author's worked example (USDC/USDT, V4 oracle)
     DeployMinimalHook.s.sol           # Deploy the starter hook
     AddCapital.s.sol                  # Deposit collateral into pool sub-account
-    BoostPool.s.sol                   # Recompute and apply additive boost
     RegisterPools.s.sol               # Register for Euler orderflow routing
   eulerswap/                          # git submodule: euler-xyz/euler-swap
 

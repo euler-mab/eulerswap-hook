@@ -36,6 +36,14 @@ interface IUniswapV3Pool {
 /// @notice Deploys the hook (NAV-based exposure tracking, curvature-aware surcharge,
 ///         exposure-sized auction shifts), recenters at market price, and installs via EVC.
 ///
+/// @notice **READ FIRST**: The pool this script targets
+///   ([0x4311...28A8](https://etherscan.io/address/0x4311031739918Aba578C3C667DA3028A12Ce28A8))
+///   has `dParams.expiration` set in the past on mainnet — it's decommissioned.
+///   The script is preserved as a worked example of how to calibrate hook
+///   parameters for a volatile pair (USDC/WETH-style: wider range, V3 oracle,
+///   gas-aware fee bumping). Don't blindly broadcast — use this as a reference
+///   when writing your own deploy script for a fresh pool.
+///
 /// @dev Usage:
 ///   PRIVATE_KEY=0x... forge script script/DeployHookUSDCWETH.s.sol:DeployHookUSDCWETH \
 ///     --rpc-url $RPC_URL --broadcast --slow -vvvv
