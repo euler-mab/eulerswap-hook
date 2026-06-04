@@ -6,6 +6,8 @@ It is **not** a TradFi-style prop venue (no private fair-value model, no per-quo
 
 This repo contains the [DynamicFeeAuctionHook](contracts/src/DynamicFeeAuctionHook.sol) contract, calibration tooling, and deploy scripts needed to launch your own pool. For routing your pool through aggregators and intent systems, see the separate [`eulerswap-integrations`](https://github.com/euler-mab/eulerswap-integrations) repo.
 
+📖 **Want the narrative version?** [`docs/blog-post.md`](docs/blog-post.md) is a ~1,800-word write-up of the design (passive-vs-active LP framing, credit-backed depth, the auction mechanic, live numbers) — same content as a Medium-style post.
+
 ## About the substrate
 
 **EulerSwap is an [extensively audited](https://github.com/euler-xyz/euler-swap/tree/master/audits) AMM primitive that has processed billions in cumulative volume in production.** It's been quietly under-marketed since launch — the protocol team lost key contributors and had to prioritise other work, which slowed broader adoption — but the mechanics are battle-tested and the substrate is mature. It sits on top of the equally well-audited Euler Vault Kit (EVK) and Ethereum Vault Connector (EVC), which together back most of Euler's lending TVL. This repo is one way to put that infrastructure back to work.
@@ -181,6 +183,7 @@ contracts/
   eulerswap/                          # git submodule: euler-xyz/euler-swap
 
 docs/                                 # See "Documentation map" below
+assets/                               # Diagrams for the blog post (SVG + PNG)
 
 scripts/
   calibrate-hook-params.ts            # Derive params from a JSON profile; --env mode for deploy scripts
@@ -199,6 +202,7 @@ scripts/
 |---|---|
 | [docs/build-your-own-propamm.md](docs/build-your-own-propamm.md) | Walk through deploying your own propAMM end-to-end |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | See how account + pool + hook + oracle + orderflow fit together |
+| [docs/blog-post.md](docs/blog-post.md) | Read the narrative version of the design (Medium-style post, with diagrams) |
 | [docs/case-study-usdc-usdt.md](docs/case-study-usdc-usdt.md) | See the live $500-NAV / $100k-day pool with actual on-chain numbers |
 | [docs/faq.md](docs/faq.md) | Get quick answers to common newcomer questions (sub-accounts, minimum equity, oracle choice, …) |
 | [docs/addresses.md](docs/addresses.md) | Look up canonical contract addresses per chain (EVC, registry, vaults, oracles, live pools) |

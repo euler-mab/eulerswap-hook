@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" font-family="Inter, system-ui, -apple-system, Segoe UI, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0E1117"/>
+      <stop offset="1" stop-color="#070809"/>
+    </linearGradient>
+    <marker id="ar" markerWidth="14" markerHeight="14" refX="11" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#4D9FF5"/>
+    </marker>
+  </defs>
+  <rect width="1600" height="900" fill="url(#bg)"/>
+
+  <!-- Title -->
+  <text x="100" y="100" fill="#FFFFFF" font-size="52" font-weight="700">Quoting $247M of depth from $500 of equity</text>
+  <text x="100" y="148" fill="#8A93A0" font-size="27">Virtual reserves on EulerSwap are amplified by the lending vaults</text>
+
+  <!-- Stage 1: Real equity (small) -->
+  <rect x="80" y="240" width="260" height="200" rx="14" fill="#11151B" stroke="#243040" stroke-width="2"/>
+  <text x="100" y="285" fill="#8A93A0" font-size="14" letter-spacing="2" font-weight="700">STAGE 1</text>
+  <text x="100" y="320" fill="#FFFFFF" font-size="24" font-weight="700">Real LP equity</text>
+  <text x="100" y="365" fill="#D7DEE6" font-size="22" font-family="ui-monospace, monospace">~$500</text>
+  <text x="100" y="395" fill="#8A93A0" font-size="16">$382 USDC · $119 USDT</text>
+  <text x="100" y="425" fill="#6B7480" font-size="15">What you actually risk</text>
+
+  <!-- Arrow 1 -->
+  <g transform="translate(360, 340)">
+    <line x1="0" y1="0" x2="100" y2="0" stroke="#4D9FF5" stroke-width="3" marker-end="url(#ar)"/>
+    <text x="50" y="-15" fill="#4D9FF5" font-size="14" text-anchor="middle" font-weight="600">borrow against</text>
+    <text x="50" y="22" fill="#8A93A0" font-size="13" text-anchor="middle">96% LTV on stables</text>
+  </g>
+
+  <!-- Stage 2: Vault credit (medium) -->
+  <rect x="480" y="220" width="380" height="240" rx="14" fill="#0F1721" stroke="#4D9FF5" stroke-width="2"/>
+  <text x="500" y="265" fill="#8A93A0" font-size="14" letter-spacing="2" font-weight="700">STAGE 2</text>
+  <text x="500" y="300" fill="#FFFFFF" font-size="24" font-weight="700">Vault credit</text>
+  <text x="500" y="345" fill="#D7DEE6" font-size="20">Looped position:</text>
+  <text x="500" y="372" fill="#D7DEE6" font-size="18" font-family="ui-monospace, monospace">supply USDC → borrow USDC</text>
+  <text x="500" y="395" fill="#D7DEE6" font-size="18" font-family="ui-monospace, monospace">→ supply → borrow … (≈12×)</text>
+  <text x="500" y="430" fill="#4D9FF5" font-size="20" font-weight="600">~50× amplification</text>
+
+  <!-- Arrow 2 -->
+  <g transform="translate(880, 340)">
+    <line x1="0" y1="0" x2="100" y2="0" stroke="#4D9FF5" stroke-width="3" marker-end="url(#ar)"/>
+    <text x="50" y="-15" fill="#4D9FF5" font-size="14" text-anchor="middle" font-weight="600">concentrate around peg</text>
+    <text x="50" y="22" fill="#8A93A0" font-size="13" text-anchor="middle">1-tick range, c → 1</text>
+  </g>
+
+  <!-- Stage 3: Virtual reserves (large) -->
+  <rect x="1000" y="200" width="520" height="280" rx="14" fill="#0F1A17" stroke="#2EE6A8" stroke-width="2"/>
+  <text x="1020" y="245" fill="#2EE6A8" font-size="14" letter-spacing="2" font-weight="700">STAGE 3</text>
+  <text x="1020" y="280" fill="#FFFFFF" font-size="24" font-weight="700">Virtual reserves</text>
+  <text x="1020" y="325" fill="#D7DEE6" font-size="22" font-family="ui-monospace, monospace">~$247M USDC</text>
+  <text x="1020" y="358" fill="#D7DEE6" font-size="22" font-family="ui-monospace, monospace">~$242M USDT</text>
+  <text x="1020" y="405" fill="#8FBAAE" font-size="18">What the curve quotes against —</text>
+  <text x="1020" y="430" fill="#8FBAAE" font-size="18">depth that retail order flow sees</text>
+  <text x="1020" y="460" fill="#2EE6A8" font-size="20" font-weight="600">~490,000× effective depth multiplier</text>
+
+  <!-- DECOMPOSITION strip -->
+  <text x="100" y="580" fill="#FFFFFF" font-size="30" font-weight="700">What's actually on-chain</text>
+
+  <rect x="100" y="615" width="400" height="200" rx="14" fill="#11151B" stroke="#243040" stroke-width="2"/>
+  <text x="120" y="655" fill="#D7DEE6" font-size="20" font-weight="600">Supply vault position</text>
+  <text x="120" y="690" fill="#D7DEE6" font-size="16" font-family="ui-monospace, monospace">~7,349 USDT supplied</text>
+  <text x="120" y="725" fill="#D7DEE6" font-size="16" font-family="ui-monospace, monospace">    0 USDC supplied</text>
+  <text x="120" y="775" fill="#8A93A0" font-size="14">Earning lending yield</text>
+
+  <rect x="540" y="615" width="400" height="200" rx="14" fill="#11151B" stroke="#243040" stroke-width="2"/>
+  <text x="560" y="655" fill="#D7DEE6" font-size="20" font-weight="600">Borrow vault position</text>
+  <text x="560" y="690" fill="#D7DEE6" font-size="16" font-family="ui-monospace, monospace">~6,850 USDC borrowed</text>
+  <text x="560" y="725" fill="#D7DEE6" font-size="16" font-family="ui-monospace, monospace">    0 USDT borrowed</text>
+  <text x="560" y="775" fill="#8A93A0" font-size="14">Paying borrow rate (≈ 3-4% APR)</text>
+
+  <rect x="980" y="615" width="540" height="200" rx="14" fill="#0F1A17" stroke="#2EE6A8" stroke-width="2"/>
+  <text x="1000" y="655" fill="#2EE6A8" font-size="20" font-weight="600">Net LP equity (NAV)</text>
+  <text x="1000" y="690" fill="#D7DEE6" font-size="16" font-family="ui-monospace, monospace">7,349 − 6,850 ≈ $499</text>
+  <text x="1000" y="725" fill="#8FBAAE" font-size="16">deposits − debts, both ≈ $1</text>
+  <text x="1000" y="775" fill="#2EE6A8" font-size="14">The actual capital at risk</text>
+
+  <text x="800" y="860" fill="#6B7480" font-size="18" text-anchor="middle">Same dollars are collateral, lending position, and swap liquidity all at once</text>
+</svg>
