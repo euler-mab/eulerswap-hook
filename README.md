@@ -91,9 +91,9 @@ A few approaches sit in between, each making different trade-offs:
 
 If you're exploring the broader space, EulerSwap can host other designs too:
 
-- **Yield-basis-style IL elimination.** Configure the LP's net position to track the base asset (WETH-neutral instead of USDC-neutral) by borrowing against the deposited base to short the IL exposure. The maths and Monte Carlo trade-offs are in [docs/yield-basis-analysis.md](docs/yield-basis-analysis.md) and [docs/yield-basis-comparison.md](docs/yield-basis-comparison.md) — both honest about where it works and where it doesn't.
 - **Fluid-style shared yield-and-liquidity.** Skip the single-LP framing — multiple parties can share Euler vaults and the borrowing capacity. Not implemented in this repo, but the primitive supports it.
 - **Pure JIT.** A `MinimalHook` deployment with very tight `recenterRange` and active off-chain monitoring approximates Uniswap-V3-style JIT, with credit substituting for cash inventory.
+- **Yield-basis-style IL elimination.** Configure the LP's net position to track the base asset (WETH-neutral instead of USDC-neutral) by borrowing against the deposited base. Not implemented or analysed in this repo.
 
 The hook in this repo is one waypoint in that broader exploration — not the only thing the substrate can do.
 
@@ -191,11 +191,9 @@ scripts/
 
 ### Design space
 
-| Doc                                                              | Read it when you want to…                                                                                                               |
-| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| [docs/yield-basis-analysis.md](docs/yield-basis-analysis.md)     | Map Egorov's Yield Basis design (2× leveraged CFMM for IL elimination) onto EulerSwap, including formal proofs and feasibility analysis |
-| [docs/yield-basis-comparison.md](docs/yield-basis-comparison.md) | Compare Yield Basis vs this hook with Monte Carlo simulation — honest about where each wins                                             |
-| [docs/per-lp-architecture.md](docs/per-lp-architecture.md)       | Understand why each Euler account is its own AMM (vs. shared-LP pools)                                                                  |
+| Doc                                                        | Read it when you want to…                                              |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------- |
+| [docs/per-lp-architecture.md](docs/per-lp-architecture.md) | Understand why each Euler account is its own AMM (vs. shared-LP pools) |
 
 ### Mechanisms
 
